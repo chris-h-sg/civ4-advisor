@@ -15,7 +15,9 @@ Links and prior art gathered while scoping this project. Kept here so they don't
 
 ## Game's own XML rules data
 
-Static reference data (unit stats, building costs, tech tree, civic effects) lives in the game/mod's `Assets` folder as plain XML. To be parsed once and cached by the harness — not part of the per-turn state payload. Exact paths depend on install location; confirm once `mod/` scaffolding exists and we can inspect a real install.
+Static reference data (unit stats, building costs, tech tree, civic effects) lives in the game/mod's `Assets` folder as plain XML. To be parsed once and cached by the harness — not part of the per-turn state payload.
+
+Layout confirmed against the local install (path in `config.local.json`): tunables in `Assets\XML\GlobalDefines.xml`, and one file per concept under `Assets\XML\GameInfo\` (`CIV4ProcessInfo.xml`, etc.). Each entry carries the `<Type>` key the state schema uses, so state joins against these with no mapping table. BTS expansion content lives under `Beyond the Sword\Assets\XML\` and overrides the base tree.
 
 ## Research-rate mechanics (verified for schema's `beakersPerTurn`/`turnsLeft` semantics)
 
@@ -25,6 +27,18 @@ Verified 2026-08 directly against the vanilla BTS game-core C++ source — **`ht
 - **Constant values** (confirmed in the local install's `Beyond the Sword\Assets\XML\GlobalDefines.xml`, not assumed): `BASE_RESEARCH_RATE = 1`, `TECH_COST_TOTAL_KNOWN_TEAM_MODIFIER = 30`, `TECH_COST_KNOWN_PREREQ_MODIFIER = 20`.
 - **`getResearchTurnsLeft` ≈ ceil(remaining team cost / Σ calculateResearchRate), min 1 — but research overflow from the previously finished tech is subtracted from the remaining cost first** (modifier-adjusted, via `getOverflowResearch`), so displayed turns-left can undershoot naive division right after a tech completes. Team-mate rates are summed too (irrelevant single-player).
 - **Schema consequence:** `player.beakersPerTurn` = `CyPlayer.calculateResearchRate(-1)` — the modifier-inclusive figure consistent with `turnsLeft` — NOT the raw slider split of commerce, which would silently understate research by the hidden bonuses. All needed methods (`calculateResearchRate`, `calculateResearchModifier`, `calculateGoldRate`, `getResearchTurnsLeft`, `getOverflowResearch`) are confirmed exposed on `CyPlayer` per the BUG API reference (`.../PythonAPI/Classes/CyPlayer.html`).
+
+## Unit/city API semantics (verified while implementing schema increment ②)
+
+Checked 2026-08 against the BUG Python API reference, the base game's own Python in the local install (`Beyond the Sword\Assets\Python`, authoritative for how Firaxis themselves read these values), and the BTS game-core C++ source (`https://github.com/dguenms/beyond-the-sword-sdk`) where the Python layer wasn't conclusive.
+
+- **`CyUnit.movesLeft()` is in internal movement points, not displayed moves; `baseMoves()` is in displayed moves.** `Screens/CvMainInterface.py:2453-2462` divides `movesLeft()` by `gc.getMOVE_DENOMINATOR()`, rounds the quotient *up*, and prints it as `"%d/%d"` against `baseMoves()` — which is what establishes that `baseMoves()` is already in display units. `MOVE_DENOMINATOR = 60` per the install's `Assets\XML\GlobalDefines.xml:181`. `maxMoves()` is `baseMoves()` in internal units. `baseMoves()` is `unitInfo.getMoves() + getExtraMoves() + team extra moves for the domain`, so it reflects promotions, not just the XML base.
+- **`movesLeft()` is unusable at our export timing, verified live.** The per-turn reset is `setMoves(0)` inside `CvUnit::doTurn()`, which runs when the player's next turn activates — after `onEndGameTurn` has fired and the state file is already written. A turn-2 capture confirmed it: a warrior that had moved exported `0`. The schema therefore exports `moves` (`baseMoves()`) instead; see CLAUDE.md.
+- **`CyCity.getProductionNeeded()` returns `MAX_INT` when nothing can complete.** Verified in `CvGameCoreDLL/CvCity.cpp`: the switch on the head order node breaks (rather than returns) for `ORDER_MAINTAIN`, and a NULL head node skips the switch entirely — both fall through to `return MAX_INT`. So an empty queue *and* an active process both yield 2147483647.
+- **`CvCity::getProductionDifference`** (what `getCurrentProductionDifference(bIgnoreFood, bOverflow)` delegates to) returns 0 during disorder, and with `bOverflow` adds `getOverflowProduction() + getFeatureProduction()` — one-off amounts, not a recurring rate. The city screen passes `bOverflow=True` anyway, so matching the UI means inheriting that.
+- **Production order kind is read via the `isProductionUnit`/`Building`/`Project`/`Process` cascade**, each paired with its `getProductionX()` id and the matching `gc.getXInfo(...).getType()`. Pattern taken verbatim from `pyWB/CvWBDesc.py:782-789`, which serializes a city for WorldBuilder.
+- **Happiness/health/culture accessor arguments**, as used by `Screens/CvMainInterface.py` and `PyHelpers.py`: `happyLevel()`, `unhappyLevel(0)`, `goodHealth()`, `badHealth(False)`, `foodDifference(True)`, and `getCulture(pCity.getOwner())` — the last paired with `getCultureThreshold()` for the culture bar, confirming it's the owner's share (`getCulture` is per-player within a city) that drives border expansion.
+- **Unit/city iteration** uses the `(object, cursor)` pair returned by `firstUnit(bRev)`/`nextUnit(cursor, bRev)` and `firstCity`/`nextCity`, looping while the object is truthy — `PyHelpers.py:256-260` and `:314-320`, which also supply the validity filters (`isDead()` for units, `isNone()` plus an owner check for cities).
 
 ## Python hot-reload inside the embedded interpreter (measured, not documented anywhere found)
 
@@ -46,11 +60,6 @@ These informed the design but nothing here is being reused directly as of this p
 - **BUG Mod** (`https://civ4bug.sourceforge.net/`): the source of the Python API reference above. The mod itself (UI/QoL overlay for players) is not something we're building on top of — old SourceForge-era codebase, scope mismatch (player-facing UI, not a state-export tool). Only the API docs it produced are directly useful.
 
 - **CivRealm** (ICLR 2024) and **CivBench** (2026): academic LLM/RL benchmarks built on Freeciv and Civilization V respectively — not Civ IV, and not something we're integrating with. Useful only as evidence that "AI plays Civilization via structured state" is a validated approach elsewhere, and as a conceptual reference for schema/prompt design if useful later.
-
-## Not yet investigated
-
-- Exact location/format of Civ IV: Beyond the Sword's XML asset files on a real install (pending mod scaffolding + local install inspection).
-- Whether any 2.4-compatible JSON serialization library is worth vendoring into `mod/`, vs. hand-rolling serialization for the fields we actually need.
 
 ## State-extraction prior art (surveyed before designing the state schema)
 

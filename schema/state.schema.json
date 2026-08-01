@@ -76,10 +76,20 @@
                             "pattern": "^TECH_[A-Z0-9_]+$",
                             "description": "Tech being researched; null when none selected (e.g. at game start before the first choice)."
                         },
+                        "progress": {
+                            "type": ["integer", "null"],
+                            "minimum": 0,
+                            "description": "Beakers banked toward current, as the in-game research bar fills it; null when current is null. Progress is stored per team (CyTeam.getResearchProgress), plus the player's leftover research from the previously completed tech scaled by the research modifier - the same term the game's own bar adds, and already credited by turnsLeft."
+                        },
+                        "cost": {
+                            "type": ["integer", "null"],
+                            "minimum": 1,
+                            "description": "Total beakers current costs this team (CyTeam.getResearchCost), i.e. the number shown in game after handicap/game-speed/world-size scaling - NOT the raw XML cost; null when current is null."
+                        },
                         "turnsLeft": {
                             "type": ["integer", "null"],
                             "minimum": 0,
-                            "description": "Game-computed turns to finish current research; null when current is null. Approximately ceil(remaining cost / beakersPerTurn) but not exactly: research overflow from the previously finished tech is credited first."
+                            "description": "Game-computed turns to finish current research; null when current is null. Approximately ceil((cost - progress) / beakersPerTurn) but not exactly: the engine recomputes overflow crediting internally."
                         },
                         "sciencePercent": {
                             "type": "integer",
@@ -88,7 +98,7 @@
                             "description": "Commerce slider allocation to research."
                         }
                     },
-                    "required": ["current", "turnsLeft", "sciencePercent"],
+                    "required": ["current", "progress", "cost", "turnsLeft", "sciencePercent"],
                     "additionalProperties": false
                 },
                 "knownTechs": {
@@ -118,10 +128,10 @@
                     "type": {"type": "string", "pattern": "^UNIT_[A-Z0-9_]+$"},
                     "x": {"type": "integer", "minimum": 0},
                     "y": {"type": "integer", "minimum": 0},
-                    "movesLeft": {
-                        "type": "number",
+                    "moves": {
+                        "type": "integer",
                         "minimum": 0,
-                        "description": "Moves remaining this turn in player-facing units (fractions possible once roads exist)."
+                        "description": "Total moves the unit gets per turn (CyUnit.baseMoves), including promotion and team domain bonuses - NOT moves remaining. Moves-remaining is deliberately not exported: the per-turn reset happens after our export hook fires, so CyUnit.movesLeft() would always describe the turn that just ended rather than the one this file is labelled for."
                     },
                     "damage": {
                         "type": "integer",
@@ -130,7 +140,7 @@
                         "description": "0 = full health, 100 = dead."
                     }
                 },
-                "required": ["id", "type", "x", "y", "movesLeft", "damage"],
+                "required": ["id", "type", "x", "y", "moves", "damage"],
                 "additionalProperties": false
             }
         },
@@ -146,7 +156,7 @@
                     "y": {"type": "integer", "minimum": 0},
                     "population": {"type": "integer", "minimum": 1},
                     "food": {"type": "integer", "minimum": 0, "description": "Food stored toward next growth."},
-                    "foodPerTurn": {"type": "integer", "description": "Net food surplus; negative = starving."},
+                    "foodPerTurn": {"type": "integer", "description": "Net food surplus (CyCity.foodDifference); negative = starving, 0 while the city is in disorder."},
                     "growthThreshold": {"type": "integer", "minimum": 1},
                     "producing": {
                         "type": ["string", "null"],
@@ -157,9 +167,13 @@
                     "productionNeeded": {
                         "type": ["integer", "null"],
                         "minimum": 1,
-                        "description": "Total hammer cost of current build; null when producing is null."
+                        "description": "Total hammer cost of current build; null when producing is null and also when producing is a PROCESS_ (a process converts hammers indefinitely and never completes - the engine reports MAX_INT for both cases)."
                     },
-                    "productionPerTurn": {"type": "integer", "minimum": 0},
+                    "productionPerTurn": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "Hammers per turn as the city screen shows them (CyCity.getCurrentProductionDifference with food-to-hammer conversion and overflow included). On the turn right after a build completes this includes one-off carried-over overflow, so it is not a steady-state rate."
+                    },
                     "culture": {"type": "integer", "minimum": 0},
                     "cultureThreshold": {"type": "integer", "minimum": 1, "description": "Culture needed for next border expansion."},
                     "happy": {"type": "integer", "minimum": 0},
