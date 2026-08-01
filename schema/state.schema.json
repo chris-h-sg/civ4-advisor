@@ -1,0 +1,285 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "title": "civ4-advisor per-turn state",
+    "description": "Specification for the JSON state file the mod writes each turn (state/current_turn.json) and for curated captures in samples/. The mod's Python 2.4 cannot validate against this; it exists as the contract reference and for harness-side validation later. All enum-like values are the game XML's Type keys (e.g. TERRAIN_GRASS, UNIT_SCOUT), so state joins directly against XML-derived rules data. Everything in this file is restricted to what the human player could legitimately see - never unrevealed map, other civs' internals, or anything else fog-of-war hides.",
+    "type": "object",
+    "properties": {
+        "meta": {
+            "type": "object",
+            "description": "Export bookkeeping, not game state.",
+            "properties": {
+                "schemaVersion": {
+                    "const": 1,
+                    "description": "Bumped on breaking schema changes so the harness can reject stale samples."
+                },
+                "trigger": {
+                    "enum": ["onGameStart", "onLoadGame", "onEndGameTurn"],
+                    "description": "Which event hook produced this export."
+                }
+            },
+            "required": ["schemaVersion", "trigger"],
+            "additionalProperties": false
+        },
+        "game": {
+            "type": "object",
+            "description": "Game-level context, mostly static after game creation.",
+            "properties": {
+                "gameTurn": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "The turn the player is about to play (see CLAUDE.md on export timing: exports fire at round end, labeled for the upcoming round)."
+                },
+                "year": {
+                    "type": "integer",
+                    "description": "Calendar year for gameTurn; negative = BC."
+                },
+                "era": {
+                    "type": "string",
+                    "pattern": "^ERA_[A-Z0-9_]+$",
+                    "description": "The player's current era."
+                },
+                "gameSpeed": {
+                    "type": "string",
+                    "pattern": "^GAMESPEED_[A-Z0-9_]+$"
+                },
+                "mapWidth": {"type": "integer", "minimum": 1},
+                "mapHeight": {"type": "integer", "minimum": 1},
+                "wrapX": {"type": "boolean"},
+                "wrapY": {"type": "boolean"}
+            },
+            "required": ["gameTurn", "year", "era", "gameSpeed", "mapWidth", "mapHeight", "wrapX", "wrapY"],
+            "additionalProperties": false
+        },
+        "player": {
+            "type": "object",
+            "description": "The human player's own empire-level state.",
+            "properties": {
+                "id": {"type": "integer", "minimum": 0},
+                "leader": {"type": "string", "pattern": "^LEADER_[A-Z0-9_]+$"},
+                "civilization": {"type": "string", "pattern": "^CIVILIZATION_[A-Z0-9_]+$"},
+                "gold": {"type": "integer", "description": "Treasury."},
+                "goldPerTurn": {
+                    "type": "integer",
+                    "description": "Net gold change per turn at current slider settings (CyPlayer.calculateGoldRate); negative = running a deficit."
+                },
+                "beakersPerTurn": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Research output per turn toward the current tech as the game computes it (CyPlayer.calculateResearchRate). Includes the hidden research modifiers - a bonus scaled by how many met civs already know the tech, +20% per known OR-prerequisite, and 1 free base beaker - so it is larger than the raw slider split of commerce. See REFERENCES.md 'Research-rate mechanics'."
+                },
+                "score": {"type": "integer"},
+                "research": {
+                    "type": "object",
+                    "properties": {
+                        "current": {
+                            "type": ["string", "null"],
+                            "pattern": "^TECH_[A-Z0-9_]+$",
+                            "description": "Tech being researched; null when none selected (e.g. at game start before the first choice)."
+                        },
+                        "turnsLeft": {
+                            "type": ["integer", "null"],
+                            "minimum": 0,
+                            "description": "Game-computed turns to finish current research; null when current is null. Approximately ceil(remaining cost / beakersPerTurn) but not exactly: research overflow from the previously finished tech is credited first."
+                        },
+                        "sciencePercent": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 100,
+                            "description": "Commerce slider allocation to research."
+                        }
+                    },
+                    "required": ["current", "turnsLeft", "sciencePercent"],
+                    "additionalProperties": false
+                },
+                "knownTechs": {
+                    "type": "array",
+                    "items": {"type": "string", "pattern": "^TECH_[A-Z0-9_]+$"},
+                    "uniqueItems": true
+                },
+                "civics": {
+                    "type": "object",
+                    "description": "Current civic per civic-option category.",
+                    "patternProperties": {
+                        "^CIVICOPTION_[A-Z0-9_]+$": {"type": "string", "pattern": "^CIVIC_[A-Z0-9_]+$"}
+                    },
+                    "additionalProperties": false
+                }
+            },
+            "required": ["id", "leader", "civilization", "gold", "goldPerTurn", "beakersPerTurn", "score", "research", "knownTechs", "civics"],
+            "additionalProperties": false
+        },
+        "units": {
+            "type": "array",
+            "description": "The player's own units.",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "integer", "description": "Engine unit ID, stable across turns for tracking."},
+                    "type": {"type": "string", "pattern": "^UNIT_[A-Z0-9_]+$"},
+                    "x": {"type": "integer", "minimum": 0},
+                    "y": {"type": "integer", "minimum": 0},
+                    "movesLeft": {
+                        "type": "number",
+                        "minimum": 0,
+                        "description": "Moves remaining this turn in player-facing units (fractions possible once roads exist)."
+                    },
+                    "damage": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 100,
+                        "description": "0 = full health, 100 = dead."
+                    }
+                },
+                "required": ["id", "type", "x", "y", "movesLeft", "damage"],
+                "additionalProperties": false
+            }
+        },
+        "cities": {
+            "type": "array",
+            "description": "The player's own cities, with internals only the owner can see. Per-turn rates are game-computed - the harness never re-derives them from rules data.",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "integer", "description": "Engine city ID, stable across turns."},
+                    "name": {"type": "string"},
+                    "x": {"type": "integer", "minimum": 0},
+                    "y": {"type": "integer", "minimum": 0},
+                    "population": {"type": "integer", "minimum": 1},
+                    "food": {"type": "integer", "minimum": 0, "description": "Food stored toward next growth."},
+                    "foodPerTurn": {"type": "integer", "description": "Net food surplus; negative = starving."},
+                    "growthThreshold": {"type": "integer", "minimum": 1},
+                    "producing": {
+                        "type": ["string", "null"],
+                        "pattern": "^(UNIT|BUILDING|PROJECT|PROCESS)_[A-Z0-9_]+$",
+                        "description": "Current build; null when nothing queued."
+                    },
+                    "production": {"type": "integer", "minimum": 0, "description": "Hammers accumulated toward current build."},
+                    "productionNeeded": {
+                        "type": ["integer", "null"],
+                        "minimum": 1,
+                        "description": "Total hammer cost of current build; null when producing is null."
+                    },
+                    "productionPerTurn": {"type": "integer", "minimum": 0},
+                    "culture": {"type": "integer", "minimum": 0},
+                    "cultureThreshold": {"type": "integer", "minimum": 1, "description": "Culture needed for next border expansion."},
+                    "happy": {"type": "integer", "minimum": 0},
+                    "unhappy": {"type": "integer", "minimum": 0},
+                    "healthy": {"type": "integer", "minimum": 0},
+                    "unhealthy": {"type": "integer", "minimum": 0}
+                },
+                "required": ["id", "name", "x", "y", "population", "food", "foodPerTurn", "growthThreshold", "producing", "production", "productionNeeded", "productionPerTurn", "culture", "cultureThreshold", "happy", "unhappy", "healthy", "unhealthy"],
+                "additionalProperties": false
+            }
+        },
+        "map": {
+            "type": "object",
+            "description": "Every tile the player has ever revealed. Full snapshot each turn, no diffs. Tiles with visibleNow false show remembered (possibly stale) info - exactly what the player's own map shows.",
+            "properties": {
+                "tiles": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "x": {"type": "integer", "minimum": 0},
+                            "y": {"type": "integer", "minimum": 0},
+                            "terrain": {"type": "string", "pattern": "^TERRAIN_[A-Z0-9_]+$"},
+                            "hills": {"type": "boolean"},
+                            "peak": {"type": "boolean", "description": "Impassable mountain."},
+                            "feature": {
+                                "type": ["string", "null"],
+                                "pattern": "^FEATURE_[A-Z0-9_]+$"
+                            },
+                            "bonus": {
+                                "type": ["string", "null"],
+                                "pattern": "^BONUS_[A-Z0-9_]+$",
+                                "description": "Resource, read via the team-aware getter: null both when absent and when the player lacks the revealing tech."
+                            },
+                            "river": {"type": "boolean", "description": "Tile is adjacent to a river."},
+                            "improvement": {
+                                "type": ["string", "null"],
+                                "pattern": "^IMPROVEMENT_[A-Z0-9_]+$"
+                            },
+                            "owner": {
+                                "type": ["integer", "null"],
+                                "minimum": 0,
+                                "description": "Owning player ID; null when unowned."
+                            },
+                            "visibleNow": {
+                                "type": "boolean",
+                                "description": "True = currently in sight; false = revealed but fogged, info may be stale."
+                            },
+                            "yields": {
+                                "type": "array",
+                                "prefixItems": [
+                                    {"type": "integer", "minimum": 0},
+                                    {"type": "integer", "minimum": 0},
+                                    {"type": "integer", "minimum": 0}
+                                ],
+                                "items": false,
+                                "minItems": 3,
+                                "description": "Game-computed [food, production, commerce] as-is (including current feature/improvement effects)."
+                            }
+                        },
+                        "required": ["x", "y", "terrain", "hills", "peak", "feature", "bonus", "river", "improvement", "owner", "visibleNow", "yields"],
+                        "additionalProperties": false
+                    }
+                }
+            },
+            "required": ["tiles"],
+            "additionalProperties": false
+        },
+        "contacts": {
+            "type": "array",
+            "description": "Rival players the player has met.",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "playerId": {"type": "integer", "minimum": 0},
+                    "leader": {"type": "string", "pattern": "^LEADER_[A-Z0-9_]+$"},
+                    "civilization": {"type": "string", "pattern": "^CIVILIZATION_[A-Z0-9_]+$"},
+                    "attitude": {
+                        "type": "string",
+                        "pattern": "^ATTITUDE_[A-Z0-9_]+$",
+                        "description": "Their attitude toward the player (the visible smiley: FURIOUS/ANNOYED/CAUTIOUS/PLEASED/FRIENDLY)."
+                    },
+                    "atWar": {"type": "boolean"}
+                },
+                "required": ["playerId", "leader", "civilization", "attitude", "atWar"],
+                "additionalProperties": false
+            }
+        },
+        "foreignUnits": {
+            "type": "array",
+            "description": "Other players' units on currently-visible tiles only (fogged units are not remembered). Only what any observer sees: type and position.",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "owner": {"type": "integer", "minimum": 0, "description": "Owning player ID; barbarians appear as the engine's barbarian player ID."},
+                    "type": {"type": "string", "pattern": "^UNIT_[A-Z0-9_]+$"},
+                    "x": {"type": "integer", "minimum": 0},
+                    "y": {"type": "integer", "minimum": 0}
+                },
+                "required": ["owner", "type", "x", "y"],
+                "additionalProperties": false
+            }
+        },
+        "foreignCities": {
+            "type": "array",
+            "description": "Other players' cities on revealed tiles (cities stay on the map once seen, like tiles). Externally-visible facts only.",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "owner": {"type": "integer", "minimum": 0},
+                    "name": {"type": "string"},
+                    "x": {"type": "integer", "minimum": 0},
+                    "y": {"type": "integer", "minimum": 0},
+                    "population": {"type": "integer", "minimum": 1}
+                },
+                "required": ["owner", "name", "x", "y", "population"],
+                "additionalProperties": false
+            }
+        }
+    },
+    "required": ["meta", "game", "player", "units", "cities", "map", "contacts", "foreignUnits", "foreignCities"],
+    "additionalProperties": false
+}

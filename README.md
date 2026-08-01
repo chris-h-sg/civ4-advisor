@@ -11,7 +11,7 @@ Current scope is limited to advice-only for the first 20 turns of a game. See [`
 
 ## Status
 
-`mod/` exports per-turn state to a JSON file, verified working in-game — currently just `gameTurn`/`playerId` as a proof of the pipeline, real state schema not designed yet. `harness/` is still scaffolding, nothing implemented.
+`mod/` exports per-turn state to a JSON file, verified working in-game. The full state schema is specified in [`schema/`](schema/) (JSON Schema + synthetic example); mod-side extraction is being implemented against it incrementally, with game/player-level data done and units, cities, and map tiles still to come. `harness/` is still scaffolding, nothing implemented.
 
 ## License
 
