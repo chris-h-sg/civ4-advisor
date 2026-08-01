@@ -11,7 +11,7 @@ Current scope is limited to advice-only for the first 20 turns of a game. See [`
 
 ## Status
 
-Early scaffolding — no game logic implemented yet.
+`mod/` exports per-turn state to a JSON file, verified working in-game — currently just `gameTurn`/`playerId` as a proof of the pipeline, real state schema not designed yet. `harness/` is still scaffolding, nothing implemented.
 
 ## License
 

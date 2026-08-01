@@ -1,0 +1,6 @@
+## LocalConfig.py.example
+## Copy to LocalConfig.py (gitignored) and fill in the real path.
+## Python 2.4 has no config-file parsing conveniences worth building, so this is
+## just a plain Python module the mod imports directly.
+
+STATE_FILE_PATH = r'C:\path\to\civ4-advisor\state\current_turn.json'
