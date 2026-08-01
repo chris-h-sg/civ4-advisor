@@ -17,8 +17,8 @@ Hooks into the game's event system and writes a snapshot of player-visible game 
 - `civ4-advisor.ini` — mod definition file, kept minimal (just `Name`/`Description`) so unset flags fall back to engine defaults. The engine rewrites this file with every flag spelled out whenever the mod is loaded in-game — expected and harmless. Restore it to the minimal two-line version before committing.
 - `Assets/Python/EntryPoints/CvEventInterface.py` — copied from the base BTS install; only the event-manager import/instantiation at the top is changed, to point at our own `CvCustomEventManager` instead of the base `CvEventManager`.
 - `Assets/Python/CvCustomEventManager.py` — our actual logic. Subclasses the base game's `CvEventManager` (imported, not copied) and overrides only the methods we need, calling the superclass method first in each to preserve base behavior.
-- `Assets/Python/AdvisorStateWriter.py` — all state extraction, plus the hand-rolled JSON serializer and atomic file writer (no `json` module in Python 2.4). Everything schema-related lives here rather than in the event manager because this module is `reload()`ed on every export, so edits take effect next turn without restarting the game.
-- `Assets/Python/LocalConfig.py` — gitignored, machine-specific. Holds `STATE_FILE_PATH`, the absolute path the mod writes state to. `LocalConfig.py.example` is the committed template.
+- `Assets/Python/AdvisorStateWriter.py` — all state extraction, plus the hand-rolled JSON serializer and atomic file writer (no `json` module in Python 2.4). Everything schema-related lives here rather than in the event manager because this module is re-read from disk on every export, so edits take effect next turn without restarting the game (see "Editing while the game runs" below).
+- `Assets/Python/LocalConfig.py` — gitignored, machine-specific. Holds `STATE_FILE_PATH`, the absolute path the mod writes state to, and the optional `MOD_PYTHON_DIR`. `LocalConfig.py.example` is the committed template.
 - `tests/test_state_writer.py` — developer-side `unittest` suite (runs under **Python 3**, needs `jsonschema`) that execs the real `AdvisorStateWriter.py` against mocked `Cy*` objects, so extraction, serialization, and file writing can all be checked without launching the game. Run it with `python mod/tests/test_state_writer.py`.
 
   It covers the serializer (escaping, control characters, non-ASCII, inline-vs-broken layout, key sorting/determinism), extraction (every exported field, the no-research-selected path, that unimplemented sections stay omitted, and that the right sentinel/overflow flags are passed), file writing (directory creation, UTF-8 bytes, no line-ending translation, overwrite, temp-file cleanup, `None`-path no-op), and validates each implemented section against its subschema in `schema/state.schema.json`.
@@ -37,7 +37,23 @@ We do **not** copy and modify `CvEventManager.py` directly. The community-establ
 
 The commonly-cited reason is compatibility with *other* mods stacking on top of yours, which doesn't really apply here (we're the only mod). It matters for us anyway: a full copy of `CvEventManager.py` is 1000+ lines with a handful changed — a lot of surface area to review and easy to drift from the original. `CvCustomEventManager.py` contains only what we actually added.
 
-This does **not** solve the hot-reload/restart limitation below — the engine still holds a reference to an instantiated `CvCustomEventManager` object, so editing that file still needs a restart. No workaround for this exists anywhere in the community, as far as could be found (see `REFERENCES.md`).
+This does **not** buy the event manager the live-editing that `AdvisorStateWriter.py` gets (see below) — the engine holds a reference to an object instantiated from the old class, so editing this file still needs a restart. That's why `_exportState` is kept deliberately thin: logic put here is logic you have to restart to iterate on.
+
+## Editing while the game runs
+
+The three Python files have **different** rules. The asymmetry is worth internalizing — it caused real confusion, because a restart always works and so masks a broken reload.
+
+| file | edit applies |
+|---|---|
+| `AdvisorStateWriter.py` | next export, no restart |
+| `CvCustomEventManager.py` | **full game restart required** |
+| `LocalConfig.py` | **full game restart required** |
+
+`reload()` does **not** work in this interpreter — it returns successfully and silently leaves the old code in place, with no exception and nothing in the log. Measured in-game, not assumed; see `REFERENCES.md`. Suspect a restart-in-disguise any time hot-reload appears to work.
+
+What does work, and what `_refreshStateWriter()` in `CvCustomEventManager.py` does, is `execfile` the source into the existing module's `__dict__` — the module object stays the same, its functions are just rebound from current source text. It needs a real absolute path, which neither `__file__` nor `sys.path` can supply here, so it comes from `MOD_PYTHON_DIR` in `LocalConfig.py`. That setting is optional: omit it and everything still works, you just restart to pick up edits.
+
+The event manager can't be fixed this way at any price — the engine holds an object instantiated from the old class, and re-executing the source can't re-class it. `LocalConfig` is imported *by* `AdvisorStateWriter`, so it comes back from the import cache even though `AdvisorStateWriter` itself is re-read.
 
 ## Deployment
 

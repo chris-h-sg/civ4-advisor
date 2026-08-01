@@ -4,3 +4,11 @@
 ## just a plain Python module the mod imports directly.
 
 STATE_FILE_PATH = r'C:\path\to\civ4-advisor\state\current_turn.json'
+
+## Absolute path to this folder (the repo's mod\Assets\Python). Dev convenience
+## only - lets the mod re-read AdvisorStateWriter.py from disk on each export, so
+## edits apply without restarting the game. Needed because neither __file__ nor
+## sys.path resolves to a real location inside the embedded interpreter (both
+## verified - see CLAUDE.md). Omit it and the mod still works; you just have to
+## restart the game to pick up edits.
+MOD_PYTHON_DIR = r'C:\path\to\civ4-advisor\mod\Assets\Python'

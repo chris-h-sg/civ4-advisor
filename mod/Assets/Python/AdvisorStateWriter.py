@@ -5,8 +5,10 @@
 ## bool, None.
 ##
 ## All schema/extraction logic lives here rather than in CvCustomEventManager because
-## this module is reload()ed on every export - edits take effect next turn without
-## restarting the game, which the event manager can't do (see its header comment).
+## this module is re-read from disk on every export - edits take effect next turn
+## without restarting the game, which the event manager can't do at any price. Note
+## that is NOT plain reload(), which silently does nothing in this interpreter; see
+## CvCustomEventManager._refreshStateWriter.
 
 import os
 
@@ -25,10 +27,14 @@ def getStateFilePath():
 	LocalConfig.py.example). __file__-relative path derivation was tried and does not
 	work here: the embedded interpreter reports module paths relative to its own
 	Assets/Python search root regardless of which physical folder (base game vs. mod,
-	even through the junction) actually supplied the file.'''
+	even through the junction) actually supplied the file.
+
+	Note this module is re-read from disk on every export, but LocalConfig is NOT -
+	it comes back from the import cache, so editing LocalConfig.py needs a game
+	restart. Don't add reload(LocalConfig) to "fix" that; reload() silently does
+	nothing here (see CvCustomEventManager._refreshStateWriter).'''
 	try:
 		import LocalConfig
-		reload(LocalConfig)  # dev convenience - see reload(AdvisorStateWriter) note in CvCustomEventManager.py
 	except ImportError:
 		return None
 	return LocalConfig.STATE_FILE_PATH

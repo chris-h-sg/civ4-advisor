@@ -197,7 +197,6 @@ def loadModule(player=None, localConfigPath=None):
         "long": int,
         "basestring": str,
         "unicode": str,
-        "reload": lambda m: m,
     }
     with open(SRC) as f:
         exec(compile(f.read(), SRC, "exec"), ns)
