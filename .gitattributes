@@ -1,1 +1,9 @@
 * text=auto
+
+# Samples are byte-exact captures of what mod/ writes: pure LF, UTF-8, no CRLF.
+# The mod writes in binary mode specifically so Windows cannot rewrite \n to \r\n
+# (see CLAUDE.md), and comparing mod output against a sample depends on that
+# holding. Without this rule the `* text=auto` above checks these out with CRLF
+# and they stop matching what the mod produces - on a fresh clone only, so it
+# would pass locally and fail for everyone else. Still text, so diffs work.
+samples/**/*.json text eol=lf
