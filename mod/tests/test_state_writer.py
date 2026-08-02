@@ -29,6 +29,19 @@ NO_TECH = -1
 NO_CIVIC = -1
 COMMERCE_RESEARCH = 1
 
+# Every "nothing here" sentinel in the engine's exposed enums is -1 (CvEnums.h).
+NO_FEATURE = -1
+NO_BONUS = -1
+NO_IMPROVEMENT = -1
+NO_ROUTE = -1
+NO_PLAYER = -1
+
+YIELD_FOOD = 0
+YIELD_PRODUCTION = 1
+YIELD_COMMERCE = 2
+
+NUM_CITY_PLOTS = 21
+
 TECHS = ["TECH_AGRICULTURE", "TECH_MINING", "TECH_THE_WHEEL", "TECH_BRONZE_WORKING"]
 CIVIC_OPTIONS = ["CIVICOPTION_GOVERNMENT", "CIVICOPTION_LEGAL", "CIVICOPTION_LABOR"]
 CIVICS = ["CIVIC_DESPOTISM", "CIVIC_BARBARISM", "CIVIC_TRIBALISM"]
@@ -36,6 +49,14 @@ UNITS = ["UNIT_SCOUT", "UNIT_WARRIOR", "UNIT_WORKER", "UNIT_SETTLER"]
 BUILDINGS = ["BUILDING_PALACE", "BUILDING_BARRACKS"]
 PROJECTS = ["PROJECT_APOLLO_PROGRAM"]
 PROCESSES = ["PROCESS_WEALTH", "PROCESS_RESEARCH"]
+GAME_OPTIONS = ["GAMEOPTION_NO_BARBARIANS", "GAMEOPTION_RAGING_BARBARIANS",
+                "GAMEOPTION_AGGRESSIVE_AI"]
+VICTORIES = ["VICTORY_CONQUEST", "VICTORY_DOMINATION", "VICTORY_CULTURAL"]
+TERRAINS = ["TERRAIN_GRASS", "TERRAIN_PLAINS", "TERRAIN_COAST", "TERRAIN_DESERT"]
+FEATURES = ["FEATURE_FOREST", "FEATURE_FLOOD_PLAINS"]
+BONUSES = ["BONUS_CORN", "BONUS_COPPER"]
+IMPROVEMENTS = ["IMPROVEMENT_FARM", "IMPROVEMENT_GOODY_HUT"]
+ROUTES = ["ROUTE_ROAD", "ROUTE_RAILROAD"]
 
 PLAYER_ID = 3
 TEAM_ID = 7
@@ -53,6 +74,11 @@ class Info(object):
 
 
 class Game(object):
+    def __init__(self, activePlayer=PLAYER_ID, options=(1,), victories=(0, 2)):
+        self._activePlayer = activePlayer
+        self._options = options
+        self._victories = victories
+
     def getTurnYear(self, n):
         return -4000 + n * 40
 
@@ -63,13 +89,223 @@ class Game(object):
         assert i == PLAYER_ID, "score must be read for the exported player"
         return 129
 
+    def getActivePlayer(self):
+        return self._activePlayer
+
+    def getHandicapType(self):
+        return 1
+
+    def countCivPlayersEverAlive(self):
+        return 7
+
+    def countCivPlayersAlive(self):
+        raise AssertionError(
+            "alive-now would reveal a civ's destruction before the player could "
+            "know; totalCivs uses countCivPlayersEverAlive")
+
+    def isOption(self, i):
+        return i in self._options
+
+    def isVictoryValid(self, i):
+        return i in self._victories
+
+
+class Plot(object):
+    """A map plot.
+
+    The four accessors that return CURRENT truth regardless of fog - improvement,
+    route, owner and the cached yield array - are tripwires that raise. The engine
+    keeps a separate per-team remembered copy of the first three, and using the live
+    getter instead would hand the player intelligence they do not have. Tests set
+    the live and remembered values to different things, so a mix-up cannot pass.
+    """
+
+    def __init__(self, x=0, y=0, terrain=0, revealed=True, visible=False,
+                 peak=False, hills=False, water=False, lake=False,
+                 freshWater=False, river=False, feature=NO_FEATURE,
+                 bonus=NO_BONUS, improvement=NO_IMPROVEMENT, route=NO_ROUTE,
+                 owner=NO_PLAYER, yields=(1, 0, 0), none=False):
+        self._x = x
+        self._y = y
+        self._terrain = terrain
+        self._revealed = revealed
+        self._visible = visible
+        self._peak = peak
+        self._hills = hills
+        self._water = water
+        self._lake = lake
+        self._freshWater = freshWater
+        self._river = river
+        self._feature = feature
+        self._bonus = bonus
+        self._improvement = improvement
+        self._route = route
+        self._owner = owner
+        self._yields = yields
+        self._none = none
+        self.revealedArgs = []
+        self.visibleArgs = []
+        self.bonusArgs = []
+        self.revealedImprovementArgs = []
+        self.revealedRouteArgs = []
+        self.revealedOwnerArgs = []
+        self.yieldArgs = []
+
+    def isNone(self):
+        return self._none
+
+    def getX(self):
+        return self._x
+
+    def getY(self):
+        return self._y
+
+    def getTerrainType(self):
+        return self._terrain
+
+    def isRevealed(self, team, bDebug):
+        self.revealedArgs.append((team, bDebug))
+        return self._revealed
+
+    def isVisible(self, team, bDebug):
+        self.visibleArgs.append((team, bDebug))
+        return self._visible
+
+    def isPeak(self):
+        return self._peak
+
+    def isHills(self):
+        return self._hills
+
+    def isWater(self):
+        return self._water
+
+    def isLake(self):
+        return self._lake
+
+    def isFreshWater(self):
+        return self._freshWater
+
+    def isRiver(self):
+        return self._river
+
+    def getFeatureType(self):
+        return self._feature
+
+    def getBonusType(self, team):
+        self.bonusArgs.append(team)
+        return self._bonus
+
+    def getRevealedImprovementType(self, team, bDebug):
+        self.revealedImprovementArgs.append((team, bDebug))
+        return self._improvement
+
+    def getRevealedRouteType(self, team, bDebug):
+        self.revealedRouteArgs.append((team, bDebug))
+        return self._route
+
+    def getRevealedOwner(self, team, bDebug):
+        self.revealedOwnerArgs.append((team, bDebug))
+        return self._owner
+
+    def calculateYield(self, eYield, bDisplay):
+        self.yieldArgs.append((eYield, bDisplay))
+        return self._yields[eYield]
+
+    def getImprovementType(self):
+        raise AssertionError("live improvement leaks through fog; use getRevealedImprovementType")
+
+    def getRouteType(self):
+        raise AssertionError("live route leaks through fog; use getRevealedRouteType")
+
+    def getOwner(self):
+        raise AssertionError("live owner leaks through fog; use getRevealedOwner")
+
+    def getYield(self, eYield):
+        raise AssertionError("cached yield is the bDisplay=False variant; use calculateYield")
+
+    def getPlotType(self):
+        raise AssertionError(
+            "PlotTypes.PLOT_* constants are unverified in the Python layer; "
+            "use the isPeak/isHills/isWater predicates")
+
+    def isBeingWorked(self):
+        raise AssertionError(
+            "live worked-status has no fog check and would leak rivals' tiles; "
+            "worked tiles are read city-side from our own cities")
+
+    def getWorkingCity(self):
+        raise AssertionError("see isBeingWorked: worked tiles are read city-side")
+
+
+def defaultPlots():
+    """A small revealed patch: flat grass, a fogged hill, and a visible coast tile."""
+    return [
+        Plot(x=32, y=40, terrain=0, visible=True, yields=(2, 1, 2)),
+        Plot(x=33, y=40, terrain=1, visible=True, hills=True, yields=(1, 2, 0)),
+        Plot(x=34, y=40, terrain=2, water=True, yields=(1, 0, 2)),
+    ]
+
 
 class Map(object):
+    def __init__(self, plots=None, width=84, height=52):
+        if plots is None:
+            plots = defaultPlots()
+        self._plots = {}
+        for plot in plots:
+            self._plots[(plot.getX(), plot.getY())] = plot
+        self._width = width
+        self._height = height
+        # One shared stand-in for everything the player has never seen, so a
+        # full-grid scan doesn't allocate thousands of objects.
+        self.unrevealed = Plot(revealed=False)
+        self.lookups = []
+
     def getGridWidth(self):
-        return 84
+        return self._width
 
     def getGridHeight(self):
-        return 52
+        return self._height
+
+    def plot(self, x, y):
+        self.lookups.append((x, y))
+        return self._plots.get((x, y), self.unrevealed)
+
+    def plotByIndex(self, i):
+        raise AssertionError("plot(x, y) gets the coordinates for free; plotByIndex needs two more calls")
+
+    def getMapScriptName(self):
+        return "Fractal"
+
+    def getWorldSize(self):
+        return 3
+
+    def getClimate(self):
+        return 3
+
+    def getSeaLevel(self):
+        return 1
+
+    # Statistics of the GENERATED map, as opposed to the setup parameters above.
+    # None of these is knowable to a player who hasn't explored, and all of them
+    # sit temptingly close to the safe getters on the real CyMap.
+    def getLandPlots(self):
+        raise AssertionError("total land plots is the answer, not the parameter; use seaLevel")
+
+    def getOwnedPlots(self):
+        raise AssertionError("whole-map ownership census is not player-visible")
+
+    def getNumBonuses(self, eBonus):
+        raise AssertionError("whole-map resource census is not player-visible")
+
+    def getNumBonusesOnLand(self, eBonus):
+        raise AssertionError("whole-map resource census is not player-visible")
+
+    def getNumAreas(self):
+        raise AssertionError("continent count is not player-visible before exploring")
+
+    def getNumLandAreas(self):
+        raise AssertionError("continent count is not player-visible before exploring")
 
     # Deliberately ints, not bools: the C++ bindings hand back 1/0 and the
     # serializer must still emit JSON true/false.
@@ -125,7 +361,13 @@ class City(object):
 
     def __init__(self, cityId, name=u"Thebes", x=32, y=40, owner=PLAYER_ID,
                  unit=2, building=None, project=None, process=None,
-                 production=10, productionNeeded=60, none=False):
+                 production=10, productionNeeded=60, none=False, worked=None):
+        # index -> (x, y) for a worked city plot. A value of None or of a Plot
+        # stands in for what getCityIndexPlot returns off the edge of the map.
+        # Index 0 is the city centre, which is always worked.
+        self._worked = worked
+        if self._worked is None:
+            self._worked = {0: (32, 40), 5: (33, 40), 9: (31, 40)}
         self._id = cityId
         self._name = name
         self._x = x
@@ -230,6 +472,15 @@ class City(object):
         self.badHealthArgs.append(bNoAngry)
         return 2
 
+    def isWorkingPlotByIndex(self, i):
+        return i in self._worked
+
+    def getCityIndexPlot(self, i):
+        value = self._worked[i]
+        if value is None or isinstance(value, Plot):
+            return value
+        return Plot(x=value[0], y=value[1])
+
 
 def _cursor(items, index):
     """Emulate the engine's (object, iterator) cursor pair, exhausting to None."""
@@ -325,18 +576,42 @@ class Team(object):
 
 
 class Gc(object):
-    def __init__(self, player):
+    def __init__(self, player, cyMap=None, game=None):
         self._player = player
         # One shared instance so tests can inspect what was asked of it.
         self._team = Team()
+        self._game = game
+        if self._game is None:
+            self._game = Game()
+        self._map = cyMap
+        if self._map is None:
+            self._map = Map()
         self.playerLookups = []
         self.teamLookups = []
 
     def getGame(self):
-        return Game()
+        return self._game
 
     def getMap(self):
-        return Map()
+        return self._map
+
+    def getNUM_CITY_PLOTS(self):
+        return NUM_CITY_PLOTS
+
+    def getTerrainInfo(self, i):
+        return Info(TERRAINS[i])
+
+    def getFeatureInfo(self, i):
+        return Info(FEATURES[i])
+
+    def getBonusInfo(self, i):
+        return Info(BONUSES[i])
+
+    def getImprovementInfo(self, i):
+        return Info(IMPROVEMENTS[i])
+
+    def getRouteInfo(self, i):
+        return Info(ROUTES[i])
 
     def getPlayer(self, i):
         self.playerLookups.append(i)
@@ -373,6 +648,32 @@ class Gc(object):
     def getCivicInfo(self, i):
         return Info(CIVICS[i])
 
+    def getWorldInfo(self, i):
+        return Info(["WORLDSIZE_DUEL", "WORLDSIZE_TINY", "WORLDSIZE_SMALL",
+                     "WORLDSIZE_STANDARD"][i])
+
+    def getClimateInfo(self, i):
+        return Info(["CLIMATE_TEMPERATE", "CLIMATE_TROPICAL", "CLIMATE_ARID",
+                     "CLIMATE_ROCKY"][i])
+
+    def getSeaLevelInfo(self, i):
+        return Info(["SEALEVEL_LOW", "SEALEVEL_MEDIUM", "SEALEVEL_HIGH"][i])
+
+    def getHandicapInfo(self, i):
+        return Info(["HANDICAP_SETTLER", "HANDICAP_NOBLE", "HANDICAP_MONARCH"][i])
+
+    def getNumGameOptionInfos(self):
+        return len(GAME_OPTIONS)
+
+    def getGameOptionInfo(self, i):
+        return Info(GAME_OPTIONS[i])
+
+    def getNumVictoryInfos(self):
+        return len(VICTORIES)
+
+    def getVictoryInfo(self, i):
+        return Info(VICTORIES[i])
+
     def getUnitInfo(self, i):
         return Info(UNITS[i])
 
@@ -386,20 +687,30 @@ class Gc(object):
         return Info(PROCESSES[i])
 
 
-def loadModule(player=None, localConfigPath=None):
+def loadModule(player=None, localConfigPath=None, cyMap=None, game=None):
     """Exec the real mod source with the game API and Python 2 builtins shimmed.
 
     localConfigPath=None leaves LocalConfig unimportable, which is the "not
     configured on this machine" case getStateFilePath has to tolerate.
     """
     player = player or Player()
-    gc = Gc(player)
+    gc = Gc(player, cyMap=cyMap, game=game)
 
     fake = types.ModuleType("CvPythonExtensions")
     fake.CyGlobalContext = lambda: gc
     fake.TechTypes = type("TechTypes", (), {"NO_TECH": NO_TECH})
     fake.CivicTypes = type("CivicTypes", (), {"NO_CIVIC": NO_CIVIC})
     fake.CommerceTypes = type("CommerceTypes", (), {"COMMERCE_RESEARCH": COMMERCE_RESEARCH})
+    fake.FeatureTypes = type("FeatureTypes", (), {"NO_FEATURE": NO_FEATURE})
+    fake.BonusTypes = type("BonusTypes", (), {"NO_BONUS": NO_BONUS})
+    fake.ImprovementTypes = type("ImprovementTypes", (), {"NO_IMPROVEMENT": NO_IMPROVEMENT})
+    fake.RouteTypes = type("RouteTypes", (), {"NO_ROUTE": NO_ROUTE})
+    fake.PlayerTypes = type("PlayerTypes", (), {"NO_PLAYER": NO_PLAYER})
+    fake.YieldTypes = type("YieldTypes", (), {
+        "YIELD_FOOD": YIELD_FOOD,
+        "YIELD_PRODUCTION": YIELD_PRODUCTION,
+        "YIELD_COMMERCE": YIELD_COMMERCE,
+    })
     sys.modules["CvPythonExtensions"] = fake
 
     sys.modules.pop("LocalConfig", None)
@@ -420,6 +731,7 @@ def loadModule(player=None, localConfigPath=None):
     ns["_testGc"] = gc
     ns["_testPlayer"] = player
     ns["_testTeam"] = gc._team
+    ns["_testMap"] = gc._map
     return ns
 
 
@@ -500,9 +812,9 @@ class BuildStateTests(unittest.TestCase):
 
     def test_only_implemented_sections_are_present(self):
         # Unimplemented sections are omitted, never emitted empty - an empty
-        # map object would be indistinguishable from "player has revealed nothing".
+        # contacts array would be indistinguishable from "player has met nobody".
         self.assertEqual(sorted(self.parsed.keys()),
-                         ["cities", "game", "meta", "player", "units"])
+                         ["cities", "game", "map", "meta", "player", "units"])
 
     def test_meta(self):
         self.assertEqual(self.parsed["meta"], {"schemaVersion": 1, "trigger": "onEndGameTurn"})
@@ -520,6 +832,55 @@ class BuildStateTests(unittest.TestCase):
     def test_game_types_are_xml_type_keys(self):
         self.assertEqual(self.parsed["game"]["era"], "ERA_ANCIENT")
         self.assertEqual(self.parsed["game"]["gameSpeed"], "GAMESPEED_NORMAL")
+
+
+class GameSetupTests(unittest.TestCase):
+    """The setup the player chose at game creation - legitimately known, and useful
+    before exploring once joined against the XML (climate implies hills and desert,
+    sea level implies how much water)."""
+
+    def setUp(self):
+        self.mod = loadModule()
+        self.parsed = json.loads(
+            self.mod["toJson"](self.mod["buildState"](5, PLAYER_ID, "onEndGameTurn"), 2))
+
+    def test_map_generation_parameters(self):
+        game = self.parsed["game"]
+        self.assertEqual(game["mapScript"], "Fractal")
+        self.assertEqual(game["worldSize"], "WORLDSIZE_STANDARD")
+        self.assertEqual(game["climate"], "CLIMATE_ROCKY")
+        self.assertEqual(game["seaLevel"], "SEALEVEL_MEDIUM")
+
+    def test_difficulty(self):
+        self.assertEqual(self.parsed["game"]["handicap"], "HANDICAP_NOBLE")
+
+    def test_total_civs_counts_those_ever_alive(self):
+        # countCivPlayersAlive raises on the mock: it shrinks when a civ is
+        # destroyed, which the player would not necessarily know about.
+        self.assertEqual(self.parsed["game"]["totalCivs"], 7)
+
+    def test_only_enabled_options_are_listed(self):
+        self.assertEqual(self.parsed["game"]["options"], ["GAMEOPTION_RAGING_BARBARIANS"])
+
+    def test_no_options_enabled_is_an_empty_list(self):
+        mod = loadModule(game=Game(options=()))
+        parsed = json.loads(mod["toJson"](mod["buildState"](5, PLAYER_ID, "x"), 2))
+        self.assertEqual(parsed["game"]["options"], [])
+
+    def test_only_enabled_victories_are_listed(self):
+        self.assertEqual(self.parsed["game"]["victories"],
+                         ["VICTORY_CONQUEST", "VICTORY_CULTURAL"])
+
+    def test_generated_map_statistics_are_never_read(self):
+        # getLandPlots/getNumBonuses/getNumAreas/getOwnedPlots all sit next to the
+        # safe getters on CyMap and all describe the map as GENERATED, including
+        # everything the player has never seen. The mock raises on each; this test
+        # exists so that stays true. seaLevel/climate are the honest substitutes:
+        # a parameter the player chose, not the answer it produced.
+        cyMap = self.mod["_testMap"]
+        for name in ("getLandPlots", "getOwnedPlots", "getNumAreas", "getNumLandAreas"):
+            self.assertRaises(AssertionError, getattr(cyMap, name))
+        self.assertRaises(AssertionError, cyMap.getNumBonuses, 0)
 
     def test_player_identity_and_economy(self):
         self.assertEqual(self.parsed["player"]["id"], PLAYER_ID)
@@ -583,10 +944,17 @@ class BuildStateTests(unittest.TestCase):
         self.assertEqual(self.mod["_testGc"].playerLookups, [PLAYER_ID])
 
 
-def buildWith(units=None, cities=None):
-    """Export a turn for a player with the given units/cities, parsed back."""
-    mod = loadModule(Player(units=units, cities=cities))
+def buildWith(units=None, cities=None, cyMap=None):
+    """Export a turn for a player with the given units/cities/map, parsed back."""
+    mod = loadModule(Player(units=units, cities=cities), cyMap=cyMap)
     return mod, json.loads(mod["toJson"](mod["buildState"](5, PLAYER_ID, "onEndGameTurn"), 2))
+
+
+def buildTile(**kwargs):
+    """Export a one-plot map and hand back that tile's exported dict."""
+    cyMap = Map(plots=[Plot(x=1, y=2, **kwargs)], width=3, height=3)
+    _, parsed = buildWith(cyMap=cyMap)
+    return parsed["map"]["tiles"][0]
 
 
 class UnitTests(unittest.TestCase):
@@ -634,6 +1002,7 @@ class CityTests(unittest.TestCase):
             "producing": "UNIT_WORKER", "production": 10, "productionNeeded": 60,
             "productionPerTurn": 4, "culture": 12, "cultureThreshold": 100,
             "happy": 4, "unhappy": 1, "healthy": 5, "unhealthy": 2,
+            "workedTiles": [[31, 40], [32, 40], [33, 40]],
         }])
 
     def test_sorted_by_id(self):
@@ -700,6 +1069,241 @@ class CityProductionTests(unittest.TestCase):
         city = self.producing(process=1, productionNeeded=MAX_INT)
         self.assertEqual(city["producing"], "PROCESS_RESEARCH")
         self.assertIsNone(city["productionNeeded"])
+
+
+class WorkedTilesTests(unittest.TestCase):
+    def test_sorted_coordinates_including_the_city_centre(self):
+        _, parsed = buildWith(cities=[City(0, worked={5: (33, 40), 0: (32, 40), 9: (31, 40)})])
+        self.assertEqual(parsed["cities"][0]["workedTiles"],
+                         [[31, 40], [32, 40], [33, 40]])
+
+    def test_unworked_plots_are_skipped(self):
+        _, parsed = buildWith(cities=[City(0, worked={0: (32, 40)})])
+        self.assertEqual(parsed["cities"][0]["workedTiles"], [[32, 40]])
+
+    def test_every_city_plot_index_is_examined(self):
+        # All 21, from gc.getNUM_CITY_PLOTS() rather than a hardcoded 21.
+        worked = {}
+        for i in range(NUM_CITY_PLOTS):
+            worked[i] = (i, 0)
+        _, parsed = buildWith(cities=[City(0, worked=worked)])
+        self.assertEqual(len(parsed["cities"][0]["workedTiles"]), NUM_CITY_PLOTS)
+
+    def test_off_map_city_plots_are_skipped(self):
+        # A city near the poles has city-plot indices that fall off the map;
+        # the engine hands back an invalid plot (or nothing at all) for those.
+        _, parsed = buildWith(cities=[City(0, worked={0: (32, 40), 3: None,
+                                                      7: Plot(none=True)})])
+        self.assertEqual(parsed["cities"][0]["workedTiles"], [[32, 40]])
+
+    def test_no_worked_tiles_is_an_empty_list(self):
+        _, parsed = buildWith(cities=[City(0, worked={})])
+        self.assertEqual(parsed["cities"][0]["workedTiles"], [])
+
+
+class MapScanTests(unittest.TestCase):
+    def test_only_revealed_tiles_are_exported(self):
+        cyMap = Map(plots=[Plot(x=0, y=0, revealed=True),
+                           Plot(x=1, y=0, revealed=False),
+                           Plot(x=2, y=1, revealed=True)],
+                    width=3, height=2)
+        _, parsed = buildWith(cyMap=cyMap)
+        self.assertEqual([(t["x"], t["y"]) for t in parsed["map"]["tiles"]],
+                         [(0, 0), (2, 1)])
+
+    def test_whole_grid_is_scanned_in_row_major_order(self):
+        cyMap = Map(plots=[], width=3, height=2)
+        mod, _ = buildWith(cyMap=cyMap)
+        self.assertEqual(mod["_testMap"].lookups,
+                         [(0, 0), (1, 0), (2, 0), (0, 1), (1, 1), (2, 1)])
+
+    def test_tiles_come_out_row_major(self):
+        # Sorted output is what makes turn-to-turn diffs meaningful; row-major
+        # also matches the engine's own plot indexing and reads like the map.
+        cyMap = Map(plots=[Plot(x=2, y=1), Plot(x=0, y=1), Plot(x=1, y=0)],
+                    width=3, height=2)
+        _, parsed = buildWith(cyMap=cyMap)
+        self.assertEqual([(t["x"], t["y"]) for t in parsed["map"]["tiles"]],
+                         [(1, 0), (0, 1), (2, 1)])
+
+    def test_revealed_check_uses_the_players_team_and_never_debug(self):
+        # bDebug=True would bypass to full map truth whenever the game is in
+        # debug mode - a silent, total fog-of-war failure.
+        plot = Plot(x=0, y=0)
+        buildWith(cyMap=Map(plots=[plot], width=1, height=1))
+        self.assertEqual(plot.revealedArgs, [(TEAM_ID, False)])
+
+    def test_no_revealed_tiles_is_an_empty_list_not_an_omission(self):
+        _, parsed = buildWith(cyMap=Map(plots=[], width=2, height=2))
+        self.assertEqual(parsed["map"], {"tiles": []})
+
+    def test_export_bails_when_another_player_is_active(self):
+        # calculateYield(bDisplay=True) silently reads the ACTIVE team's revealed
+        # state, so exporting for anyone else would hand over the wrong player's
+        # view of the map. There is no API to ask for a specific player's.
+        mod = loadModule(game=Game(activePlayer=PLAYER_ID + 1))
+        self.assertRaises(AssertionError, mod["buildState"], 5, PLAYER_ID, "onEndGameTurn")
+
+
+class TileTests(unittest.TestCase):
+    def test_always_present_fields(self):
+        tile = buildTile(terrain=1, yields=(2, 3, 4))
+        self.assertEqual(tile, {"x": 1, "y": 2, "terrain": "TERRAIN_PLAINS",
+                                "yields": [2, 3, 4]})
+
+    def test_plain_flat_land_omits_plot_type(self):
+        self.assertNotIn("plotType", buildTile())
+
+    def test_peak(self):
+        self.assertEqual(buildTile(peak=True)["plotType"], "PLOT_PEAK")
+
+    def test_hills(self):
+        self.assertEqual(buildTile(hills=True)["plotType"], "PLOT_HILLS")
+
+    def test_water(self):
+        self.assertEqual(buildTile(water=True)["plotType"], "PLOT_OCEAN")
+
+    def test_lake_is_separate_from_plot_type(self):
+        # Lakes and coastal sea are both TERRAIN_COAST and both PLOT_OCEAN;
+        # nothing else in the tile distinguishes them.
+        tile = buildTile(water=True, lake=True)
+        self.assertEqual(tile["plotType"], "PLOT_OCEAN")
+        self.assertIs(tile["lake"], True)
+
+    def test_fresh_water_and_river(self):
+        tile = buildTile(freshWater=True, river=True)
+        self.assertIs(tile["freshWater"], True)
+        self.assertIs(tile["river"], True)
+
+    def test_defaults_are_omitted_not_written_as_false_or_null(self):
+        tile = buildTile()
+        for field in ("plotType", "lake", "freshWater", "river", "feature",
+                      "bonus", "improvement", "route", "owner", "visibleNow"):
+            self.assertNotIn(field, tile)
+
+    def test_feature_and_bonus_are_xml_type_keys(self):
+        tile = buildTile(feature=0, bonus=1)
+        self.assertEqual(tile["feature"], "FEATURE_FOREST")
+        self.assertEqual(tile["bonus"], "BONUS_COPPER")
+
+    def test_bonus_is_read_through_the_team_aware_getter(self):
+        # Team-aware so a resource the player lacks the revealing tech for stays
+        # hidden - but NOT fog-aware, which is right: bonuses persist through fog.
+        plot = Plot(x=1, y=2, bonus=0)
+        buildWith(cyMap=Map(plots=[plot], width=3, height=3))
+        self.assertEqual(plot.bonusArgs, [TEAM_ID])
+
+    def test_improvement_route_and_owner_use_the_revealed_getters(self):
+        # The live getters raise on the mock: they return current truth through
+        # fog, which would hand the player intelligence they don't have.
+        tile = buildTile(improvement=0, route=0, owner=1)
+        self.assertEqual(tile["improvement"], "IMPROVEMENT_FARM")
+        self.assertEqual(tile["route"], "ROUTE_ROAD")
+        self.assertEqual(tile["owner"], 1)
+
+    def test_revealed_getters_ask_for_the_players_team_and_never_debug(self):
+        plot = Plot(x=1, y=2, improvement=0, route=0, owner=1)
+        buildWith(cyMap=Map(plots=[plot], width=3, height=3))
+        self.assertEqual(plot.revealedImprovementArgs, [(TEAM_ID, False)])
+        self.assertEqual(plot.revealedRouteArgs, [(TEAM_ID, False)])
+        self.assertEqual(plot.revealedOwnerArgs, [(TEAM_ID, False)])
+
+    def test_unowned_tile_omits_owner_rather_than_exporting_the_sentinel(self):
+        self.assertNotIn("owner", buildTile(owner=NO_PLAYER))
+
+    def test_player_zero_owner_is_kept_not_treated_as_falsey(self):
+        self.assertEqual(buildTile(owner=0)["owner"], 0)
+
+    def test_goody_hut_arrives_as_a_revealed_improvement(self):
+        self.assertEqual(buildTile(improvement=1)["improvement"], "IMPROVEMENT_GOODY_HUT")
+
+    def test_visible_now_only_present_when_in_sight(self):
+        self.assertIs(buildTile(visible=True)["visibleNow"], True)
+        self.assertNotIn("visibleNow", buildTile(visible=False))
+
+    def test_visibility_check_uses_the_players_team_and_never_debug(self):
+        plot = Plot(x=1, y=2, visible=True)
+        buildWith(cyMap=Map(plots=[plot], width=3, height=3))
+        self.assertEqual(plot.visibleArgs, [(TEAM_ID, False)])
+
+    def test_yields_are_the_displayed_ones_in_food_production_commerce_order(self):
+        # bDisplay=True is what the map's yield icons and the tile mouseover both
+        # pass, and it makes calculateYield use the revealed improvement/route/owner.
+        plot = Plot(x=1, y=2, yields=(3, 2, 1))
+        _, parsed = buildWith(cyMap=Map(plots=[plot], width=3, height=3))
+        self.assertEqual(parsed["map"]["tiles"][0]["yields"], [3, 2, 1])
+        self.assertEqual(plot.yieldArgs,
+                         [(YIELD_FOOD, True), (YIELD_PRODUCTION, True), (YIELD_COMMERCE, True)])
+
+    def test_all_zero_yields_are_still_exported(self):
+        # A plot with no land in its city cross reports [0, 0, 0] whatever it is.
+        # That is what the map shows, so it must survive as a real value.
+        self.assertEqual(buildTile(water=True, yields=(0, 0, 0))["yields"], [0, 0, 0])
+
+
+class TileRenderingTests(unittest.TestCase):
+    def test_each_tile_is_one_line_however_wide(self):
+        # Tiles are a long homogeneous table: the point is to scan down a column
+        # of alike lines. Most real tiles exceed the normal inline width, so
+        # without the _Record marker the section comes out as a ragged mix.
+        cyMap = Map(plots=[Plot(x=0, y=0, terrain=3, visible=True, hills=True,
+                                lake=True, freshWater=True, river=True,
+                                feature=1, bonus=0, improvement=0, route=1,
+                                owner=2, yields=(9, 9, 9))],
+                    width=1, height=1)
+        mod = loadModule(cyMap=cyMap)
+        text = mod["toJson"](mod["buildState"](5, PLAYER_ID, "onEndGameTurn"), 2)
+        tileLines = [ln for ln in text.split("\n") if '"terrain"' in ln]
+        self.assertEqual(len(tileLines), 1)
+        self.assertGreater(len(tileLines[0]), 88)
+        json.loads(text)
+
+    def test_marker_does_not_change_how_other_sections_render(self):
+        # Raising the global inline width instead would have collapsed `research`
+        # and rewritten every existing section.
+        mod = loadModule()
+        text = mod["toJson"](mod["buildState"](5, PLAYER_ID, "onEndGameTurn"), 2)
+        self.assertIn('"research": {\n', text)
+
+    def test_record_without_leading_keys_is_plain_sorted(self):
+        mod = loadModule()
+        record = mod["_Record"]()
+        record["b"], record["a"] = 1, 2
+        self.assertEqual(mod["toJson"](record, 2), '{"a": 2, "b": 1}')
+
+    def test_leading_keys_come_first_then_the_rest_sorted(self):
+        mod = loadModule()
+        record = mod["_Record"](("x", "y"))
+        for key in ("terrain", "y", "bonus", "x"):
+            record[key] = key
+        self.assertEqual(mod["toJson"](record, 2),
+                         '{"x": "x", "y": "y", "bonus": "bonus", "terrain": "terrain"}')
+
+    def test_absent_leading_keys_are_skipped(self):
+        # Normal, not exceptional: tile fields are omitted at their defaults.
+        mod = loadModule()
+        record = mod["_Record"](("x", "missing", "y"))
+        record["y"], record["x"] = 2, 1
+        self.assertEqual(mod["toJson"](record, 2), '{"x": 1, "y": 2}')
+
+    def test_tiles_lead_with_their_coordinates(self):
+        cyMap = Map(plots=[Plot(x=4, y=7, terrain=1, bonus=0, visible=True)],
+                    width=8, height=8)
+        mod = loadModule(cyMap=cyMap)
+        text = mod["toJson"](mod["buildState"](5, PLAYER_ID, "onEndGameTurn"), 2)
+        tileLine = [ln for ln in text.split("\n") if '"terrain"' in ln][0]
+        self.assertTrue(tileLine.strip().startswith('{"x": 4, "y": 7, '), tileLine)
+
+    def test_key_order_is_still_deterministic(self):
+        # Diffability needs a FIXED key order, not an alphabetical one - the point
+        # of sorting in the first place, given Python 2.4 dicts have no insertion order.
+        mod = loadModule()
+        one, two = mod["_Record"](("x", "y")), mod["_Record"](("x", "y"))
+        for key in ("terrain", "x", "river", "y"):
+            one[key] = 1
+        for key in ("y", "river", "x", "terrain"):
+            two[key] = 1
+        self.assertEqual(mod["toJson"](one, 2), mod["toJson"](two, 2))
 
 
 class NoResearchSelectedTests(unittest.TestCase):
@@ -770,6 +1374,23 @@ class SchemaConformanceTests(unittest.TestCase):
 
     def test_cities_section(self):
         self.assertSectionValid("cities")
+
+    def test_map_section(self):
+        self.assertSectionValid("map")
+
+    def test_fully_populated_tile_validates(self):
+        # The default fixture leans on omitted defaults; make sure a tile that
+        # actually carries every optional field satisfies the schema too.
+        cyMap = Map(plots=[Plot(x=0, y=0, terrain=3, visible=True, hills=True,
+                                lake=True, freshWater=True, river=True,
+                                feature=1, bonus=0, improvement=0, route=1,
+                                owner=2, yields=(3, 2, 1))],
+                    width=1, height=1)
+        mod = loadModule(cyMap=cyMap)
+        parsed = json.loads(mod["toJson"](mod["buildState"](5, PLAYER_ID, "x"), 2))
+        sub = dict(self.schema["properties"]["map"])
+        sub["$schema"] = "https://json-schema.org/draft/2020-12/schema"
+        jsonschema.Draft202012Validator(sub).validate(parsed["map"])
 
     def test_process_city_section_still_validates(self):
         # The null productionNeeded branch has to satisfy the schema too.

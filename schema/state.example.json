@@ -5,6 +5,14 @@
         "year": -3800,
         "era": "ERA_ANCIENT",
         "gameSpeed": "GAMESPEED_NORMAL",
+        "mapScript": "Fractal",
+        "worldSize": "WORLDSIZE_STANDARD",
+        "climate": "CLIMATE_TEMPERATE",
+        "seaLevel": "SEALEVEL_MEDIUM",
+        "handicap": "HANDICAP_NOBLE",
+        "totalCivs": 7,
+        "options": ["GAMEOPTION_RAGING_BARBARIANS"],
+        "victories": ["VICTORY_CONQUEST", "VICTORY_DOMINATION", "VICTORY_CULTURAL", "VICTORY_SPACE_RACE"],
         "mapWidth": 84,
         "mapHeight": 52,
         "wrapX": true,
@@ -58,21 +66,23 @@
             "happy": 4,
             "unhappy": 1,
             "healthy": 5,
-            "unhealthy": 2
+            "unhealthy": 2,
+            "workedTiles": [[31, 40], [32, 40], [33, 40]]
         }
     ],
     "map": {
         "tiles": [
-            {"x": 32, "y": 40, "terrain": "TERRAIN_GRASS", "hills": false, "peak": false, "feature": null, "bonus": null, "river": true, "improvement": null, "owner": 0, "visibleNow": true, "yields": [2, 1, 2]},
-            {"x": 33, "y": 40, "terrain": "TERRAIN_GRASS", "hills": false, "peak": false, "feature": null, "bonus": "BONUS_CORN", "river": true, "improvement": null, "owner": 0, "visibleNow": true, "yields": [3, 0, 1]},
-            {"x": 31, "y": 40, "terrain": "TERRAIN_GRASS", "hills": true, "peak": false, "feature": null, "bonus": null, "river": false, "improvement": null, "owner": 0, "visibleNow": true, "yields": [1, 2, 0]},
-            {"x": 32, "y": 41, "terrain": "TERRAIN_GRASS", "hills": false, "peak": false, "feature": "FEATURE_FOREST", "bonus": null, "river": false, "improvement": null, "owner": 0, "visibleNow": true, "yields": [2, 1, 0]},
-            {"x": 31, "y": 39, "terrain": "TERRAIN_PLAINS", "hills": false, "peak": false, "feature": null, "bonus": null, "river": true, "improvement": null, "owner": 0, "visibleNow": true, "yields": [1, 1, 1]},
-            {"x": 30, "y": 39, "terrain": "TERRAIN_DESERT", "hills": false, "peak": true, "feature": null, "bonus": null, "river": false, "improvement": null, "owner": null, "visibleNow": true, "yields": [0, 0, 0]},
-            {"x": 33, "y": 41, "terrain": "TERRAIN_COAST", "hills": false, "peak": false, "feature": null, "bonus": null, "river": false, "improvement": null, "owner": 0, "visibleNow": true, "yields": [1, 0, 2]},
-            {"x": 36, "y": 44, "terrain": "TERRAIN_PLAINS", "hills": true, "peak": false, "feature": null, "bonus": null, "river": false, "improvement": null, "owner": null, "visibleNow": true, "yields": [1, 2, 0]},
-            {"x": 37, "y": 45, "terrain": "TERRAIN_DESERT", "hills": false, "peak": false, "feature": "FEATURE_FLOOD_PLAINS", "bonus": null, "river": true, "improvement": null, "owner": null, "visibleNow": false, "yields": [3, 0, 1]},
-            {"x": 38, "y": 46, "terrain": "TERRAIN_GRASS", "hills": false, "peak": false, "feature": null, "bonus": null, "river": false, "improvement": null, "owner": 1, "visibleNow": false, "yields": [2, 0, 0]}
+            {"x": 30, "y": 39, "plotType": "PLOT_PEAK", "terrain": "TERRAIN_DESERT", "visibleNow": true, "yields": [0, 0, 0]},
+            {"x": 31, "y": 39, "freshWater": true, "owner": 0, "river": true, "terrain": "TERRAIN_PLAINS", "visibleNow": true, "yields": [1, 1, 1]},
+            {"x": 31, "y": 40, "owner": 0, "plotType": "PLOT_HILLS", "terrain": "TERRAIN_GRASS", "visibleNow": true, "yields": [1, 2, 0]},
+            {"x": 32, "y": 40, "freshWater": true, "owner": 0, "river": true, "terrain": "TERRAIN_GRASS", "visibleNow": true, "yields": [2, 1, 2]},
+            {"x": 33, "y": 40, "bonus": "BONUS_CORN", "freshWater": true, "improvement": "IMPROVEMENT_FARM", "owner": 0, "river": true, "route": "ROUTE_ROAD", "terrain": "TERRAIN_GRASS", "visibleNow": true, "yields": [5, 0, 1]},
+            {"x": 32, "y": 41, "feature": "FEATURE_FOREST", "owner": 0, "terrain": "TERRAIN_GRASS", "visibleNow": true, "yields": [2, 1, 0]},
+            {"x": 33, "y": 41, "owner": 0, "plotType": "PLOT_OCEAN", "terrain": "TERRAIN_COAST", "visibleNow": true, "yields": [1, 0, 2]},
+            {"x": 34, "y": 42, "lake": true, "plotType": "PLOT_OCEAN", "terrain": "TERRAIN_COAST", "yields": [2, 0, 2]},
+            {"x": 36, "y": 44, "improvement": "IMPROVEMENT_GOODY_HUT", "plotType": "PLOT_HILLS", "terrain": "TERRAIN_PLAINS", "visibleNow": true, "yields": [1, 2, 0]},
+            {"x": 37, "y": 45, "feature": "FEATURE_FLOOD_PLAINS", "freshWater": true, "river": true, "terrain": "TERRAIN_DESERT", "yields": [3, 0, 1]},
+            {"x": 38, "y": 46, "owner": 1, "terrain": "TERRAIN_GRASS", "yields": [2, 0, 0]}
         ]
     },
     "contacts": [

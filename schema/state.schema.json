@@ -22,7 +22,7 @@
         },
         "game": {
             "type": "object",
-            "description": "Game-level context, mostly static after game creation.",
+            "description": "Game-level context, mostly static after game creation. The setup fields (mapScript, worldSize, climate, seaLevel, handicap, totalCivs, options, victories) are the settings chosen on the game-setup screen, which the player legitimately knows and which join against the XML rules data to give an expectation about a map that has not been explored yet. They are deliberately the setup PARAMETERS and never statistics of the map as generated - nothing here counts land tiles, resources or continents, all of which the engine would happily report and none of which a player can know without exploring.",
             "properties": {
                 "gameTurn": {
                     "type": "integer",
@@ -42,12 +42,53 @@
                     "type": "string",
                     "pattern": "^GAMESPEED_[A-Z0-9_]+$"
                 },
+                "mapScript": {
+                    "type": "string",
+                    "description": "Name of the map script that generated the map, e.g. 'Fractal' or 'Continents'. A script filename, NOT an XML Type key - along with map.tiles' plotType, one of only two enum-like values in this schema with nothing to join against."
+                },
+                "worldSize": {
+                    "type": "string",
+                    "pattern": "^WORLDSIZE_[A-Z0-9_]+$",
+                    "description": "Joins CIV4WorldInfo.xml, which also carries the size-scaled tunables (city maintenance, tech cost modifiers, target civ count)."
+                },
+                "climate": {
+                    "type": "string",
+                    "pattern": "^CLIMATE_[A-Z0-9_]+$",
+                    "description": "Joins CIV4ClimateInfo.xml, which is what makes this strategically useful before exploring: CLIMATE_ROCKY carries iPeakPercent 35 and iHillRange 7 against 25/5 for temperate, CLIMATE_ARID adds 20 to iDesertPercentChange."
+                },
+                "seaLevel": {
+                    "type": "string",
+                    "pattern": "^SEALEVEL_[A-Z0-9_]+$",
+                    "description": "Joins CIV4SeaLevelInfo.xml (iSeaLevelChange: -8 for LOW, +6 for HIGH), i.e. how much of the map to expect to be water."
+                },
+                "handicap": {
+                    "type": "string",
+                    "pattern": "^HANDICAP_[A-Z0-9_]+$",
+                    "description": "Difficulty, as chosen at setup (CyGame.getHandicapType). Joins CIV4HandicapInfo.xml for the AI bonuses and player cost modifiers it implies. Note per-player handicaps can differ in multiplayer; this is the game-level setting."
+                },
+                "totalCivs": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "How many civs the game started with, i.e. how crowded the map is. CyGame.countCivPlayersEverAlive, deliberately not countCivPlayersAlive: 'ever alive' is constant for the game, so it cannot reveal that a civ has been destroyed before the player would know. Excludes barbarians and colonial vassals."
+                },
+                "options": {
+                    "type": "array",
+                    "description": "Game options switched ON, in XML order; often empty. Small field, outsized effect on early-game advice: GAMEOPTION_RAGING_BARBARIANS and GAMEOPTION_NO_BARBARIANS change turn 1-20 play more than almost anything else here, and GAMEOPTION_AGGRESSIVE_AI changes how risky thin defence is.",
+                    "items": {"type": "string", "pattern": "^GAMEOPTION_[A-Z0-9_]+$"},
+                    "uniqueItems": true
+                },
+                "victories": {
+                    "type": "array",
+                    "description": "Victory conditions enabled for this game, in XML order.",
+                    "items": {"type": "string", "pattern": "^VICTORY_[A-Z0-9_]+$"},
+                    "uniqueItems": true
+                },
                 "mapWidth": {"type": "integer", "minimum": 1},
                 "mapHeight": {"type": "integer", "minimum": 1},
                 "wrapX": {"type": "boolean"},
                 "wrapY": {"type": "boolean"}
             },
-            "required": ["gameTurn", "year", "era", "gameSpeed", "mapWidth", "mapHeight", "wrapX", "wrapY"],
+            "required": ["gameTurn", "year", "era", "gameSpeed", "mapScript", "worldSize", "climate", "seaLevel", "handicap", "totalCivs", "options", "victories", "mapWidth", "mapHeight", "wrapX", "wrapY"],
             "additionalProperties": false
         },
         "player": {
@@ -179,15 +220,28 @@
                     "happy": {"type": "integer", "minimum": 0},
                     "unhappy": {"type": "integer", "minimum": 0},
                     "healthy": {"type": "integer", "minimum": 0},
-                    "unhealthy": {"type": "integer", "minimum": 0}
+                    "unhealthy": {"type": "integer", "minimum": 0},
+                    "workedTiles": {
+                        "type": "array",
+                        "description": "[x, y] of every tile this city has a citizen working, including the city centre (which is worked for free and does produce yield). Sorted. Lives here rather than on map tiles because we only ever iterate our own cities, so no rival's worked tiles can leak - CyPlot.isBeingWorked() is live truth with no visibility check, and the engine's fog-aware wrapper is not exposed to Python. The tiles a city COULD work are not listed: that is the 5x5 square around it minus the four corners (NUM_CITY_PLOTS is 21), so the harness can derive it. Specialists are the citizens left over: population + 1 - len(workedTiles).",
+                        "items": {
+                            "type": "array",
+                            "prefixItems": [
+                                {"type": "integer", "minimum": 0},
+                                {"type": "integer", "minimum": 0}
+                            ],
+                            "items": false,
+                            "minItems": 2
+                        }
+                    }
                 },
-                "required": ["id", "name", "x", "y", "population", "food", "foodPerTurn", "growthThreshold", "producing", "production", "productionNeeded", "productionPerTurn", "culture", "cultureThreshold", "happy", "unhappy", "healthy", "unhealthy"],
+                "required": ["id", "name", "x", "y", "population", "food", "foodPerTurn", "growthThreshold", "producing", "production", "productionNeeded", "productionPerTurn", "culture", "cultureThreshold", "happy", "unhappy", "healthy", "unhealthy", "workedTiles"],
                 "additionalProperties": false
             }
         },
         "map": {
             "type": "object",
-            "description": "Every tile the player has ever revealed. Full snapshot each turn, no diffs. Tiles with visibleNow false show remembered (possibly stale) info - exactly what the player's own map shows.",
+            "description": "Every tile the player's team has ever revealed, in row-major (y, then x) order. Full snapshot each turn, no diffs. Tiles without visibleNow are revealed but fogged - remembered, possibly stale info, exactly what the player's own map shows. FIELD OMISSION IS MEANINGFUL HERE: only x, y, terrain and yields are always written; every other field is omitted when it equals the `default` recorded below. This is a different sense of omission from a missing top-level SECTION, which means the mod does not build it yet. STALENESS: on a fogged tile, improvement, route and owner are what the player last saw and may be out of date, because those three are the only things the engine remembers per team. Terrain, feature, bonus, river and the rest have no remembered variant and are always current - which is also what the game's own tile mouseover shows, so this matches the UI rather than being more or less informed than it.",
             "properties": {
                 "tiles": {
                     "type": "array",
@@ -197,30 +251,60 @@
                             "x": {"type": "integer", "minimum": 0},
                             "y": {"type": "integer", "minimum": 0},
                             "terrain": {"type": "string", "pattern": "^TERRAIN_[A-Z0-9_]+$"},
-                            "hills": {"type": "boolean"},
-                            "peak": {"type": "boolean", "description": "Impassable mountain."},
+                            "plotType": {
+                                "type": "string",
+                                "enum": ["PLOT_PEAK", "PLOT_HILLS", "PLOT_OCEAN"],
+                                "default": "PLOT_LAND",
+                                "description": "Peak / hills / water / flat land are ONE engine enum (CvPlot::m_ePlotType), not independent flags, so this is one field and the four values are mutually exclusive by construction. Omitted for PLOT_LAND, plain flat land. Names are the game's own, from the PlotTypes enum in CvEnums.h - but this is the schema's single exception to 'every enum-like value is an XML Type key': plot type has no XML info object, so there is nothing to join against and the harness must know these four names. PLOT_PEAK is an impassable mountain; PLOT_OCEAN is any water tile, coast or ocean or lake."
+                            },
+                            "lake": {
+                                "type": "boolean",
+                                "default": false,
+                                "description": "This water tile is a lake rather than sea. Not derivable from terrain - lakes and coastal sea are both TERRAIN_COAST; it is a property of the plot's area. Lakes give fresh water and health, and cannot be sailed out of."
+                            },
+                            "freshWater": {
+                                "type": "boolean",
+                                "default": false,
+                                "description": "Land tile with fresh water: on a river, or adjacent to a lake, or adjacent to a feature that adds fresh water (flood plains, oasis). Enables farms before Civil Service and gives a city founded here extra health. Not derivable from any other field, since the adjacency terms depend on neighbours."
+                            },
+                            "river": {
+                                "type": "boolean",
+                                "default": false,
+                                "description": "The tile is on a river - it has a river along at least one of its own edges (CyPlot.isRiver, i.e. getRiverCrossingCount() > 0). Which edge is deliberately not exported: it only affects exact movement cost and the river-attack modifier, both of which belong to the action-execution phase, and the edge data would in any case be incomplete at the boundary of the revealed area."
+                            },
                             "feature": {
                                 "type": ["string", "null"],
-                                "pattern": "^FEATURE_[A-Z0-9_]+$"
+                                "pattern": "^FEATURE_[A-Z0-9_]+$",
+                                "default": null
                             },
                             "bonus": {
                                 "type": ["string", "null"],
                                 "pattern": "^BONUS_[A-Z0-9_]+$",
-                                "description": "Resource, read via the team-aware getter: null both when absent and when the player lacks the revealing tech."
+                                "default": null,
+                                "description": "Resource, read via the team-aware getter: absent both when there is none and when the player lacks the revealing tech. Team-aware but not fog-aware, which is correct - a resource stays visible through fog once revealed."
                             },
-                            "river": {"type": "boolean", "description": "Tile is adjacent to a river."},
                             "improvement": {
                                 "type": ["string", "null"],
-                                "pattern": "^IMPROVEMENT_[A-Z0-9_]+$"
+                                "pattern": "^IMPROVEMENT_[A-Z0-9_]+$",
+                                "default": null,
+                                "description": "What the player REMEMBERS being here (getRevealedImprovementType), not what is there now. Goody huts arrive through this field: the engine's own isRevealedGoody() is just improvementInfo(revealed improvement).isGoody()."
+                            },
+                            "route": {
+                                "type": ["string", "null"],
+                                "pattern": "^ROUTE_[A-Z0-9_]+$",
+                                "default": null,
+                                "description": "Road or railroad the player remembers (getRevealedRouteType)."
                             },
                             "owner": {
                                 "type": ["integer", "null"],
                                 "minimum": 0,
-                                "description": "Owning player ID; null when unowned."
+                                "default": null,
+                                "description": "Owning player ID as the player remembers it (getRevealedOwner); absent when unowned or never seen owned. This is what draws the player's borders."
                             },
                             "visibleNow": {
                                 "type": "boolean",
-                                "description": "True = currently in sight; false = revealed but fogged, info may be stale."
+                                "default": false,
+                                "description": "Present and true only while the tile is actually in sight of a unit or city. Absent means revealed but fogged, so the remembered fields above may be stale. Most revealed tiles are fogged, so the rare case is the one written."
                             },
                             "yields": {
                                 "type": "array",
@@ -231,10 +315,10 @@
                                 ],
                                 "items": false,
                                 "minItems": 3,
-                                "description": "Game-computed [food, production, commerce] as-is (including current feature/improvement effects)."
+                                "description": "[food, production, commerce] exactly as the game displays them - calculateYield(bDisplay=True), which is what both the map's yield icons and the tile mouseover pass, and which uses the revealed improvement/route/owner internally. Two inherited surprises: a plot with no land anywhere in its 21-tile city cross reports [0, 0, 0] whatever it is (deep ocean therefore looks barren, which is what the map shows); and on an unowned tile the engine substitutes the active player as owner, so trait effects like Financial's extra commerce are applied to land nobody owns (again, what the map shows)."
                             }
                         },
-                        "required": ["x", "y", "terrain", "hills", "peak", "feature", "bonus", "river", "improvement", "owner", "visibleNow", "yields"],
+                        "required": ["x", "y", "terrain", "yields"],
                         "additionalProperties": false
                     }
                 }

@@ -12,3 +12,10 @@ STATE_FILE_PATH = r'C:\path\to\civ4-advisor\state\current_turn.json'
 ## verified - see CLAUDE.md). Omit it and the mod still works; you just have to
 ## restart the game to pick up edits.
 MOD_PYTHON_DIR = r'C:\path\to\civ4-advisor\mod\Assets\Python'
+
+## Log how long each export took to Logs\PythonDbg.log (which itself needs
+## LoggingEnabled=1 in CivilizationIV.ini - see mod/README.md). Off by default; the
+## export runs on the game's critical path and its cost grows with how much map the
+## player has revealed, so this is worth turning on periodically rather than once.
+## A slow map scan is warned about regardless of this setting.
+LOG_TIMINGS = False
