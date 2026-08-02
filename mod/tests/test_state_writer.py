@@ -106,10 +106,20 @@ class Info(object):
 
 
 class Game(object):
-    def __init__(self, activePlayer=PLAYER_ID, options=(1,), victories=(0, 2)):
+    def __init__(self, activePlayer=PLAYER_ID, options=(1,), victories=(0, 2),
+                 scriptData=""):
         self._activePlayer = activePlayer
         self._options = options
         self._victories = victories
+        self._scriptData = scriptData
+        self.scriptDataSets = []
+
+    def getScriptData(self):
+        return self._scriptData
+
+    def setScriptData(self, value):
+        self.scriptDataSets.append(value)
+        self._scriptData = value
 
     def getTurnYear(self, n):
         return -4000 + n * 40
@@ -946,12 +956,12 @@ class Gc(object):
         return Info(PROCESSES[i])
 
 
-def loadModule(player=None, localConfigPath=None, cyMap=None, game=None,
+def loadModule(player=None, stateDir=None, cyMap=None, game=None,
                rivals=None, team=None):
     """Exec the real mod source with the game API and Python 2 builtins shimmed.
 
-    localConfigPath=None leaves LocalConfig unimportable, which is the "not
-    configured on this machine" case getStateFilePath has to tolerate.
+    stateDir=None leaves LocalConfig unimportable, which is the "not configured
+    on this machine" case getStateRootDir has to tolerate.
     """
     player = player or Player()
     gc = Gc(player, cyMap=cyMap, game=game, rivals=rivals, team=team)
@@ -974,9 +984,9 @@ def loadModule(player=None, localConfigPath=None, cyMap=None, game=None,
     sys.modules["CvPythonExtensions"] = fake
 
     sys.modules.pop("LocalConfig", None)
-    if localConfigPath is not None:
+    if stateDir is not None:
         localConfig = types.ModuleType("LocalConfig")
-        localConfig.STATE_FILE_PATH = localConfigPath
+        localConfig.STATE_DIR = stateDir
         sys.modules["LocalConfig"] = localConfig
 
     ns = {
@@ -2059,11 +2069,55 @@ class WriteStateFileTests(unittest.TestCase):
 
 class StateFilePathTests(unittest.TestCase):
     def test_returns_none_when_local_config_is_absent(self):
-        self.assertIsNone(loadModule()["getStateFilePath"]())
+        self.assertIsNone(loadModule()["getStateRootDir"]())
+        self.assertIsNone(loadModule()["getTurnFilePath"](5, PLAYER_ID))
 
-    def test_returns_configured_path(self):
-        mod = loadModule(localConfigPath=r"C:\somewhere\current_turn.json")
-        self.assertEqual(mod["getStateFilePath"](), r"C:\somewhere\current_turn.json")
+    def test_returns_configured_root_dir(self):
+        mod = loadModule(stateDir=r"C:\somewhere")
+        self.assertEqual(mod["getStateRootDir"](), r"C:\somewhere")
+
+    def test_turn_file_path_is_leader_and_game_id_folder_plus_turn_file(self):
+        # LEADER_HATSHEPSUT is Player()'s default; a pre-existing scriptData
+        # value stands in for an ID a prior export already wrote.
+        mod = loadModule(stateDir=r"C:\somewhere", game=Game(scriptData="12345"))
+        self.assertEqual(mod["getTurnFilePath"](5, PLAYER_ID),
+                         os.path.join(r"C:\somewhere", "LEADER_HATSHEPSUT_12345", "turn_0005.json"))
+
+    def test_same_game_resolves_to_the_same_folder_across_turns(self):
+        # The whole point of persisting an ID: reloading the same game later
+        # must land in the folder its earlier turns are already in.
+        game = Game(scriptData="777")
+        mod = loadModule(stateDir=r"C:\somewhere", game=game)
+        turn1 = mod["getTurnFilePath"](1, PLAYER_ID)
+        turn2 = mod["getTurnFilePath"](2, PLAYER_ID)
+        self.assertEqual(os.path.dirname(turn1), os.path.dirname(turn2))
+
+    def test_different_game_id_gets_a_different_folder(self):
+        mod = loadModule(stateDir=r"C:\somewhere", game=Game(scriptData="1"))
+        other = loadModule(stateDir=r"C:\somewhere", game=Game(scriptData="2"))
+        self.assertNotEqual(mod["getTurnFilePath"](1, PLAYER_ID),
+                            other["getTurnFilePath"](1, PLAYER_ID))
+
+    def test_generates_and_persists_an_id_when_scriptdata_is_empty(self):
+        # A brand-new game has never had its scriptData set; the first export
+        # must generate an ID AND write it back via setScriptData, so every
+        # later export (and every later load of the save) sees the same one.
+        game = Game(scriptData="")
+        mod = loadModule(stateDir=r"C:\somewhere", game=game)
+        path = mod["getTurnFilePath"](1, PLAYER_ID)
+        self.assertEqual(len(game.scriptDataSets), 1)
+        generatedId = game.scriptDataSets[0]
+        self.assertTrue(generatedId)
+        self.assertEqual(path, os.path.join(r"C:\somewhere",
+                         "LEADER_HATSHEPSUT_%s" % generatedId, "turn_0001.json"))
+
+    def test_does_not_regenerate_an_id_once_one_exists(self):
+        game = Game(scriptData="existing-id")
+        mod = loadModule(stateDir=r"C:\somewhere", game=game)
+        mod["getTurnFilePath"](1, PLAYER_ID)
+        mod["getTurnFilePath"](2, PLAYER_ID)
+        self.assertEqual(game.scriptDataSets, [])
+        self.assertEqual(game.getScriptData(), "existing-id")
 
 
 if __name__ == "__main__":

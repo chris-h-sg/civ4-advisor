@@ -1,7 +1,7 @@
 {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "title": "civ4-advisor per-turn state",
-    "description": "Specification for the JSON state file the mod writes each turn (state/current_turn.json) and for curated captures in samples/. The mod's Python 2.4 cannot validate against this; it exists as the contract reference and for harness-side validation later. All enum-like values are the game XML's Type keys (e.g. TERRAIN_GRASS, UNIT_SCOUT), so state joins directly against XML-derived rules data. Everything in this file is restricted to what the human player could legitimately see - never unrevealed map, other civs' internals, or anything else fog-of-war hides.",
+    "description": "Specification for the JSON state file the mod writes each turn (one file per turn under a per-game folder in state/, e.g. state/LEADER_HATSHEPSUT_1738531200000/turn_0005.json) and for curated captures in samples/. The mod's Python 2.4 cannot validate against this; it exists as the contract reference and for harness-side validation later. All enum-like values are the game XML's Type keys (e.g. TERRAIN_GRASS, UNIT_SCOUT), so state joins directly against XML-derived rules data. Everything in this file is restricted to what the human player could legitimately see - never unrevealed map, other civs' internals, or anything else fog-of-war hides.",
     "type": "object",
     "properties": {
         "meta": {

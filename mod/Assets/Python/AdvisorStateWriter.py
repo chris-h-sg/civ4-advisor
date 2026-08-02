@@ -58,9 +58,59 @@ def _localConfig(name, default):
 	return getattr(LocalConfig, name, default)
 
 
-def getStateFilePath():
-	'Absolute path to write state to, or None when this machine has no LocalConfig.'
-	return _localConfig('STATE_FILE_PATH', None)
+def getStateRootDir():
+	'''Absolute path to write per-game state folders under, or None when this
+	machine has no LocalConfig.'''
+	return _localConfig('STATE_DIR', None)
+
+
+def _gameFolderName(ctx):
+	'''Folder name identifying one played game: leader + a synthetic game ID.
+
+	The engine exposes no persistent per-game ID to Python, and there is no way
+	to even READ one for free. Confirmed against the BTS SDK source: CyGame has
+	no getMapRandSeed, and the CyRandom object CyGame.getMapRand() returns binds
+	only get() (consumes the RNG stream - a mutation disguised as a query) and
+	init() (SETS the seed rather than reading it). So _gameId() WRITES an ID
+	instead, into CvGame.scriptData - a free-form string field the engine
+	already serializes with the save (CvGame::read/write calls
+	ReadString/WriteString on it), the standard modding mechanism for
+	"remember something across turns and saves". See CLAUDE.md "Design
+	decisions" for the full reasoning and the read-only alternative rejected in
+	favor of this.'''
+	leader = ctx.gc.getLeaderHeadInfo(ctx.player.getLeaderType()).getType()
+	gameId = _gameId(ctx)
+	return '%s_%s' % (leader, gameId)
+
+
+def _gameId(ctx):
+	'''CvGame.scriptData, generating and persisting one the first time it's empty.
+
+	Once written, every later load of this save - including a full game
+	restart - returns the same value, which is what makes the folder
+	assignment stable for the life of the game rather than just the session.'''
+	gameId = ctx.game.getScriptData()
+	if not gameId:
+		gameId = '%d' % int(time.time() * 1000)
+		ctx.game.setScriptData(gameId)
+	return gameId
+
+
+def getTurnFilePath(gameTurn, playerId):
+	'''Absolute path for one turn's export, or None when this machine has no
+	LocalConfig.
+
+	One file per turn, inside a per-game folder, so a full game's history is kept
+	rather than overwritten every turn. Building a fresh _Context here (rather
+	than reusing buildState's) is deliberate: the folder name only needs the
+	leader and game ID, neither of which is fog-sensitive, so it is fine to
+	resolve independently of _requireActivePlayer's guard.'''
+	rootDir = getStateRootDir()
+	if rootDir is None:
+		return None
+	ctx = _Context(playerId)
+	folder = _gameFolderName(ctx)
+	return os.path.join(rootDir, folder, 'turn_%04d.json' % gameTurn)
 
 
 def _isTimingEnabled():
@@ -923,7 +973,7 @@ def _joinItems(items, opener, closer, indent, level):
 def writeStateFile(path, state):
 	'''Write state (a dict) to path as JSON via a temp file, then rename over the target.
 
-	No-ops when path is None, which is what getStateFilePath() returns if LocalConfig
+	No-ops when path is None, which is what getTurnFilePath() returns if LocalConfig
 	is missing - a machine without it should not crash, just not export.
 
 	On the "atomic" claim: os.rename() fails on Windows when the target exists, and

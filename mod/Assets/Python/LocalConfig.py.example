@@ -3,7 +3,13 @@
 ## Python 2.4 has no config-file parsing conveniences worth building, so this is
 ## just a plain Python module the mod imports directly.
 
-STATE_FILE_PATH = r'C:\path\to\civ4-advisor\state\current_turn.json'
+## Root directory state is written under. Each game gets its own subfolder
+## (named from the leader and a synthetic game ID persisted in CvGame.scriptData,
+## since the engine exposes no readable game ID - see
+## AdvisorStateWriter._gameFolderName), containing one file per turn
+## (turn_0001.json, turn_0002.json, ...) rather than a single file overwritten
+## every turn.
+STATE_DIR = r'C:\path\to\civ4-advisor\state'
 
 ## Absolute path to this folder (the repo's mod\Assets\Python). Dev convenience
 ## only - lets the mod re-read AdvisorStateWriter.py from disk on each export, so

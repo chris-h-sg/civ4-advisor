@@ -134,8 +134,9 @@ class CvCustomEventManager(CvEventManager.CvEventManager):
 			# on why this isn't just reload().
 			how = _refreshStateWriter()
 			CvUtil.pyPrint('civ4-advisor: refreshed state writer via %s' % how)
+			path = AdvisorStateWriter.getTurnFilePath(gameTurn, playerId)
 			state = AdvisorStateWriter.buildState(gameTurn, playerId, trigger)
-			AdvisorStateWriter.writeStateFile(AdvisorStateWriter.getStateFilePath(), state)
+			AdvisorStateWriter.writeStateFile(path, state)
 		except:
 			# Swallowed so a failed export can never block a turn - but logged, because
 			# a silent failure is otherwise indistinguishable from the mod not running
