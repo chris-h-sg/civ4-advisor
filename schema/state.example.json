@@ -43,9 +43,9 @@
         }
     },
     "units": [
-        {"id": 0, "type": "UNIT_SCOUT", "x": 36, "y": 43, "moves": 2, "damage": 0},
-        {"id": 1, "type": "UNIT_WARRIOR", "x": 32, "y": 40, "moves": 1, "damage": 0},
-        {"id": 2, "type": "UNIT_WORKER", "x": 33, "y": 40, "moves": 1, "damage": 0}
+        {"id": 0, "type": "UNIT_SCOUT", "x": 36, "y": 43, "moves": 2, "damage": 20},
+        {"id": 1, "type": "UNIT_WARRIOR", "x": 32, "y": 40, "moves": 1},
+        {"id": 2, "type": "UNIT_WORKER", "x": 33, "y": 40, "moves": 1}
     ],
     "cities": [
         {
@@ -89,7 +89,10 @@
         {"playerId": 1, "leader": "LEADER_GANDHI", "civilization": "CIVILIZATION_INDIA", "attitude": "ATTITUDE_CAUTIOUS", "atWar": false}
     ],
     "foreignUnits": [
-        {"owner": 1, "type": "UNIT_WARRIOR", "x": 36, "y": 44}
+        {"owner": 1, "type": "UNIT_WARRIOR", "x": 36, "y": 44},
+        {"owner": 18, "type": "UNIT_PANTHER", "x": 37, "y": 45, "damage": 40}
     ],
-    "foreignCities": []
+    "foreignCities": [
+        {"owner": 1, "name": "Delhi", "x": 38, "y": 46, "population": 3, "capital": true}
+    ]
 }

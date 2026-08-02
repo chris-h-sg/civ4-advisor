@@ -98,20 +98,43 @@ class _Context(object):
 		self.team = self.gc.getTeam(self.teamId)
 
 
+def _requireActivePlayer(ctx):
+	'''Refuse to export for anyone but the player the game considers active.
+
+	Two getters this module needs silently answer for the ACTIVE team rather than
+	for any team we can pass, with no API to ask about a specific player:
+	CyPlot.calculateYield(bDisplay=True), and CyUnit.getVisualOwner(), which takes
+	no team argument at all. Exporting for anyone else would quietly produce
+	someone else's view of the map. The assumption holds in single player but
+	nothing enforces it, so fail loudly; _exportState logs the traceback and
+	writes no file.
+
+	Checked here rather than in each affected builder: it is a property of the
+	whole export, and a guard living in one section is one the next section
+	silently does without - which is what nearly happened when the second
+	active-team dependency arrived.'''
+	activePlayerId = ctx.game.getActivePlayer()
+	if ctx.playerId != activePlayerId:
+		raise AssertionError(
+			'refusing to export for player %d while player %d is active: tile yields'
+			' and unit ownership would be the active player\'s, not this one\'s'
+			% (ctx.playerId, activePlayerId))
+
+
 def buildState(gameTurn, playerId, trigger):
 	'''Build the state dict described by schema/state.schema.json.
 
-	Only meta/game/player/units/cities/map are implemented so far (build order is
-	recorded in CLAUDE.md). The not-yet-implemented sections are deliberately
-	OMITTED rather than written as empty lists: an empty `contacts` array would be
-	indistinguishable from a player who has met nobody. Consequence: output does
-	not validate against the full schema until every section is implemented.
-	That's expected during the incremental build, not a bug.
+	Every section is implemented, so output validates against the whole schema.
+	An empty list here is honest and means what it says - a player who has met
+	nobody writes `"contacts": []` - which is only true because no section is
+	missing any more. During the incremental build, unimplemented sections were
+	omitted precisely so that an empty list could not be mistaken for one.
 
-	Note that omission means two different things at two different levels: a
-	missing SECTION means "not implemented yet", while a missing FIELD inside an
-	implemented tile means "this field has its documented default" (see _buildTile).'''
+	Omission still means something at the FIELD level: inside a tile, a unit or a
+	foreign city, a missing field means "this field holds its documented default"
+	(see _buildTile, _buildUnit, _buildForeignCity).'''
 	ctx = _Context(playerId)
+	_requireActivePlayer(ctx)
 	started = _clock()
 	state = {
 		'meta': {
@@ -122,6 +145,9 @@ def buildState(gameTurn, playerId, trigger):
 		'player': _buildPlayer(ctx),
 		'units': _buildUnits(ctx),
 		'cities': _buildCities(ctx),
+		'contacts': _buildContacts(ctx),
+		'foreignUnits': _buildForeignUnits(ctx),
+		'foreignCities': _buildForeignCities(ctx),
 	}
 	# Timed separately from everything else: this is the only section whose cost
 	# scales with how much of the map the player has uncovered.
@@ -293,16 +319,18 @@ def _buildCivics(ctx):
 	return civics
 
 
-def _sortById(rows):
-	'''Take (engineId, tieBreak, dict) tuples and return just the dicts, ID-ordered.
+def _sortedRows(rows):
+	'''Take (sortKey..., tieBreak, dict) tuples and return just the dicts, in order.
 
 	Entities are sorted because the engine's own iteration order isn't documented as
 	stable, and unsorted output would produce spurious turn-to-turn diffs - the same
-	reason the serializer sorts dict keys.'''
+	reason the serializer sorts dict keys. Callers put the tie-break (an ever-
+	increasing counter) immediately before the dict so that two rows with equal sort
+	keys never make the sort compare the dicts themselves.'''
 	rows.sort()
 	out = []
 	for row in rows:
-		out.append(row[2])
+		out.append(row[-1])
 	return out
 
 
@@ -318,11 +346,11 @@ def _buildUnits(ctx):
 			# len(rows) breaks ID ties so the sort never has to compare two dicts.
 			rows.append((unit.getID(), len(rows), _buildUnit(ctx, unit)))
 		unit, cursor = ctx.player.nextUnit(cursor, False)
-	return _sortById(rows)
+	return _sortedRows(rows)
 
 
 def _buildUnit(ctx, unit):
-	return {
+	row = {
 		'id': unit.getID(),
 		'type': ctx.gc.getUnitInfo(unit.getUnitType()).getType(),
 		'x': unit.getX(),
@@ -341,9 +369,20 @@ def _buildUnit(ctx, unit):
 		# share units) and includes promotions and team domain bonuses, not just
 		# the unit's XML base.
 		'moves': unit.baseMoves(),
-		# Percentage of health lost, not hit points: 0 is unhurt, 100 is dead.
-		'damage': unit.getDamage(),
 	}
+	# Percentage of health lost, not hit points; 100 would be dead. Omitted when
+	# unhurt, which is the documented default and the overwhelmingly common case -
+	# the same field-level omission map.tiles uses, and the same rule foreign units
+	# follow, so "damage" reads identically wherever it appears in the file.
+	_setIfDamaged(row, unit)
+	return row
+
+
+def _setIfDamaged(row, unit):
+	'Record a unit\'s damage, or leave the field out entirely when it is unhurt.'
+	damage = unit.getDamage()
+	if damage:
+		row['damage'] = damage
 
 
 def _buildCities(ctx):
@@ -356,7 +395,7 @@ def _buildCities(ctx):
 		if not city.isNone() and city.getOwner() == ctx.playerId:
 			rows.append((city.getID(), len(rows), _buildCity(ctx, city)))
 		city, cursor = ctx.player.nextCity(cursor, False)
-	return _sortById(rows)
+	return _sortedRows(rows)
 
 
 def _buildCity(ctx, city):
@@ -464,22 +503,11 @@ def _buildMap(ctx):
 
 	Cost note: this touches every plot on the map (4368 on a standard map), so the
 	isRevealed gate comes first and is the only call made for the great majority of
-	them. See _reportTimings.'''
-	# calculateYield(bDisplay=True) below reads the ACTIVE team's revealed state
-	# internally (verified in CvPlot::calculateYield - it calls getRevealedOwner /
-	# getRevealedImprovementType / getRevealedRouteType against
-	# GC.getGame().getActiveTeam(), not against any team we could pass). There is no
-	# API to ask for another player's displayed yields. In single player that is
-	# always the human - CvGame::setActivePlayer is called only from CvGame::read,
-	# gated on !isGameMultiPlayer(), and never rotates while the AI civs take their
-	# turns - so the assumption holds. But if it were ever violated we would silently
-	# export someone else's view of the map, so fail loudly instead. _exportState
-	# turns this into a logged traceback and no state file.
-	activePlayerId = ctx.game.getActivePlayer()
-	if ctx.playerId != activePlayerId:
-		raise AssertionError(
-			'refusing to export map for player %d while player %d is active: tile yields'
-			' would be the active player\'s, not this one\'s' % (ctx.playerId, activePlayerId))
+	them. See _reportTimings.
+
+	calculateYield(bDisplay=True) below answers for the ACTIVE team rather than for
+	ctx's - buildState refuses to run at all when those differ, see
+	_requireActivePlayer.'''
 	tiles = []
 	# Both ranges hoisted out of the loops: range() builds a real list in Python 2.4,
 	# so an inline range(width) would allocate one per row.
@@ -595,6 +623,171 @@ def _tileYields(plot):
 		plot.calculateYield(YieldTypes.YIELD_PRODUCTION, True),
 		plot.calculateYield(YieldTypes.YIELD_COMMERCE, True),
 	]
+
+
+def _otherPlayers(ctx):
+	'''(playerId, CyPlayer) for every live player except the one being exported.
+
+	getMAX_PLAYERS(), not getMAX_CIV_PLAYERS(): the barbarians occupy the final slot
+	and the foreign sections want them. Only contacts filters them back out.
+
+	Walking each player's own list (as the base game's military advisor does) rather
+	than sweeping plots is both cheaper and, for cities, the only correct option -
+	see _buildForeignCities.'''
+	out = []
+	for i in range(ctx.gc.getMAX_PLAYERS()):
+		if i == ctx.playerId:
+			continue
+		player = ctx.gc.getPlayer(i)
+		if not player.isAlive():
+			continue
+		out.append((i, player))
+	return out
+
+
+def _buildContacts(ctx):
+	'''Rival civs we have met, in player-ID order (which the loop already gives us).
+
+	DO NOT simplify the filter to isHasMet alone. Barbarian and minor teams declare
+	war on every civ team in CvGame::initDiplomacy, and CvTeam::declareWar calls
+	meet(), so isHasMet and isAtWar are both true for the barbarians from turn 0 -
+	the naive loop reports a barbarian contact, at war, in every export. The four
+	conditions here are the ones the base game's own Foreign Advisor applies.
+
+	isHasMet is asked of OUR team about theirs (it is symmetric - CvTeam::meet calls
+	makeHasMet on both sides), so the mod never fetches a rival CyTeam, which is the
+	object that would expose their techs and research.'''
+	contacts = []
+	for playerId, player in _otherPlayers(ctx):
+		if player.isBarbarian() or player.isMinorCiv():
+			continue
+		teamId = player.getTeam()
+		# Teammates are not people you have diplomacy with; their units and cities
+		# still show up in the foreign sections below.
+		if teamId == ctx.teamId:
+			continue
+		if not ctx.team.isHasMet(teamId):
+			continue
+		contact = _Record(('playerId',))
+		contact['playerId'] = playerId
+		contact['leader'] = ctx.gc.getLeaderHeadInfo(player.getLeaderType()).getType()
+		contact['civilization'] = ctx.gc.getCivilizationInfo(player.getCivilizationType()).getType()
+		# The five-bucket value the UI shows, and the most this could leak even by
+		# accident: the numeric AI_getAttitudeVal is not in the Python API.
+		contact['attitude'] = ctx.gc.getAttitudeInfo(player.AI_getAttitude(ctx.playerId)).getType()
+		# bool() because the C++ bindings hand back 1/0 and the serializer would
+		# otherwise emit those rather than JSON true/false.
+		contact['atWar'] = bool(ctx.team.isAtWar(teamId))
+		contacts.append(contact)
+	return contacts
+
+
+def _buildForeignUnits(ctx):
+	'''Other players' units, but only those standing on a tile we can see right now.
+
+	Sorted by owner then position, so the section groups by civ - "what does this
+	one have near me" is how it gets read. The key comes off the built row rather
+	than the unit because `owner` is the VISUAL owner: a disguised unit then sorts
+	with the barbarians it is pretending to belong to, as the game presents it.
+	Type is part of the key because units stack and the engine's iteration order
+	is not documented as stable.'''
+	rows = []
+	for playerId, player in _otherPlayers(ctx):
+		unit, cursor = player.firstUnit(False)
+		while unit:
+			row = _buildForeignUnit(ctx, unit)
+			if row is not None:
+				# len(rows) breaks ties so the sort never compares two dicts.
+				rows.append((row['owner'], row['y'], row['x'], row['type'], len(rows), row))
+			unit, cursor = player.nextUnit(cursor, False)
+	return _sortedRows(rows)
+
+
+def _buildForeignUnit(ctx, unit):
+	'''One rival unit, or None if the player cannot currently see it.
+
+	"Visible", not "revealed" - the engine keeps no memory of where enemy units
+	were, so neither do we, and a unit disappearing between two exports means it
+	went out of sight rather than that it died. The pairing with isInvisible is the
+	base game's own, from CvMilitaryAdvisor.
+
+	isInvisible is nearly a no-op this early (only the Spy and Great Spy are
+	permanently invisible) but is honoured because it also covers cargo, which the
+	map does not draw either.'''
+	if unit.isDead():
+		return None
+	plot = unit.plot()
+	if plot is None or plot.isNone():
+		return None
+	if not plot.isVisible(ctx.teamId, False):
+		return None
+	if unit.isInvisible(ctx.teamId, False):
+		return None
+	row = _Record(('x', 'y'))
+	row['x'] = unit.getX()
+	row['y'] = unit.getY()
+	# getVisualOwner, not getOwner: hidden-nationality units show as barbarian
+	# outside their owner's cities, and the export must not be what unmasks one.
+	# Answers for the ACTIVE team - see _requireActivePlayer.
+	row['owner'] = unit.getVisualOwner()
+	row['type'] = ctx.gc.getUnitInfo(unit.getUnitType()).getType()
+	# Legitimately visible: the engine folds every unit's damage into the stack
+	# strength printed in the tile mouseover, gated only on the plot being visible.
+	_setIfDamaged(row, unit)
+	return row
+
+
+def _buildForeignCities(ctx):
+	'''Other players' cities that our team has actually laid eyes on.
+
+	Unlike units, cities are remembered - the nameplate stays on the map under fog.
+	The gate is the engine's own per-city isRevealed flag, which is STRICTER than
+	the tile being revealed: CvCity::init only reveals a new city to teams that can
+	currently SEE the plot, so a city founded on a tile we revealed long ago but
+	cannot see now is correctly absent until we next look.
+
+	DO NOT re-implement this as a sweep of revealed plots calling getPlotCity():
+	that reads live truth and would surface exactly those fog-founded cities.
+
+	Sorted by owner then position, like foreign units. No type in the key here -
+	two cities cannot share a tile.'''
+	rows = []
+	for playerId, player in _otherPlayers(ctx):
+		# isNone()/getOwner() mirrors PyHelpers.getCityList, the same as _buildCities.
+		city, cursor = player.firstCity(False)
+		while city:
+			if (not city.isNone() and city.getOwner() == playerId
+					and city.isRevealed(ctx.teamId, False)):
+				row = _buildForeignCity(city, playerId)
+				rows.append((row['owner'], row['y'], row['x'], len(rows), row))
+			city, cursor = player.nextCity(cursor, False)
+	return _sortedRows(rows)
+
+
+def _buildForeignCity(city, ownerId):
+	'''One rival city, as the game draws its nameplate.
+
+	Every field is read LIVE rather than remembered, which matches the UI rather
+	than overstating it: the engine builds the plate from getName(), getPopulation()
+	and isStarCity() with no visibility check, while deliberately gating the food
+	and production bars beside them on canBeSelected(). Nothing about a city's
+	insides is exported because nothing about it is shown.
+
+	ownerId comes from the loop rather than a second getOwner() call, and is the
+	real owner: cities have no visual-owner equivalent to disguise them.'''
+	row = _Record(('x', 'y'))
+	row['x'] = city.getX()
+	row['y'] = city.getY()
+	row['owner'] = ownerId
+	# A wstring, like our own cities' names.
+	row['name'] = city.getName()
+	row['population'] = city.getPopulation()
+	# The star on the nameplate: CvCity::isStarCity is literally "return
+	# isCapital()", exported for the renderer and gated on neither team nor
+	# visibility. Omitted when false, like the tile booleans.
+	if city.isCapital():
+		row['capital'] = True
+	return row
 
 
 def _escape(s):

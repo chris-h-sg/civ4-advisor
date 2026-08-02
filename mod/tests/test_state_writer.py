@@ -42,6 +42,13 @@ YIELD_COMMERCE = 2
 
 NUM_CITY_PLOTS = 21
 
+# The engine sizes these from MAX_CIV_PLAYERS, with the barbarians occupying the
+# one slot past the civs (CvDefines.h: MAX_PLAYERS is MAX_CIV_PLAYERS + 1,
+# BARBARIAN_PLAYER is (PlayerTypes)MAX_CIV_PLAYERS). Kept small here so a full
+# sweep is cheap, but with the same shape.
+MAX_PLAYERS = 6
+BARBARIAN_PLAYER = 5
+
 TECHS = ["TECH_AGRICULTURE", "TECH_MINING", "TECH_THE_WHEEL", "TECH_BRONZE_WORKING"]
 CIVIC_OPTIONS = ["CIVICOPTION_GOVERNMENT", "CIVICOPTION_LEGAL", "CIVICOPTION_LABOR"]
 CIVICS = ["CIVIC_DESPOTISM", "CIVIC_BARBARISM", "CIVIC_TRIBALISM"]
@@ -57,12 +64,37 @@ FEATURES = ["FEATURE_FOREST", "FEATURE_FLOOD_PLAINS"]
 BONUSES = ["BONUS_CORN", "BONUS_COPPER"]
 IMPROVEMENTS = ["IMPROVEMENT_FARM", "IMPROVEMENT_GOODY_HUT"]
 ROUTES = ["ROUTE_ROAD", "ROUTE_RAILROAD"]
+LEADERS = ["LEADER_HATSHEPSUT", "LEADER_GANDHI", "LEADER_JULIUS_CAESAR",
+           "LEADER_BARBARIAN"]
+CIVILIZATIONS = ["CIVILIZATION_EGYPT", "CIVILIZATION_INDIA", "CIVILIZATION_ROME",
+                 "CIVILIZATION_BARBARIAN"]
+# Index order is the AttitudeTypes enum's, which is also the XML's (CvEnums.h).
+ATTITUDES = ["ATTITUDE_FURIOUS", "ATTITUDE_ANNOYED", "ATTITUDE_CAUTIOUS",
+             "ATTITUDE_PLEASED", "ATTITUDE_FRIENDLY"]
 
 PLAYER_ID = 3
 TEAM_ID = 7
 
 # What CyCity.getProductionNeeded() returns when there is nothing to complete.
 MAX_INT = 2147483647
+
+
+def _raises(name, reason):
+    def accessor(self, *args, **kwargs):
+        raise AssertionError("%s: %s" % (name, reason))
+    return accessor
+
+
+def _forbid(cls, reason, names):
+    """Make each whitespace-separated method name on cls raise AssertionError.
+
+    These are the accessors the exporter must never call. The real Cy* objects
+    answer all of them perfectly happily for any player, city or unit - a mock
+    that raises is how the fog-of-war rules stay enforced rather than merely
+    remembered, and it is what makes a leak fail a test instead of shipping.
+    """
+    for name in names.split():
+        setattr(cls, name, _raises(name, reason))
 
 
 class Info(object):
@@ -237,6 +269,15 @@ class Plot(object):
     def getWorkingCity(self):
         raise AssertionError("see isBeingWorked: worked tiles are read city-side")
 
+    def getPlotCity(self):
+        raise AssertionError(
+            "plot-side city lookup is live truth: CyCity.isRevealed is stricter "
+            "than the tile being revealed, so this would surface cities founded "
+            "under fog. Iterate each rival's city list instead")
+
+    def isCity(self):
+        raise AssertionError("see getPlotCity: foreign cities are read player-side")
+
 
 def defaultPlots():
     """A small revealed patch: flat grass, a fogged hill, and a visible coast tile."""
@@ -317,8 +358,16 @@ class Map(object):
 
 
 class Unit(object):
+    """A unit, ours or a rival's.
+
+    `visible` and `invisible` only matter for rivals' units: ours are exported
+    unconditionally. `plot=` overrides the plot the unit stands on, for the
+    off-the-map case.
+    """
+
     def __init__(self, unitId, unitType=0, x=10, y=20, baseMoves=1,
-                 damage=0, dead=False):
+                 damage=0, dead=False, owner=PLAYER_ID, visualOwner=None,
+                 visible=True, invisible=False, plot=None):
         self._id = unitId
         self._type = unitType
         self._x = x
@@ -326,6 +375,31 @@ class Unit(object):
         self._baseMoves = baseMoves
         self._damage = damage
         self._dead = dead
+        self._owner = owner
+        self._visualOwner = visualOwner
+        if self._visualOwner is None:
+            self._visualOwner = owner
+        self._invisible = invisible
+        self._plot = plot
+        if self._plot is None:
+            self._plot = Plot(x=x, y=y, visible=visible)
+        self.invisibleArgs = []
+
+    def plot(self):
+        return self._plot
+
+    def getVisualOwner(self):
+        # No team argument in the Python binding: it answers for the ACTIVE team.
+        return self._visualOwner
+
+    def getOwner(self):
+        raise AssertionError(
+            "a unit's true owner can differ from the one the game draws; "
+            "use getVisualOwner so a hidden-nationality unit is never unmasked")
+
+    def isInvisible(self, team, bDebug):
+        self.invisibleArgs.append((team, bDebug))
+        return self._invisible
 
     def getID(self):
         return self._id
@@ -482,6 +556,66 @@ class City(object):
         return Plot(x=value[0], y=value[1])
 
 
+class ForeignCity(object):
+    """A rival's city: only what the game paints on its nameplate.
+
+    Everything a city screen would show - stores, production, mood, worked tiles -
+    raises. Those accessors exist on the real CyCity and answer happily for any
+    city at all; the engine's own billboard code is what draws the line, gating the
+    food and production bars on canBeSelected() while leaving name, size and the
+    capital star ungated. This class is that line, made to fail loudly.
+    """
+
+    def __init__(self, cityId, name=u"Delhi", x=50, y=50, owner=1,
+                 population=3, capital=False, revealed=True, none=False):
+        self._id = cityId
+        self._name = name
+        self._x = x
+        self._y = y
+        self._owner = owner
+        self._population = population
+        self._capital = capital
+        self._revealed = revealed
+        self._none = none
+        self.revealedArgs = []
+
+    def isNone(self):
+        return self._none
+
+    def getID(self):
+        return self._id
+
+    def getOwner(self):
+        return self._owner
+
+    def isRevealed(self, team, bDebug):
+        self.revealedArgs.append((team, bDebug))
+        return self._revealed
+
+    def getName(self):
+        return self._name
+
+    def getX(self):
+        return self._x
+
+    def getY(self):
+        return self._y
+
+    def getPopulation(self):
+        return self._population
+
+    def isCapital(self):
+        return self._capital
+
+
+_forbid(ForeignCity, "a rival's city shows only what is painted on its nameplate", """
+    getFood foodDifference growthThreshold getProduction getProductionNeeded
+    getCurrentProductionDifference isProductionUnit isProductionBuilding
+    isProductionProject isProductionProcess getCulture getCultureThreshold
+    happyLevel unhappyLevel goodHealth badHealth isWorkingPlotByIndex
+    getCityIndexPlot""")
+
+
 def _cursor(items, index):
     """Emulate the engine's (object, iterator) cursor pair, exhausting to None."""
     if index < len(items):
@@ -559,9 +693,15 @@ class Player(object):
 
 
 class Team(object):
-    def __init__(self):
+    """Our own team. met/atWar are keyed by the OTHER team's id."""
+
+    def __init__(self, met=(), atWar=()):
+        self._met = met
+        self._atWar = atWar
         self.researchCostArgs = []
         self.researchProgressArgs = []
+        self.metArgs = []
+        self.atWarArgs = []
 
     def isHasTech(self, i):
         return i in (0, 1)  # Agriculture + Mining only
@@ -574,12 +714,120 @@ class Team(object):
         self.researchCostArgs.append(t)
         return 76
 
+    def isHasMet(self, team):
+        self.metArgs.append(team)
+        return team in self._met
+
+    def isAtWar(self, team):
+        self.atWarArgs.append(team)
+        # An int, as the C++ binding returns: the exporter has to coerce it.
+        return team in self._atWar and 1 or 0
+
+
+class RivalTeam(object):
+    """Another team. Every accessor raises.
+
+    Nothing needs one: contacts asks our own team about the relation, because
+    CvTeam::meet sets makeHasMet on both sides so isHasMet is symmetric. This class
+    exists so that if anyone ever reaches for gc.getTeam(theirTeam), the first
+    thing they find is that a rival CyTeam is precisely the object that would hand
+    over their techs and their research.
+    """
+
+    def __getattr__(self, name):
+        raise AssertionError(
+            "a rival CyTeam exposes their techs and research; ask our own team "
+            "about the relation instead (isHasMet is symmetric) - reached %s" % name)
+
+
+class Rival(object):
+    """Another player. Everything the fog hides raises.
+
+    Absent player slots are modelled as alive=False, which is all the exporter
+    should ever ask of them.
+    """
+
+    def __init__(self, playerId, teamId=None, leader=1, civilization=1,
+                 attitude=2, alive=True, barbarian=False, minor=False,
+                 units=None, cities=None):
+        self.playerId = playerId
+        self._teamId = teamId
+        if self._teamId is None:
+            self._teamId = playerId
+        self._leader = leader
+        self._civilization = civilization
+        self._attitude = attitude
+        self._alive = alive
+        self._barbarian = barbarian
+        self._minor = minor
+        self._units = units or []
+        self._cities = cities or []
+        self.attitudeArgs = []
+
+    def isAlive(self):
+        return self._alive
+
+    def isBarbarian(self):
+        return self._barbarian
+
+    def isMinorCiv(self):
+        return self._minor
+
+    def getTeam(self):
+        return self._teamId
+
+    def getLeaderType(self):
+        return self._leader
+
+    def getCivilizationType(self):
+        return self._civilization
+
+    def AI_getAttitude(self, playerId):
+        self.attitudeArgs.append(playerId)
+        return self._attitude
+
+    def firstUnit(self, bRev):
+        return _cursor(self._units, 0)
+
+    def nextUnit(self, cursor, bRev):
+        return _cursor(self._units, cursor)
+
+    def firstCity(self, bRev):
+        return _cursor(self._cities, 0)
+
+    def nextCity(self, cursor, bRev):
+        return _cursor(self._cities, cursor)
+
+
+_forbid(Rival, "a rival's private empire state, visible to the player only through "
+        "espionage this schema does not model", """
+    getGold calculateGoldRate calculateResearchRate calculateResearchModifier
+    getCurrentResearch getResearchTurnsLeft getOverflowResearch getCommercePercent
+    getCivics getNumCities getNumUnits getPower getCurrentEra""")
+
+
+def absentPlayers(*rivals):
+    """playerId -> Rival for a full player roster, unused slots marked dead."""
+    roster = {}
+    for i in range(MAX_PLAYERS):
+        roster[i] = Rival(i, alive=False)
+    for rival in rivals:
+        roster[rival.playerId] = rival
+    return roster
+
 
 class Gc(object):
-    def __init__(self, player, cyMap=None, game=None):
+    def __init__(self, player, cyMap=None, game=None, rivals=None, team=None):
         self._player = player
         # One shared instance so tests can inspect what was asked of it.
-        self._team = Team()
+        self._team = team
+        if self._team is None:
+            self._team = Team()
+        # Player slots other than the exported one. Anything not named is a dead
+        # slot, which is what the great majority of them are in a real game.
+        self._rivals = rivals or {}
+        self._deadSlot = Rival(-1, alive=False)
+        self._rivalTeam = RivalTeam()
         self._game = game
         if self._game is None:
             self._game = Game()
@@ -613,13 +861,21 @@ class Gc(object):
     def getRouteInfo(self, i):
         return Info(ROUTES[i])
 
+    def getMAX_PLAYERS(self):
+        # Includes the barbarian slot, which the foreign sections want.
+        return MAX_PLAYERS
+
     def getPlayer(self, i):
         self.playerLookups.append(i)
-        return self._player
+        if i == PLAYER_ID:
+            return self._player
+        return self._rivals.get(i, self._deadSlot)
 
     def getTeam(self, i):
         self.teamLookups.append(i)
-        return self._team
+        if i == TEAM_ID:
+            return self._team
+        return self._rivalTeam
 
     def getEraInfo(self, i):
         return Info("ERA_ANCIENT")
@@ -628,10 +884,13 @@ class Gc(object):
         return Info("GAMESPEED_NORMAL")
 
     def getLeaderHeadInfo(self, i):
-        return Info("LEADER_HATSHEPSUT")
+        return Info(LEADERS[i])
 
     def getCivilizationInfo(self, i):
-        return Info("CIVILIZATION_EGYPT")
+        return Info(CIVILIZATIONS[i])
+
+    def getAttitudeInfo(self, i):
+        return Info(ATTITUDES[i])
 
     def getNumTechInfos(self):
         return len(TECHS)
@@ -687,14 +946,15 @@ class Gc(object):
         return Info(PROCESSES[i])
 
 
-def loadModule(player=None, localConfigPath=None, cyMap=None, game=None):
+def loadModule(player=None, localConfigPath=None, cyMap=None, game=None,
+               rivals=None, team=None):
     """Exec the real mod source with the game API and Python 2 builtins shimmed.
 
     localConfigPath=None leaves LocalConfig unimportable, which is the "not
     configured on this machine" case getStateFilePath has to tolerate.
     """
     player = player or Player()
-    gc = Gc(player, cyMap=cyMap, game=game)
+    gc = Gc(player, cyMap=cyMap, game=game, rivals=rivals, team=team)
 
     fake = types.ModuleType("CvPythonExtensions")
     fake.CyGlobalContext = lambda: gc
@@ -732,6 +992,7 @@ def loadModule(player=None, localConfigPath=None, cyMap=None, game=None):
     ns["_testPlayer"] = player
     ns["_testTeam"] = gc._team
     ns["_testMap"] = gc._map
+    ns["_testRivalTeam"] = gc._rivalTeam
     return ns
 
 
@@ -810,11 +1071,13 @@ class BuildStateTests(unittest.TestCase):
         self.state = self.mod["buildState"](5, PLAYER_ID, "onEndGameTurn")
         self.parsed = json.loads(self.mod["toJson"](self.state, 2))
 
-    def test_only_implemented_sections_are_present(self):
-        # Unimplemented sections are omitted, never emitted empty - an empty
-        # contacts array would be indistinguishable from "player has met nobody".
+    def test_every_section_is_present(self):
+        # No section is omitted any more, which is what lets an empty list mean
+        # what it says: "contacts": [] is a player who has met nobody, not a
+        # section that hasn't been written yet.
         self.assertEqual(sorted(self.parsed.keys()),
-                         ["cities", "game", "map", "meta", "player", "units"])
+                         ["cities", "contacts", "foreignCities", "foreignUnits",
+                          "game", "map", "meta", "player", "units"])
 
     def test_meta(self):
         self.assertEqual(self.parsed["meta"], {"schemaVersion": 1, "trigger": "onEndGameTurn"})
@@ -863,8 +1126,7 @@ class GameSetupTests(unittest.TestCase):
         self.assertEqual(self.parsed["game"]["options"], ["GAMEOPTION_RAGING_BARBARIANS"])
 
     def test_no_options_enabled_is_an_empty_list(self):
-        mod = loadModule(game=Game(options=()))
-        parsed = json.loads(mod["toJson"](mod["buildState"](5, PLAYER_ID, "x"), 2))
+        parsed = exportState(game=Game(options=()))[1]
         self.assertEqual(parsed["game"]["options"], [])
 
     def test_only_enabled_victories_are_listed(self):
@@ -941,13 +1203,31 @@ class GameSetupTests(unittest.TestCase):
         })
 
     def test_state_is_built_for_the_requested_player(self):
-        self.assertEqual(self.mod["_testGc"].playerLookups, [PLAYER_ID])
+        # The exported player is resolved first, once; every later lookup belongs
+        # to the foreign sections sweeping the roster, and never asks for our own
+        # slot again (they skip it before calling getPlayer at all).
+        lookups = self.mod["_testGc"].playerLookups
+        self.assertEqual(lookups[0], PLAYER_ID)
+        self.assertNotIn(PLAYER_ID, lookups[1:])
+        self.assertEqual(sorted(set(lookups[1:])),
+                         [i for i in range(MAX_PLAYERS) if i != PLAYER_ID])
+
+
+def renderState(**kwargs):
+    """(module, pretty-printed JSON text) for one export. kwargs go to loadModule."""
+    mod = loadModule(**kwargs)
+    return mod, mod["toJson"](mod["buildState"](5, PLAYER_ID, "onEndGameTurn"), 2)
+
+
+def exportState(**kwargs):
+    """(module, re-parsed export) for one turn. kwargs go to loadModule."""
+    mod, text = renderState(**kwargs)
+    return mod, json.loads(text)
 
 
 def buildWith(units=None, cities=None, cyMap=None):
     """Export a turn for a player with the given units/cities/map, parsed back."""
-    mod = loadModule(Player(units=units, cities=cities), cyMap=cyMap)
-    return mod, json.loads(mod["toJson"](mod["buildState"](5, PLAYER_ID, "onEndGameTurn"), 2))
+    return exportState(player=Player(units=units, cities=cities), cyMap=cyMap)
 
 
 def buildTile(**kwargs):
@@ -983,6 +1263,12 @@ class UnitTests(unittest.TestCase):
         # baseMoves() is already in displayed moves - no MOVE_DENOMINATOR division.
         _, parsed = buildWith(units=[Unit(0, baseMoves=2)])
         self.assertEqual(parsed["units"][0]["moves"], 2)
+
+    def test_undamaged_units_omit_damage(self):
+        # Field-level omission, as in map.tiles: unhurt is the documented default
+        # and the usual case, and the rule is the same one foreignUnits follows.
+        _, parsed = buildWith(units=[Unit(0, damage=0)])
+        self.assertNotIn("damage", parsed["units"][0])
 
     def test_moves_left_is_never_read(self):
         # It is unusable at our export timing: the per-turn reset happens in
@@ -1138,11 +1424,20 @@ class MapScanTests(unittest.TestCase):
         self.assertEqual(parsed["map"], {"tiles": []})
 
     def test_export_bails_when_another_player_is_active(self):
-        # calculateYield(bDisplay=True) silently reads the ACTIVE team's revealed
-        # state, so exporting for anyone else would hand over the wrong player's
-        # view of the map. There is no API to ask for a specific player's.
+        # Two getters silently answer for the ACTIVE team rather than for ours,
+        # with no API to ask about a specific player: calculateYield(bDisplay=True)
+        # for tile yields, and getVisualOwner() for foreign units. Exporting for
+        # anyone else would hand over the wrong player's view, so buildState
+        # refuses outright rather than producing a plausible-looking wrong file.
         mod = loadModule(game=Game(activePlayer=PLAYER_ID + 1))
         self.assertRaises(AssertionError, mod["buildState"], 5, PLAYER_ID, "onEndGameTurn")
+
+    def test_the_guard_runs_before_anything_is_read(self):
+        # It guards the whole export, not just the map, so it has to fire even if
+        # the map section would never be reached.
+        mod = loadModule(game=Game(activePlayer=PLAYER_ID + 1),
+                         cyMap=Map(plots=[], width=0, height=0))
+        self.assertRaises(AssertionError, mod["buildState"], 5, PLAYER_ID, "x")
 
 
 class TileTests(unittest.TestCase):
@@ -1251,8 +1546,7 @@ class TileRenderingTests(unittest.TestCase):
                                 feature=1, bonus=0, improvement=0, route=1,
                                 owner=2, yields=(9, 9, 9))],
                     width=1, height=1)
-        mod = loadModule(cyMap=cyMap)
-        text = mod["toJson"](mod["buildState"](5, PLAYER_ID, "onEndGameTurn"), 2)
+        text = renderState(cyMap=cyMap)[1]
         tileLines = [ln for ln in text.split("\n") if '"terrain"' in ln]
         self.assertEqual(len(tileLines), 1)
         self.assertGreater(len(tileLines[0]), 88)
@@ -1261,8 +1555,7 @@ class TileRenderingTests(unittest.TestCase):
     def test_marker_does_not_change_how_other_sections_render(self):
         # Raising the global inline width instead would have collapsed `research`
         # and rewritten every existing section.
-        mod = loadModule()
-        text = mod["toJson"](mod["buildState"](5, PLAYER_ID, "onEndGameTurn"), 2)
+        text = renderState()[1]
         self.assertIn('"research": {\n', text)
 
     def test_record_without_leading_keys_is_plain_sorted(self):
@@ -1289,8 +1582,7 @@ class TileRenderingTests(unittest.TestCase):
     def test_tiles_lead_with_their_coordinates(self):
         cyMap = Map(plots=[Plot(x=4, y=7, terrain=1, bonus=0, visible=True)],
                     width=8, height=8)
-        mod = loadModule(cyMap=cyMap)
-        text = mod["toJson"](mod["buildState"](5, PLAYER_ID, "onEndGameTurn"), 2)
+        text = renderState(cyMap=cyMap)[1]
         tileLine = [ln for ln in text.split("\n") if '"terrain"' in ln][0]
         self.assertTrue(tileLine.strip().startswith('{"x": 4, "y": 7, '), tileLine)
 
@@ -1304,6 +1596,304 @@ class TileRenderingTests(unittest.TestCase):
         for key in ("y", "river", "x", "terrain"):
             two[key] = 1
         self.assertEqual(mod["toJson"](one, 2), mod["toJson"](two, 2))
+
+
+def buildDiplomacy(rivals=(), met=(), atWar=()):
+    """Export a turn with the given rival players, parsed back."""
+    return exportState(rivals=absentPlayers(*rivals), team=Team(met=met, atWar=atWar))
+
+
+class ContactsTests(unittest.TestCase):
+    def test_met_rival(self):
+        _, parsed = buildDiplomacy(
+            rivals=[Rival(1, teamId=1, leader=1, civilization=1, attitude=3)],
+            met=(1,))
+        self.assertEqual(parsed["contacts"], [{
+            "playerId": 1,
+            "leader": "LEADER_GANDHI",
+            "civilization": "CIVILIZATION_INDIA",
+            "attitude": "ATTITUDE_PLEASED",
+            "atWar": False,
+        }])
+
+    def test_unmet_rivals_are_absent(self):
+        _, parsed = buildDiplomacy(rivals=[Rival(1, teamId=1)], met=())
+        self.assertEqual(parsed["contacts"], [])
+
+    def test_meeting_nobody_is_an_empty_list_not_an_omission(self):
+        # Only honest because no section is omitted any more: while contacts was
+        # unimplemented, [] and "not built yet" were indistinguishable.
+        _, parsed = buildDiplomacy()
+        self.assertEqual(parsed["contacts"], [])
+
+    def test_barbarians_are_excluded_even_though_they_count_as_met(self):
+        # THE trap in this section. The barbarian team declares war on every civ
+        # team in CvGame::initDiplomacy, and CvTeam::declareWar calls meet() - so
+        # isHasMet and isAtWar are both true for the barbarians from turn 0. A
+        # loop written on isHasMet alone reports a barbarian contact, at war, in
+        # every export from turn 1 onward.
+        _, parsed = buildDiplomacy(
+            rivals=[Rival(BARBARIAN_PLAYER, teamId=BARBARIAN_PLAYER, leader=3,
+                          civilization=3, barbarian=True)],
+            met=(BARBARIAN_PLAYER,), atWar=(BARBARIAN_PLAYER,))
+        self.assertEqual(parsed["contacts"], [])
+
+    def test_minor_civs_are_excluded_on_the_same_grounds(self):
+        _, parsed = buildDiplomacy(
+            rivals=[Rival(1, teamId=1, minor=True)], met=(1,), atWar=(1,))
+        self.assertEqual(parsed["contacts"], [])
+
+    def test_dead_rivals_are_excluded(self):
+        # Matches the base game's own Foreign Advisor, which filters on isAlive.
+        _, parsed = buildDiplomacy(rivals=[Rival(1, teamId=1, alive=False)], met=(1,))
+        self.assertEqual(parsed["contacts"], [])
+
+    def test_teammates_are_not_contacts(self):
+        _, parsed = buildDiplomacy(rivals=[Rival(1, teamId=TEAM_ID)], met=(TEAM_ID,))
+        self.assertEqual(parsed["contacts"], [])
+
+    def test_at_war_is_a_json_bool_not_an_int(self):
+        _, parsed = buildDiplomacy(rivals=[Rival(1, teamId=1)], met=(1,), atWar=(1,))
+        self.assertIs(parsed["contacts"][0]["atWar"], True)
+        _, parsed = buildDiplomacy(rivals=[Rival(1, teamId=1)], met=(1,))
+        self.assertIs(parsed["contacts"][0]["atWar"], False)
+
+    def test_attitude_is_read_toward_the_exported_player(self):
+        rival = Rival(1, teamId=1, attitude=0)
+        mod, parsed = buildDiplomacy(rivals=[rival], met=(1,))
+        self.assertEqual(rival.attitudeArgs, [PLAYER_ID])
+        self.assertEqual(parsed["contacts"][0]["attitude"], "ATTITUDE_FURIOUS")
+
+    def test_relation_is_asked_of_our_own_team(self):
+        # isHasMet is symmetric (CvTeam::meet calls makeHasMet on both sides), so
+        # asking our own team means never fetching a rival CyTeam - the object
+        # that would expose their techs and research.
+        mod, _ = buildDiplomacy(rivals=[Rival(1, teamId=1)], met=(1,))
+        self.assertEqual(mod["_testTeam"].metArgs, [1])
+        self.assertEqual(mod["_testTeam"].atWarArgs, [1])
+        self.assertEqual(mod["_testGc"].teamLookups, [TEAM_ID])
+
+    def test_a_rival_team_object_is_never_fetched(self):
+        # If one ever were, every accessor on it raises - see RivalTeam.
+        mod, _ = buildDiplomacy(rivals=[Rival(1, teamId=1)], met=(1,))
+        self.assertRaises(AssertionError, getattr, mod["_testRivalTeam"], "isHasTech")
+
+    def test_rivals_private_state_is_never_read(self):
+        # Gold, research, civics and the rest all answer happily on the real
+        # CyPlayer for any player id. The mock raises on each; this test is what
+        # keeps that true.
+        rival = Rival(1, teamId=1)
+        buildDiplomacy(rivals=[rival], met=(1,))
+        for name in ("getGold", "calculateGoldRate", "getCurrentResearch",
+                     "getNumCities", "getPower", "getCurrentEra"):
+            self.assertRaises(AssertionError, getattr(rival, name))
+        self.assertRaises(AssertionError, rival.getCivics, 0)
+
+    def test_sorted_by_player_id(self):
+        _, parsed = buildDiplomacy(
+            rivals=[Rival(4, teamId=4), Rival(1, teamId=1), Rival(2, teamId=2)],
+            met=(1, 2, 4))
+        self.assertEqual([c["playerId"] for c in parsed["contacts"]], [1, 2, 4])
+
+
+class ForeignUnitTests(unittest.TestCase):
+    def rival(self, *units):
+        return Rival(1, teamId=1, units=list(units))
+
+    def test_visible_unit(self):
+        _, parsed = buildDiplomacy(
+            rivals=[self.rival(Unit(0, unitType=1, x=7, y=9, owner=1))])
+        self.assertEqual(parsed["foreignUnits"],
+                         [{"owner": 1, "type": "UNIT_WARRIOR", "x": 7, "y": 9}])
+
+    def test_fogged_units_are_not_remembered(self):
+        # Unlike cities. The engine keeps no record of where enemy units were, so
+        # a unit vanishing between exports means "out of sight", not "destroyed".
+        _, parsed = buildDiplomacy(rivals=[self.rival(Unit(0, owner=1, visible=False))])
+        self.assertEqual(parsed["foreignUnits"], [])
+
+    def test_invisible_units_are_skipped(self):
+        _, parsed = buildDiplomacy(rivals=[self.rival(Unit(0, owner=1, invisible=True))])
+        self.assertEqual(parsed["foreignUnits"], [])
+
+    def test_visibility_checks_use_our_team_and_never_debug(self):
+        unit = Unit(0, owner=1)
+        buildDiplomacy(rivals=[self.rival(unit)])
+        self.assertEqual(unit.plot().visibleArgs, [(TEAM_ID, False)])
+        self.assertEqual(unit.invisibleArgs, [(TEAM_ID, False)])
+
+    def test_dead_units_are_skipped(self):
+        _, parsed = buildDiplomacy(rivals=[self.rival(Unit(0, owner=1, dead=True))])
+        self.assertEqual(parsed["foreignUnits"], [])
+
+    def test_units_off_the_map_are_skipped(self):
+        _, parsed = buildDiplomacy(
+            rivals=[self.rival(Unit(0, owner=1, plot=Plot(none=True)))])
+        self.assertEqual(parsed["foreignUnits"], [])
+
+    def test_barbarians_are_included(self):
+        # They own real units and are the main military fact of turns 1-20. Only
+        # contacts filters them out, and for its own specific reason.
+        _, parsed = buildDiplomacy(
+            rivals=[Rival(BARBARIAN_PLAYER, teamId=BARBARIAN_PLAYER, barbarian=True,
+                          units=[Unit(0, unitType=1, owner=BARBARIAN_PLAYER)])])
+        self.assertEqual(parsed["foreignUnits"][0]["owner"], BARBARIAN_PLAYER)
+
+    def test_owner_is_the_one_the_game_draws(self):
+        # getOwner raises on the mock: a hidden-nationality unit shows as
+        # barbarian on the map, and the export must not be what unmasks it.
+        _, parsed = buildDiplomacy(
+            rivals=[self.rival(Unit(0, owner=1, visualOwner=BARBARIAN_PLAYER))])
+        self.assertEqual(parsed["foreignUnits"][0]["owner"], BARBARIAN_PLAYER)
+
+    def test_damage_is_exported_when_hurt_and_omitted_when_not(self):
+        _, parsed = buildDiplomacy(rivals=[self.rival(Unit(0, owner=1, damage=40))])
+        self.assertEqual(parsed["foreignUnits"][0]["damage"], 40)
+        _, parsed = buildDiplomacy(rivals=[self.rival(Unit(0, owner=1))])
+        self.assertNotIn("damage", parsed["foreignUnits"][0])
+
+    def test_sorted_by_owner_then_position(self):
+        _, parsed = buildDiplomacy(rivals=[
+            Rival(2, teamId=2, units=[Unit(0, owner=2, x=1, y=1)]),
+            Rival(1, teamId=1, units=[Unit(0, owner=1, x=5, y=9),
+                                      Unit(1, owner=1, x=2, y=9),
+                                      Unit(2, owner=1, x=8, y=3)]),
+        ])
+        self.assertEqual([(u["owner"], u["x"], u["y"]) for u in parsed["foreignUnits"]],
+                         [(1, 8, 3), (1, 2, 9), (1, 5, 9), (2, 1, 1)])
+
+    def test_identical_stacked_units_do_not_break_the_sort(self):
+        # Two rows with equal sort keys must not make the sort compare the dicts.
+        _, parsed = buildDiplomacy(rivals=[self.rival(
+            Unit(0, unitType=1, owner=1, x=4, y=4),
+            Unit(1, unitType=1, owner=1, x=4, y=4))])
+        self.assertEqual(len(parsed["foreignUnits"]), 2)
+
+    def test_no_visible_units_is_an_empty_list(self):
+        _, parsed = buildDiplomacy()
+        self.assertEqual(parsed["foreignUnits"], [])
+
+
+class ForeignCityTests(unittest.TestCase):
+    def rival(self, *cities):
+        return Rival(1, teamId=1, cities=list(cities))
+
+    def test_revealed_city(self):
+        _, parsed = buildDiplomacy(
+            rivals=[self.rival(ForeignCity(0, name=u"Delhi", x=38, y=46, owner=1,
+                                           population=3))])
+        self.assertEqual(parsed["foreignCities"],
+                         [{"owner": 1, "name": "Delhi", "x": 38, "y": 46,
+                           "population": 3}])
+
+    def test_unrevealed_cities_are_absent(self):
+        _, parsed = buildDiplomacy(
+            rivals=[self.rival(ForeignCity(0, owner=1, revealed=False))])
+        self.assertEqual(parsed["foreignCities"], [])
+
+    def test_reveal_check_uses_our_team_and_never_debug(self):
+        city = ForeignCity(0, owner=1)
+        buildDiplomacy(rivals=[self.rival(city)])
+        self.assertEqual(city.revealedArgs, [(TEAM_ID, False)])
+
+    def test_capital_is_flagged_and_otherwise_omitted(self):
+        # The star on the nameplate: CvCity::isStarCity is "return isCapital()",
+        # exported for the renderer and gated on neither team nor visibility.
+        _, parsed = buildDiplomacy(
+            rivals=[self.rival(ForeignCity(0, owner=1, capital=True))])
+        self.assertIs(parsed["foreignCities"][0]["capital"], True)
+        _, parsed = buildDiplomacy(rivals=[self.rival(ForeignCity(0, owner=1))])
+        self.assertNotIn("capital", parsed["foreignCities"][0])
+
+    def test_invalid_cities_are_skipped(self):
+        _, parsed = buildDiplomacy(rivals=[self.rival(
+            ForeignCity(0, owner=1), ForeignCity(1, owner=1, none=True))])
+        self.assertEqual(len(parsed["foreignCities"]), 1)
+
+    def test_city_internals_are_never_read(self):
+        # The engine's own billboard code draws this line: name, size and the
+        # capital star are ungated, while the food and production bars beside
+        # them are gated on canBeSelected(). Every internal raises on the mock.
+        city = ForeignCity(0, owner=1)
+        buildDiplomacy(rivals=[self.rival(city)])
+        for name in ("getFood", "getProduction", "happyLevel", "goodHealth",
+                     "isProductionUnit", "getCultureThreshold"):
+            self.assertRaises(AssertionError, getattr(city, name))
+        self.assertRaises(AssertionError, city.getCulture, 1)
+        self.assertRaises(AssertionError, city.isWorkingPlotByIndex, 0)
+
+    def test_plot_side_city_lookup_is_never_used(self):
+        # isRevealed is a per-city flag and is STRICTER than the tile being
+        # revealed: CvCity::init only reveals a new city to teams that can
+        # currently SEE the plot. So a plot sweep calling getPlotCity() would
+        # surface cities founded under fog that the player has never laid eyes
+        # on. Both plot accessors raise; this is what keeps the section honest
+        # if anyone tries to fold it into _buildMap for speed.
+        mod, _ = buildDiplomacy(rivals=[self.rival(ForeignCity(0, owner=1))])
+        plot = Plot()
+        self.assertRaises(AssertionError, plot.getPlotCity)
+        self.assertRaises(AssertionError, plot.isCity)
+
+    def test_barbarian_cities_are_included(self):
+        _, parsed = buildDiplomacy(rivals=[
+            Rival(BARBARIAN_PLAYER, teamId=BARBARIAN_PLAYER, barbarian=True,
+                  cities=[ForeignCity(0, owner=BARBARIAN_PLAYER, name=u"Hippus")])])
+        self.assertEqual(parsed["foreignCities"][0]["owner"], BARBARIAN_PLAYER)
+
+    def test_sorted_by_owner_then_position(self):
+        _, parsed = buildDiplomacy(rivals=[
+            Rival(2, teamId=2, cities=[ForeignCity(0, owner=2, x=1, y=1)]),
+            Rival(1, teamId=1, cities=[ForeignCity(0, owner=1, x=5, y=9),
+                                       ForeignCity(1, owner=1, x=8, y=3)]),
+        ])
+        self.assertEqual([(c["owner"], c["x"], c["y"]) for c in parsed["foreignCities"]],
+                         [(1, 8, 3), (1, 5, 9), (2, 1, 1)])
+
+    def test_unicode_city_name_round_trips(self):
+        _, parsed = buildDiplomacy(
+            rivals=[self.rival(ForeignCity(0, owner=1, name=u"Köln"))])
+        self.assertEqual(parsed["foreignCities"][0]["name"], u"Köln")
+
+    def test_no_revealed_cities_is_an_empty_list(self):
+        _, parsed = buildDiplomacy()
+        self.assertEqual(parsed["foreignCities"], [])
+
+
+class DiplomacyRenderingTests(unittest.TestCase):
+    """The three sections are homogeneous tables, so each row is one line - the
+    same reason map tiles are. An attitude change then shows up as a one-line
+    diff rather than one line buried inside a seven-line object."""
+
+    def render(self, rivals=(), met=(), atWar=()):
+        return renderState(rivals=absentPlayers(*rivals),
+                           team=Team(met=met, atWar=atWar))[1]
+
+    def test_a_contact_is_one_line_despite_being_over_the_inline_width(self):
+        text = self.render(rivals=[Rival(2, teamId=2, leader=2, civilization=2)],
+                           met=(2,))
+        lines = [ln for ln in text.split("\n") if '"attitude"' in ln]
+        self.assertEqual(len(lines), 1)
+        self.assertGreater(len(lines[0]), 88)
+        self.assertTrue(lines[0].strip().startswith('{"playerId": 2, '), lines[0])
+        json.loads(text)
+
+    def test_foreign_rows_lead_with_their_coordinates(self):
+        text = self.render(rivals=[Rival(1, teamId=1,
+                                         units=[Unit(0, owner=1, x=7, y=9)],
+                                         cities=[ForeignCity(0, owner=1, x=3, y=4)])])
+        # `"owner"` and `"type"` together are unique to a foreign-unit row: our
+        # own units carry a type but no owner, and tiles carry an owner but no type.
+        unitLine = [ln for ln in text.split("\n")
+                    if '"owner"' in ln and '"type"' in ln][0]
+        # Likewise `"owner"` with `"population"`: our own cities have a population
+        # but no owner field, and theirs are the only ones rendered on one line.
+        cityLine = [ln for ln in text.split("\n")
+                    if '"owner"' in ln and '"population"' in ln][0]
+        # Containment rather than startswith: a section short enough to fit inline
+        # keeps its rows on the same line as the section key, which is fine - the
+        # claim being tested is the key order inside a row.
+        self.assertIn('{"x": 7, "y": 9, ', unitLine)
+        self.assertIn('{"x": 3, "y": 4, ', cityLine)
 
 
 class NoResearchSelectedTests(unittest.TestCase):
@@ -1336,75 +1926,79 @@ class NoResearchSelectedTests(unittest.TestCase):
 
 
 class SchemaConformanceTests(unittest.TestCase):
-    """Each implemented section must satisfy its subschema in schema/state.schema.json.
+    """Mod output must satisfy the WHOLE of schema/state.schema.json.
 
-    Whole-file validation deliberately isn't asserted: the schema requires sections
-    the mod doesn't build yet. Swap this for a full-document check once every
-    section is implemented.
+    Section-by-section validation was the rule while sections were still being
+    omitted; now that every one is built, the document validates as a document -
+    which also means the schema's top-level `required` and
+    `additionalProperties: false` finally bite.
     """
 
     def setUp(self):
-        self.mod = loadModule()
-        self.parsed = json.loads(
-            self.mod["toJson"](self.mod["buildState"](5, PLAYER_ID, "onEndGameTurn"), 2))
         with open(SCHEMA) as f:
             self.schema = json.load(f)
+        self.validator = jsonschema.Draft202012Validator(self.schema)
 
-    def assertSectionValid(self, section):
-        sub = dict(self.schema["properties"][section])
-        sub["$schema"] = "https://json-schema.org/draft/2020-12/schema"
-        errors = [e.message
-                  for e in jsonschema.Draft202012Validator(sub).iter_errors(self.parsed[section])]
-        self.assertEqual(errors, [], "%s section: %s" % (section, "; ".join(errors)))
+    def assertValid(self, parsed):
+        errors = ["%s: %s" % ("/".join(str(p) for p in e.absolute_path), e.message)
+                  for e in self.validator.iter_errors(parsed)]
+        self.assertEqual(errors, [], "; ".join(errors))
+
+    def export(self, **kwargs):
+        return exportState(**kwargs)[1]
 
     def test_schema_itself_is_well_formed(self):
         jsonschema.Draft202012Validator.check_schema(self.schema)
 
-    def test_meta_section(self):
-        self.assertSectionValid("meta")
+    def test_default_export_validates_as_a_whole_document(self):
+        self.assertValid(self.export())
 
-    def test_game_section(self):
-        self.assertSectionValid("game")
-
-    def test_player_section(self):
-        self.assertSectionValid("player")
-
-    def test_units_section(self):
-        self.assertSectionValid("units")
-
-    def test_cities_section(self):
-        self.assertSectionValid("cities")
-
-    def test_map_section(self):
-        self.assertSectionValid("map")
-
-    def test_fully_populated_tile_validates(self):
-        # The default fixture leans on omitted defaults; make sure a tile that
-        # actually carries every optional field satisfies the schema too.
+    def test_fully_populated_export_validates(self):
+        # The default fixture leans heavily on omitted defaults. This one carries
+        # every optional field there is: a tile with all of them set, a damaged
+        # unit, met rivals, visible foreign units and a revealed capital.
         cyMap = Map(plots=[Plot(x=0, y=0, terrain=3, visible=True, hills=True,
                                 lake=True, freshWater=True, river=True,
                                 feature=1, bonus=0, improvement=0, route=1,
                                 owner=2, yields=(3, 2, 1))],
                     width=1, height=1)
-        mod = loadModule(cyMap=cyMap)
-        parsed = json.loads(mod["toJson"](mod["buildState"](5, PLAYER_ID, "x"), 2))
-        sub = dict(self.schema["properties"]["map"])
-        sub["$schema"] = "https://json-schema.org/draft/2020-12/schema"
-        jsonschema.Draft202012Validator(sub).validate(parsed["map"])
+        parsed = self.export(
+            player=Player(units=[Unit(0, damage=55)]),
+            cyMap=cyMap,
+            team=Team(met=(1, 2), atWar=(2,)),
+            rivals=absentPlayers(
+                Rival(1, teamId=1, leader=1, civilization=1, attitude=4,
+                      units=[Unit(0, unitType=1, owner=1, damage=30)],
+                      cities=[ForeignCity(0, owner=1, capital=True)]),
+                Rival(2, teamId=2, leader=2, civilization=2, attitude=0),
+                Rival(BARBARIAN_PLAYER, teamId=BARBARIAN_PLAYER, barbarian=True,
+                      units=[Unit(0, unitType=1, owner=BARBARIAN_PLAYER)])))
+        self.assertValid(parsed)
+        # Guard against the fixture silently going empty and validating vacuously.
+        self.assertEqual(len(parsed["contacts"]), 2)
+        self.assertEqual(len(parsed["foreignUnits"]), 2)
+        self.assertEqual(len(parsed["foreignCities"]), 1)
 
-    def test_process_city_section_still_validates(self):
+    def test_process_city_export_still_validates(self):
         # The null productionNeeded branch has to satisfy the schema too.
-        mod = loadModule(Player(cities=[City(0, unit=None, process=0,
-                                             productionNeeded=MAX_INT)]))
-        parsed = json.loads(mod["toJson"](mod["buildState"](5, PLAYER_ID, "x"), 2))
-        sub = dict(self.schema["properties"]["cities"])
-        sub["$schema"] = "https://json-schema.org/draft/2020-12/schema"
-        jsonschema.Draft202012Validator(sub).validate(parsed["cities"])
+        self.assertValid(self.export(
+            player=Player(cities=[City(0, unit=None, process=0,
+                                       productionNeeded=MAX_INT)])))
+
+    def test_no_research_selected_export_still_validates(self):
+        self.assertValid(self.export(player=Player(research=NO_TECH)))
 
     def test_committed_example_still_validates(self):
         with open(os.path.join(REPO, "schema", "state.example.json")) as f:
             example = json.load(f)
-        jsonschema.Draft202012Validator(self.schema).validate(example)
+        self.assertValid(example)
+
+    def test_an_extra_top_level_section_would_be_rejected(self):
+        # additionalProperties: false only started biting once whole-document
+        # validation replaced the per-section checks; make sure it does.
+        parsed = self.export()
+        parsed["surprise"] = 1
+        self.assertRaises(AssertionError, self.assertValid, parsed)
 
 
 class WriteStateFileTests(unittest.TestCase):

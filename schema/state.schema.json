@@ -161,7 +161,7 @@
         },
         "units": {
             "type": "array",
-            "description": "The player's own units.",
+            "description": "The player's own units. FIELD OMISSION IS MEANINGFUL HERE, as in map.tiles: damage is written only when the unit is actually hurt, since undamaged is overwhelmingly the common case. Every other field is unconditional.",
             "items": {
                 "type": "object",
                 "properties": {
@@ -176,12 +176,13 @@
                     },
                     "damage": {
                         "type": "integer",
-                        "minimum": 0,
+                        "minimum": 1,
                         "maximum": 100,
-                        "description": "0 = full health, 100 = dead."
+                        "default": 0,
+                        "description": "Percentage of health lost, not hit points: 100 would be dead. Omitted when the unit is undamaged, which is its default and by far the usual case."
                     }
                 },
-                "required": ["id", "type", "x", "y", "moves", "damage"],
+                "required": ["id", "type", "x", "y", "moves"],
                 "additionalProperties": false
             }
         },
@@ -328,7 +329,7 @@
         },
         "contacts": {
             "type": "array",
-            "description": "Rival players the player has met.",
+            "description": "Rival civs the player has met, in player-ID order. BARBARIANS AND MINOR CIVS ARE DELIBERATELY EXCLUDED AND THIS IS NOT COSMETIC: their teams declare war on every civ team during CvGame::initDiplomacy, and CvTeam::declareWar calls meet(), so isHasMet and isAtWar are both TRUE for the barbarians from turn 0 - a loop written on isHasMet alone reports a barbarian 'contact', at war, in every export from turn 1. The filter is the base game's own: isAlive() and not isBarbarian() and not isMinorCiv() and isHasMet(). Met civs since destroyed also drop out, matching those screens. Nothing here is gated on more than having met; no espionage is involved in showing a met civ's attitude.",
             "items": {
                 "type": "object",
                 "properties": {
@@ -338,7 +339,7 @@
                     "attitude": {
                         "type": "string",
                         "pattern": "^ATTITUDE_[A-Z0-9_]+$",
-                        "description": "Their attitude toward the player (the visible smiley: FURIOUS/ANNOYED/CAUTIOUS/PLEASED/FRIENDLY)."
+                        "description": "Their attitude toward the player - the five-bucket value the UI shows (FURIOUS/ANNOYED/CAUTIOUS/PLEASED/FRIENDLY), read as CyPlayer.AI_getAttitude and resolved through gc.getAttitudeInfo, so it joins CIV4AttitudeInfos.xml like every other enum here. The underlying numeric score is NOT exported and could not be: AI_getAttitudeVal is not part of the Python API at all, so the bucket is the most the mod could leak even by accident."
                     },
                     "atWar": {"type": "boolean"}
                 },
@@ -348,14 +349,25 @@
         },
         "foreignUnits": {
             "type": "array",
-            "description": "Other players' units on currently-visible tiles only (fogged units are not remembered). Only what any observer sees: type and position.",
+            "description": "Every other player's units standing on a CURRENTLY-VISIBLE tile, sorted by owner then position. Unlike cities, units are not remembered: the game forgets an enemy stack the moment the tile fogs over, and so does this section - a unit vanishing between turns means 'no longer in sight', not 'destroyed'. The rule is the base game's own, from the military advisor: plot.isVisible(team, False) and not unit.isInvisible(team, False). Invisibility is close to a no-op in the first twenty turns - only the Spy and Great Spy are permanently invisible - but is honoured because it also hides units loaded as cargo, which the map does not draw either. BARBARIANS BELONG HERE and are the main military fact of the early game; they appear under the engine's barbarian player ID, the last player index (MAX_CIV_PLAYERS). FIELD OMISSION IS MEANINGFUL HERE: damage is written only when the unit is hurt.",
             "items": {
                 "type": "object",
                 "properties": {
-                    "owner": {"type": "integer", "minimum": 0, "description": "Owning player ID; barbarians appear as the engine's barbarian player ID."},
+                    "owner": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "Owning player ID as the game DISPLAYS it (CyUnit.getVisualOwner), not the true owner. The two differ only for hidden-nationality units, which the game shows as barbarian unless they are in one of their owner's cities - no such unit exists before Astronomy, but reading the visual owner means the export can never be the thing that unmasks one."
+                    },
                     "type": {"type": "string", "pattern": "^UNIT_[A-Z0-9_]+$"},
                     "x": {"type": "integer", "minimum": 0},
-                    "y": {"type": "integer", "minimum": 0}
+                    "y": {"type": "integer", "minimum": 0},
+                    "damage": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 100,
+                        "default": 0,
+                        "description": "Percentage of health lost, same scale as units[].damage; omitted when the unit is undamaged. Legitimately visible: the engine folds every unit's damage into the stack strength it prints in the tile mouseover, gated only on the plot being visible and with no owner check."
+                    }
                 },
                 "required": ["owner", "type", "x", "y"],
                 "additionalProperties": false
@@ -363,7 +375,7 @@
         },
         "foreignCities": {
             "type": "array",
-            "description": "Other players' cities on revealed tiles (cities stay on the map once seen, like tiles). Externally-visible facts only.",
+            "description": "Every other player's cities that the player's team has actually laid eyes on, sorted by owner then position. Unlike units, cities persist once seen - the nameplate stays on the map under fog, and so do they here. The gate is CyCity.isRevealed(team, False), a per-city flag STRICTER than the tile being revealed: a city founded on a tile the player revealed long ago but cannot currently see is not revealed to them until they next look. That is why this iterates each rival's own city list rather than sweeping plots and calling getPlotCity(), which reads live truth and would surface those fog-founded cities. Barbarian cities appear on the same terms. The fields are LIVE rather than remembered, which matches the UI rather than overstating it: the engine builds the nameplate from getName(), getPopulation() and isStarCity() with no visibility gate, while deliberately gating the food and production bars beside them on canBeSelected(). Nothing about a city's insides is exported, because nothing about it is shown.",
             "items": {
                 "type": "object",
                 "properties": {
@@ -371,7 +383,12 @@
                     "name": {"type": "string"},
                     "x": {"type": "integer", "minimum": 0},
                     "y": {"type": "integer", "minimum": 0},
-                    "population": {"type": "integer", "minimum": 1}
+                    "population": {"type": "integer", "minimum": 1},
+                    "capital": {
+                        "type": "boolean",
+                        "default": false,
+                        "description": "This is the owner's capital, which the game marks with a star on the city nameplate (CvCity::isStarCity is literally 'return isCapital()', exported for the renderer and ungated by team or visibility). Omitted when false. Whether the player is currently looking is derivable rather than duplicated here: a revealed city always sits on a revealed tile, so join x/y against map.tiles and read visibleNow."
+                    }
                 },
                 "required": ["owner", "name", "x", "y", "population"],
                 "additionalProperties": false
