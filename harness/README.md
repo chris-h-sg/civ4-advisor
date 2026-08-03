@@ -4,6 +4,10 @@ External Python 3 project: **tooling an agent invokes**, not an API client.
 
 Reads the state JSON written by `mod/` and turns it into forms an agent can reason over. There is no Claude API client here and there will not be one — an agentic coding tool (Claude Code or Cowork) is pointed at this repo plus the game's XML and produces the advice itself. Root `CLAUDE.md` has the reasoning and what that choice deletes.
 
+> **This README is for developers** — design rationale, measured findings, and the boundary that keeps this folder from growing into something else. The advising agent reads **[`AGENT_GUIDE.md`](AGENT_GUIDE.md)** instead.
+>
+> **Usage belongs in the guide; reasons belong here.** A paragraph here explaining how to invoke something is in the wrong file, and so is a line there justifying a design choice.
+
 ## Constraints
 
 - Modern Python 3 — nothing inherited from `mod/`.
@@ -38,42 +42,21 @@ python -m pytest harness/tests mod/tests
 
 ## Tools
 
-Document each tool here as it lands, written for an agent choosing between them: what it shows and when to reach for it.
-
 ### `render_map.py` — the map renderer
 
 ```
 python harness/render_map.py <state.json> [--view NAME] [--around X,Y] [--radius N] [--brief]
 ```
 
-Turns `map.tiles` into an ASCII grid. Pick a **view** (the decision you are making) and optionally a **region**. Each render carries its own legend and a `THIS VIEW OMITS` block, so you do not need this file open to read one.
-
-| view | the question it answers | fog | also gives you |
-|---|---|---|---|
-| `settle` | Where do I found a city? | not shown | founding legality, your settlers, a resource list |
-| `explore` | Where do I send the scout? | 3 states | the frontier with unexplored map, goody huts |
-| `military` | What can reach me, and what can I even see? | 3 states | both sides listed: rival units by owner, and your own with the distance to the nearest threat |
-| `yields` | Which tiles should my citizens work? | not shown | every city's 21 tiles with worked/unworked totals |
-| `worker` | What should my workers build, and where? | not shown | unimproved resources in radius, roads, and any rival unit in sight so you don't walk an unarmed worker into one |
-
-`--around X,Y` prints a **site report** for that tile — whether it can hold a city at all, coastal or not, fresh water, overlap with your existing cities, distance from each settler, a legality check, and the 21-tile city cross as a yield table. `--radius N` crops the *grid* only; the site report is always the full city radius. `--brief` drops the symbol legend and the grid-reading note but keeps the traps, the omissions, and — in `explore` and `military` — the fog key, since a fogged tile reports no enemies whether or not any are there — worth using after your first call in a session. Default view is `settle`; the header echoes what you actually invoked.
-
-**Use `--around` before committing to a site.** Every agent trial converged on this: the whole-map grid is for narrowing candidates, the site report is for choosing between them. Overlap counts, coastal status and improved-yield marks exist only in the report, and each of them has flipped a ranking in testing.
-
-**A symbol means the same thing in every view.** Each render opens its legend with a `SHARED SYMBOLS` block that is identical across all five, then adds only what is specific to that view. The column a glyph sits in says what *kind* of fact it is — that is what each legend's `cell = [...]` line is for — but no glyph ever changes meaning between views.
-
-Reuse *across columns* is allowed, but only where the two roles are the same concept: `~` is ocean terrain and sea access, `*` is a resource and (in `worker`) a still-unimproved resource, `?` is a goody hut in both columns that can show one. Those three pairs are enumerated in a test, so adding a fourth is a deliberate act rather than an accident.
-
-Three things to know before acting on a render:
-
-- **North is up.** `y` increases northward, so rows run high `y` → low `y`.
-- **The grid never replaces the JSON.** It is lossy on purpose — glyphs abbreviate, unit stacks collapse to one marker, and each view drops whole categories of fact. Confirm any tile you act on against `map.tiles`.
-- **On `explore` and `military`, read the fog first.** `foreignUnits` reports units only on *currently visible* tiles, so a fogged region renders as "no enemies" whether or not any are there.
+Five views — `settle`, `explore`, `military`, `yields`, `worker` — each cut to one decision, plus a `--around X,Y` site report. Usage is in `AGENT_GUIDE.md`; the reasoning is below.
 
 Renders are generated on demand and never committed — a stale grid that disagrees with the JSON misleads confidently with no way to notice.
 
 <details>
-<summary><b>Design notes</b> — why the views are cut this way (maintainers; not needed to use the tool)</summary>
+<summary><b>Design notes</b> — why the views are cut this way</summary>
+
+**A symbol means the same thing in every view.** Each render opens its legend with a `SHARED SYMBOLS` block identical across all five, then adds only what is specific to that view. The column a glyph sits in says what *kind* of fact it is — that is what each legend's `cell = [...]` line is for — but no glyph ever changes meaning between views. Reuse *across columns* is allowed only where the two roles are the same concept: `~` ocean terrain and sea access, `*` resource and (in `worker`) still-unimproved resource, `?` goody hut in both columns that can show one. Those three pairs are enumerated in a test, so adding a fourth is deliberate rather than accidental.
+
 
 **One fact per column, never a priority rule.** Tile facts coexist freely: grassland *hills* with *forest*, a *resource* and *fresh water* is one ordinary tile, not a corner case — 9 of 266 tiles in the baseline run at t40 carry both a resource and a feature. When facts share a slot the loser is **invisible**, not abbreviated, and nothing in the output hints that anything was dropped. So each view gives every fact it cares about its own column, and which facts get one is exactly what distinguishes the views: `settle` splits feature / resource / water / coast; `worker` splits feature from what is built, because clearing jungle is itself a worker order and stays true under an improvement; `military` splits feature from territory, since forest and jungle are +50% defence and hills +25%. Relief rides on the terrain letter's case, and `^` drops a peak's base terrain because a peak is impassable and unimprovable.
 
@@ -116,6 +99,56 @@ What replaced it is a count of what is *there* — workable land, workable water
 
 </details>
 
+### `run_history.py` — the run history
+
+```
+python harness/run_history.py <run-folder> [--view timeline|intel] [--from N] [--to M]
+```
+
+Takes a **run folder** of `turn_*.json` files — the whole game, not one turn. Two views: `timeline` (what changed, turn by turn) and `intel` (per-rival dossier). Usage is in `AGENT_GUIDE.md`; the reasoning is below.
+
+<details>
+<summary><b>Design notes</b> — why it is cut this way</summary>
+
+**`intel` splits each rival into two sections because they answer different questions and go stale at different rates.** `RECENT SIGHTINGS` is positional and perishable — where something was, most recent first, with the age in turns. `EVER FIELDED` is a permanent capability record: a unit type seen once is one they can build, and that stays true forever. The turn a type was **first** seen leads each line, since that is the fact that dates their tech. The two use cases that drove the split are not walking a vulnerable unit into a hostile, and reading a rival's tech level off what they have fielded.
+
+**`intel` ignores `--from`/`--to` on purpose** and says so on stderr: a dossier truncated at turn M drops the earliest sighting of a unit type, which is precisely the fact that proves a capability. Clamping the *run* is a different thing and is what `--as-of` is for.
+
+**Barbarians and animals are listed separately, and that split is load-bearing.** A Roman Archer implies Archery (`CIV4UnitInfos.xml` gives `UNIT_ARCHER` a `PrereqTech` of `TECH_ARCHERY`); a panther implies nothing about anyone. Both arrive through `foreignUnits` under the barbarian player id, so a single list would invite reading animal sightings as evidence about a civ. **They get full positions**, which they did not at first: the split was right and the barbarian half was under-built, printing a bare turn count. A trial called it "the section with no coordinates is the section I most needed coordinates from" — correctly, since in turns 0–50 the animals *are* the military threat, and it reconstructed the lion cluster at (71,17–18) by hand.
+
+**The five changes after the first round of trials**, all from what agents did with the output rather than from review:
+
+- **A settler consumed founding a city is no longer `LOST`.** Two trials read `LOST UNIT_SETTLER` as a casualty; one "nearly built an advisory around a second casualty that never happened". The pairing is an inference — the export never records which settler founded what — but safe at one settler and one city, and refused rather than guessed when either count is higher. It deliberately does **not** match on position: the settler moves and founds in the same turn, so its last exported position is a tile or more from the city (Oporto at (78,14), settler last at (77,15)), and a positional match would fail on the case it exists for.
+- **`--as-of N` clamps the whole run** by discarding later files at load — the only version that cannot leak, since nothing downstream can reach a state never loaded. Three trials hit the footgun it fixes: a question set at t34 against a run reaching t40, with `intel`'s header asserting t40 was now. `--from`/`--to` remain `timeline` output scoping, which is a different thing.
+- **Garrison counts** — three trials hand-joined `units` against `cities` by coordinate, one calling it the most important fact in its answer.
+- **Distance from your nearest city.** Every trial computed Chebyshev by hand and one noted it could have got the `wrapX` term silently wrong. Nearest rather than per-city: one number is scannable, N numbers grow with the empire and mostly repeat.
+- **The compass finding went to the guide, not the tool** — no output change can fix narration when the coordinates were already right.
+
+**The garrison section counts and refuses to judge.** Whether an empty city is in danger depends on what can reach it, and **none of that is computable from the export** — no landmass id, so "can a land unit walk here" is unanswerable, the same gap that makes `settle` over-report founding legality across water. Printing "UNDEFENDED" would assert a threat model the tool cannot evaluate, and on a city reachable only by sea it would simply be wrong. So it reports who stands where and points at `--view military`. Same present-don't-decide line as refusing to rank sites, in a place where the wrong call looks helpful.
+
+**Distance is Chebyshev, always labelled a lower bound**, ignoring terrain and borders; anything better is the pathfinding this folder declines to build. `render_map.py`'s site report already says "a LOWER BOUND on turns, terrain costs more" — two tools disagreeing on what a distance means would be worse than neither printing one.
+
+
+**Continuity is a constructor assert, not a view.** Save-scumming into a different branch is out of scope: reloading an older save rewrites that turn and leaves later files from the abandoned timeline behind, producing a folder that looks continuous but is not. Rather than report and work around it, `Run.__init__` raises and `main()` exits 2. It was briefly designed as a third `check` view; that collapsed once branch support was ruled out, because nobody asks "is this run sound?" as a question when the answer is enforced on every call. **Fatal:** setup-signature disagreement, duplicate or backwards turn numbers, techs unlearned, revealed tiles forgotten, a city id reused under a new name. **Not fatal:** a turn gap — a failed export is logged and skipped rather than crashing the game, so gaps are legal. They are reported in the header *and* labelled on the block that spans them, since a diff across a two-turn gap covers two turns of change and would otherwise read as one.
+
+**The fog distinction is the whole tool, and a position-keyed diff without it is mostly noise.** Measured on the baseline run: at t35–t40 two rival scouts are continuously observed *while moving*, so a diff keyed on `(owner, type, x, y)` reports them vanishing and reappearing every single turn — six turns of "gone!" about units that never left sight. Classifying each departure against the *next* turn's `visibleNow` is what separates that from the real case, and the same run has both on one turn: at t27 Rome's garrison reads `lost sight` (its tile fogged) while a lion two tiles away reads `left or died` (its tile stayed visible).
+
+**Own units and rivals' units need different machinery, because only ours have ids.** Our `units` and `cities` carry stable engine ids, so their diff is exact — the warrior lost at t38 is an unambiguous id disappearance, and the settler consumed into Lisbon at t1 is visible as id 8192 leaving `units` as a city of the same id appears. `foreignUnits` has no id at all, so nothing there can be tracked, only observed. Every asymmetry in the output follows from that one fact.
+
+**`intel` reports observations and never concludes.** It says a Roman Archer was seen on t26; it does not say Rome has Archery. That join belongs to the rules-lookup tool plus the agent's judgement — so the section names `CIV4UnitInfos.xml` and stops, the same way `render_map.py`'s `worker` view names the XML rather than walking the tech tree itself. This is not pedantry about where a lookup lives: writing these notes, I asserted from memory that an Archer implies *Bronze Working*, which is the Axeman's prerequisite. The XML says `TECH_ARCHERY`. A tool that printed a confident tech conclusion would have printed that same wrong one.
+
+**Foreign city population needed no staleness treatment, contrary to first appearances.** Rome's tile is visible only at t26 and fogged for the remaining fourteen turns, yet its population moves 4 → 5 → 3. That is not stale data: the schema exports `foreignCities` fields **live**, because the engine paints the real nameplate through fog with no visibility gate. So the latest value genuinely is current, and only the turn it was recorded is printed, for provenance. Marking these "possibly stale" would have taught a false rule about the export.
+
+**Stacks collapse to one line with a count.** Two Roman archers on one tile at t26 printed as two identical lines, which reads as a rendering fault rather than as the militarily relevant fact that it is a stack.
+
+**Tile changes are tracked on five fields and terrain is deliberately not one.** `improvement`, `route`, `owner`, `bonus` and `feature` change meaningfully; terrain never changes, so a change would mean a broken run, which the continuity guard owns. `visibleNow` is excluded because it flips constantly by design — that is the fog, not the world moving. `bonus` appearing gets its own wording (`RESOURCE NOW VISIBLE`) because the resource was always there and a tech is what unhid it: in the baseline run `BONUS_HORSE` appears on two tiles the same turn Animal Husbandry completes, and both facts land in the same block, which is what makes the causation readable without joining two files by hand. The two `feature` changes in the run (jungle t29, forest t39) are the engine's feature-growth mechanic; the tool reports the observation and does not guess the cause.
+
+**What was considered and not built.** An `own` view — your own empire's trajectory across the run — was dropped: that is four numbers per turn, and an agent reading five JSON files gets it unaided. The bar is where the agent is *unreliable*, and the expensive cases are the ones that span many files. Whether it is wanted is left to the agent trials to report rather than guessed at now.
+
+**This tool makes none of the renderer's three deferred requests cheaper.** Comparing several `--around` sites, a `--no-grid` flag, and movement cost are all single-turn spatial concerns; nothing here touches them.
+
+</details>
+
 ### The bar
 
 **A tool earns its place only where the agent is *unreliable* reading the raw JSON — not merely where automation is possible.** The agent reads JSON well; filtering units, comparing city yields and checking research all work unaided, so most of the export needs no tooling. The gaps are spatial reasoning, aggregation across many files, and consistent arithmetic over many rows. That is why this list is short, and it should stay short.
@@ -128,7 +161,7 @@ What replaced it is a count of what is *there* — workable land, workable water
 
    **What trials keep asking for and has not been built.** Three requests recur, all presentation rather than judgement, and all deferred rather than refused: a way to compare several `--around` sites in one call instead of holding six site reports in your head; a `--site-only`/`--no-grid` flag (four separate trials independently discovered `--radius 1` as the workaround and one piped through `sed`); and movement cost rather than Chebyshev distance, which is the largest thing a second-city decision has to guess at — though that one edges into the pathfinding this folder declines to build.
 
-2. **Run history.** Two views: `timeline`, what changed between turns N and M (tiles revealed, units appeared or vanished, cities founded or grown, techs completed, rivals first met); and `intel`, everything ever observed about each rival across the run, tagged with the turn it was seen. Highest value after the map — root `CLAUDE.md` calls reasoning across the turn history a first-class use of the export, but answering "when did I last see an Axeman" currently means reading every file in the run, which is expensive enough that it won't happen reliably, leaving that capability theoretical. It must also **validate the run it is given rather than assume one**: reloading an older save rewrites that turn and leaves later files from the abandoned timeline behind, so ordinary save-scumming can leave a live run divergent mid-game; turn gaps are legitimate but change what a diff means. Both checks belong here rather than in a step run beforehand — a precondition the agent has to remember is one it will skip, and this is the tool that gets fooled. Report them, don't silently span them.
+2. ~~**Run history.**~~ **Done** — `run_history.py` above, `timeline` and `intel` as sketched. Two departures from the original sketch, both from measuring the baseline run rather than predicting: run validation became a **constructor assert that exits non-zero** rather than something reported and worked around, once branch-divergence support was ruled out of scope (gaps stay legal and are labelled where they matter); and every rival-unit departure is **classified against the next turn's fog**, without which a position-keyed diff is mostly noise — two scouts moving in sight across t35–t40 otherwise report as vanishing and reappearing every turn. A third `check` view was designed and dropped when the assert absorbed it. `intel`'s two-section split — recent-and-positional versus ever-fielded-and-permanent — comes from the two stated use cases: not walking into a hostile, and reading a rival's tech level off what they have fielded.
 
 3. **Rules lookup — narrow.** Reverse and transitive lookups against the game's XML, which is what XML is bad at: "which tech does `UNIT_AXEMAN` require, and what does *that* require" is a closure walk. Forward lookups the agent greps fine on its own, so this stays scoped to reverse and transitive only. Feeds `intel` directly — spotting a unit is worthless without the tech implication.
 
@@ -139,6 +172,10 @@ What replaced it is a count of what is *there* — workable land, workable water
 - **Anything that scores or ranks decisions.** See the boundary above.
 - **A run linter.** Dissolved rather than deferred: run integrity is a precondition inside the history tool, schema validity of committed samples is a test over `samples/`, and schema validity of live captures is mod verification that `mod/tests/` already does against mocks. None of those is turning game state into a form an agent can reason over, which is what this folder is for.
 
-### When the agent instructions get written
+### The agent instructions — written, in `AGENT_GUIDE.md`
 
-They must (a) name these tools and when to reach for each, since a tool the agent doesn't know about is a tool that doesn't exist, and (b) ask it to **flag any point where a tool would have helped** — many files read to answer one question, the same derivation repeated, a format worked around. Those reports are the real evidence for what to build next; the list above is a starting guess.
+Both requirements this section used to specify are there: it names each tool and when to reach for it, and asks the agent to **flag where a tool would have helped**.
+
+That second one is validated rather than assumed — five trials produced those reports unprompted. Three independently asked for a defender-count join, two misread a consumed settler as a combat loss, and the unanimous failure was **compass direction**, which no correct output can catch. Hence the guide's ordering.
+
+It contains no rationale by design; the reasons live here.
