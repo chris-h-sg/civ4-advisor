@@ -1,0 +1,5 @@
+# Dev/test dependencies only. The tools themselves are stdlib-only and must stay
+# that way - see README.md "Running these" for why.
+#
+# Also covers mod/tests/, which has needed pytest since before this file had entries.
+pytest>=8.0
