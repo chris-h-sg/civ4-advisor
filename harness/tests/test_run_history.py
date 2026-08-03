@@ -218,6 +218,46 @@ def test_timeline_reports_first_contact(run):
     assert "MET LEADER_ALEXANDER" in text
 
 
+def test_timeline_reports_rival_territory_first_seen(run):
+    """Greek borders at (66,17-19) were the first evidence of a Greek city.
+
+    They arrive ALREADY OWNED on the turn the tiles are first revealed, so an
+    owner-change diff never fires - which is why this needed its own branch.
+    """
+    text = render(run, "timeline", 35, 36)
+    assert "TERRITORY FIRST SEEN" in text
+    assert "LEADER_ALEXANDER" in text
+    assert "(66,19)" in text
+
+
+def test_rival_territory_hints_at_a_city(run):
+    text = render(run, "timeline", 35, 35)
+    assert "a border implies a city within" in text
+
+
+def test_own_territory_is_not_reported_as_rival(run):
+    """Founding Oporto claims tiles; they must not read as a rival's."""
+    text = render(run, "timeline", 36, 36)
+    rival_lines = [l for l in text.split("\n") if "TERRITORY FIRST SEEN" in l]
+    for line in rival_lines:
+        assert "you" not in line
+
+
+def test_small_reveals_list_their_coordinates(run):
+    """The five tiles revealed at t38 are the evidence for where a unit died."""
+    text = render(run, "timeline", 38, 38)
+    for pos in ("(69,15)", "(69,16)", "(70,15)", "(70,16)", "(71,19)"):
+        assert pos in text
+
+
+def test_large_reveals_stay_a_count(run):
+    """A 48-tile scouting sweep is not evidence and would bury the block."""
+    turn = first_turn_with(lambda s: s["game"]["gameTurn"] == 1)
+    text = render(run, "timeline", 1, 1)
+    assert "48 tile(s) newly revealed" in text
+    assert "(75,13), (75,14)" not in text
+
+
 def test_timeline_skips_turns_with_no_change(run):
     """Turn 2 changes nothing in the sample, so it must not get a block."""
     text = render(run, "timeline", 2, 2)
@@ -508,7 +548,92 @@ def test_chebyshev_is_wrap_aware():
 
 def test_sightings_carry_distance_from_your_nearest_city(run):
     text = render(run, "intel")
-    assert "from Lisbon" in text
+    assert "of Lisbon" in text
+
+
+def test_sightings_carry_a_compass_bearing(run):
+    """Ten trials narrated north/south backwards; the tool states it now."""
+    text = render(run, "intel")
+    # Rome is at (69,31), Lisbon at (75,15): higher y is NORTH, lower x is WEST.
+    assert "NNW of Lisbon" in text
+
+
+def test_bearing_matches_the_axis_convention():
+    state = load(40)
+    lisbon = (75, 15)
+    assert run_history.bearing(state, lisbon, (75, 31)) == "N"
+    assert run_history.bearing(state, lisbon, (75, 5)) == "S"
+    assert run_history.bearing(state, lisbon, (79, 15)) == "E"
+    assert run_history.bearing(state, lisbon, (69, 15)) == "W"
+    assert run_history.bearing(state, lisbon, (69, 31)) == "NNW"
+    assert run_history.bearing(state, lisbon, (76, 16)) == "NE"
+    assert run_history.bearing(state, lisbon, lisbon) == ""
+
+
+def test_bearing_dominant_axis_leads():
+    """WNW, not NWW - the major axis comes first, as on a real compass."""
+    state = load(40)
+    assert run_history.bearing(state, (75, 15), (69, 17)) == "WNW"
+    assert run_history.bearing(state, (75, 15), (69, 13)) == "WSW"
+
+
+def test_bearing_is_wrap_aware():
+    state = load(40)
+    width = state["game"]["mapWidth"]
+    assert state["game"]["wrapX"]
+    # One tile east across the seam is EAST, not width-1 tiles west.
+    assert run_history.bearing(state, (width - 1, 20), (0, 20)) == "E"
+
+
+def test_land_path_reports_the_detour_chebyshev_hides(run):
+    """The measured case: a lion 6 tiles away is a 14-step walk around a bay.
+
+    Two trials found this independently and both called the bare Chebyshev
+    figure the most misleading number they were given.
+    """
+    state = load(34)
+    lisbon = (75, 15)
+    lion = (69, 21)
+    assert run_history.chebyshev(state, lion, lisbon) == 6
+    steps, _ = run_history.land_path(state, lion, lisbon)
+    assert steps == 14
+
+
+def test_land_distance_is_shown_when_it_differs(run):
+    clamped = run_history.Run(SAMPLE_DIR, as_of=34)
+    text = render(clamped, "intel")
+    assert "14 TO WALK" in text
+    assert "(only 6 straight)" in text
+
+
+def test_every_distance_line_states_the_unit_of_measurement():
+    """A bare '12 NNW of Lisbon' beside '14 TO WALK NNW (12 straight)' left two
+    trials unsure which figure the bare form meant. Every line now says 'walk'."""
+    clamped = run_history.Run(SAMPLE_DIR, as_of=34)
+    text = render(clamped, "intel")
+    checked = 0
+    for line in text.splitlines():
+        if " of Lisbon" in line and "NO LAND ROUTE" not in line:
+            assert "to walk" in line.lower(), line
+            checked += 1
+    assert checked > 5, "expected several distance lines to check"
+
+
+def test_land_path_refuses_to_route_through_fog():
+    """Unrevealed tiles are never walked; they are counted as unknowns."""
+    state = load(34)
+    steps, gaps = run_history.land_path(state, (75, 15), (69, 21))
+    assert steps == 14
+    assert gaps > 0, "the revealed region should border unrevealed tiles"
+
+
+def test_land_path_none_when_separated_by_water():
+    state = load(34)
+    tiles = {(t["x"], t["y"]): t for t in state["map"]["tiles"]}
+    water = [p for p, t in tiles.items() if t.get("plotType") == "PLOT_OCEAN"]
+    assert water, "premise: the sample has water"
+    steps, _ = run_history.land_path(state, (75, 15), water[0])
+    assert steps is None
 
 
 def test_no_distance_note_before_any_city_exists():
@@ -544,6 +669,104 @@ def test_garrison_section_finds_a_unit_inside_a_city():
     text = render(clamped, "intel")
     section = text.split("YOUR CITIES AND WHAT IS STANDING IN THEM")[1]
     assert "SETTLER" in section
+
+
+# -- loss reporting --------------------------------------------------------
+
+
+def test_loss_line_says_last_exported_not_last_position(run):
+    """'last at' read as the death tile to two trials. It is not."""
+    text = render(run, "timeline", 38, 38)
+    assert "last exported at (69,18) on t37" in text
+    assert "may have moved before dying" in text
+
+
+def test_loss_line_carries_distance_and_bearing(run):
+    """Rival sightings had this; our own unit's death did not."""
+    text = render(run, "timeline", 38, 38)
+    assert "WNW of Lisbon" in text
+    # The walk leads when it differs; the straight line becomes the aside.
+    assert "TO WALK" in text
+    assert "(only 6 straight)" in text
+
+
+def test_lost_view_reports_the_warrior(run):
+    text = render(run, "lost")
+    assert "UNIT_WARRIOR id 16385" in text
+    assert "gone from the turn 38 export" in text
+
+
+def test_lost_view_gives_the_track(run):
+    """The path leading up to a loss is what makes it interpretable."""
+    text = render(run, "lost")
+    assert "t37 (69,18)" in text
+    assert "t34 (68,21)" in text
+
+
+def test_lost_view_reports_damage_history(run):
+    """This warrior was hurt at t16 and healed - a hand-scripted sweep before."""
+    text = render(run, "lost")
+    assert "t16 30%" in text
+
+
+def test_lost_view_gives_the_final_turn_reveals(run):
+    """The evidence a trial used to locate the real death tile."""
+    text = render(run, "lost")
+    for pos in ("(69,15)", "(70,16)", "(71,19)"):
+        assert pos in text
+
+
+def test_lost_view_lists_what_was_in_sight(run):
+    text = render(run, "lost")
+    assert "UNIT_LION" in text
+    assert "BARBARIANS" in text
+
+
+def test_lost_view_refuses_to_name_a_killer(run):
+    """It presents evidence and stops - the export has no combat log."""
+    text = render(run, "lost")
+    assert "NOTHING here says what killed it" in text
+    assert "killed by" not in text.lower()
+
+
+def test_lost_view_excludes_settlers_consumed_founding(run):
+    """Two settlers vanish in this run; both founded cities."""
+    text = render(run, "lost")
+    assert "1 unit(s) of yours disappeared" in text
+    assert "UNIT_SETTLER" not in text
+
+
+def test_lost_view_warns_that_range_flags_are_ignored(capsys):
+    """Silently accepting a flag that does nothing is worse than rejecting it.
+
+    `lost` spans the whole run by design - a loss report scoped to a window
+    would hide the track that led into it - but the caller must be told.
+    """
+    assert run_history.main([SAMPLE_DIR, "--view", "lost", "--from", "20"]) == 0
+    assert "ignored for --view lost" in capsys.readouterr().err
+
+
+def test_lost_view_when_nothing_was_lost():
+    clamped = run_history.Run(SAMPLE_DIR, as_of=30)
+    text = render(clamped, "lost")
+    assert "No unit of yours has disappeared" in text
+
+
+# -- non-combat garrison flag ---------------------------------------------
+
+
+def test_garrison_flags_a_non_combat_occupant():
+    """`Lisbon SETTLER` read as defended to two trials. A settler is combat 0."""
+    clamped = run_history.Run(SAMPLE_DIR, as_of=34)
+    text = render(clamped, "intel")
+    assert "[NON-COMBAT]" in text
+    assert "nothing here can defend" in text
+
+
+def test_garrison_does_not_flag_a_real_defender(run):
+    """A warrior in a city must not be marked non-combat."""
+    assert "UNIT_WARRIOR" not in run_history.NON_COMBAT_UNITS
+    assert "UNIT_SETTLER" in run_history.NON_COMBAT_UNITS
 
 
 @pytest.mark.parametrize("view", run_history.VIEWS)

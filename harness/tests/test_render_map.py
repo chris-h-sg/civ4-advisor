@@ -142,6 +142,26 @@ def test_rows_run_from_high_y_down(view):
     assert g.ys[0] > g.ys[-1]
 
 
+@pytest.mark.parametrize("view", render_map.VIEWS)
+def test_grid_is_bracketed_by_compass_rules(view):
+    """Ten agent trials narrated north/south inverted with correct coordinates.
+
+    Prose did not fix it, so the letters sit on the edges they name.
+    """
+    text = render_map.render(state(40), view)
+    lines = text.split("\n")
+    north = [i for i, l in enumerate(lines) if l.strip().startswith("N ^ NORTH")]
+    south = [i for i, l in enumerate(lines) if l.strip().startswith("S v SOUTH")]
+    assert len(north) == 1 and len(south) == 1
+    assert north[0] < south[0], "north marker must sit above the south marker"
+
+
+def test_compass_rules_survive_brief(run=None):
+    """--brief drops the legend; the compass is not legend, it is orientation."""
+    text = render_map.render(state(40), "settle", brief=True)
+    assert "N ^ NORTH" in text and "S v SOUTH" in text
+
+
 def test_north_is_up_matches_the_terrain_banding():
     """Independent check: the sample's own terrain says which way is north.
 
@@ -564,12 +584,56 @@ def test_overlap_with_existing_cities_is_counted_for_you():
 
 
 def test_cross_reports_settler_distance():
+    """An open route prints one figure and says the straight line agrees."""
     s = state(34)
     settler = [u for u in s.units if u["type"] == "UNIT_SETTLER"][0]
+    start = (settler["x"], settler["y"])
     site = (78, 14)
-    expected = s.distance((settler["x"], settler["y"]), site)
+    assert s.distance(start, site) == s.land_distance(start, site)
     text = render_map.render(s, "settle", site, 1)
-    assert "is %d tile(s) away" % expected in text
+    assert "%d tiles to walk" % s.land_distance(start, site) in text
+    assert "straight line agrees" in text
+
+
+def test_cross_leads_with_the_walk_when_it_differs():
+    """4 straight line vs 16 on foot - the walk is what the settler pays.
+
+    An agent trial found a site whose real route crossed a one-tile isthmus
+    while the straight-line figure implied open ground, and two trials
+    independently reported that the leading number is the one that sticks.
+    """
+    s = state(34)
+    settler = [u for u in s.units if u["type"] == "UNIT_SETTLER"][0]
+    start = (settler["x"], settler["y"])
+    site = (71, 18)
+    assert s.distance(start, site) == 4
+    assert s.land_distance(start, site) == 16
+    text = render_map.render(s, "settle", site, 1)
+    assert "16 TILES TO WALK" in text
+    assert "(only 4 straight line)" in text
+
+
+def test_land_distance_is_none_across_water():
+    s = state(34)
+    water = [p for p, t in s.tiles.items() if t.get("plotType") == "PLOT_OCEAN"]
+    assert water
+    assert s.land_distance((75, 15), water[0]) is None
+
+
+def test_land_distance_matches_run_history():
+    """Two tools must not disagree about what a distance means."""
+    import run_history
+    s = state(34)
+    raw = json.load(open(sample(34), encoding="utf-8"))
+    for target in [(71, 18), (69, 21), (78, 14)]:
+        mine = s.land_distance((75, 15), target)
+        theirs, _ = run_history.land_path(raw, (75, 15), target)
+        assert mine == theirs, target
+
+
+def test_settler_distance_still_says_it_is_not_turns():
+    """Whichever figure leads, neither is turns - terrain costs more."""
+    text = render_map.render(state(34), "settle", (78, 14), 1)
     assert "LOWER BOUND" in text, "Chebyshev is not turns; say so"
 
 

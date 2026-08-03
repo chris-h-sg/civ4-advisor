@@ -28,9 +28,11 @@ Files are numbered for the turn **about to be played**, so a run starts at `turn
 
 **North is up. Higher `y` is north, higher `x` is east. (0,0) is the southwest corner.**
 
-In testing, **every agent got this backwards** while reading coordinates correctly — calling a northern neighbour "south". Coordinates stayed right, so nothing in the output looked wrong and the strategic picture came out mirrored. Before writing "north", "south", "above" or "below", check it against the numbers: if Rome is y=31 and your capital is y=15, **Rome is north**.
+In testing, **ten out of ten agents got this backwards** while reading coordinates correctly — calling a northern neighbour "south". East/west was never wrong; only the `y` axis. Coordinates stayed right, so nothing looked wrong and the whole strategic picture came out mirrored.
 
-The map usually wraps in `x` (`game.wrapX`) and never in `y`, so the short way east may be around the seam.
+**Both tools now state direction so you don't have to derive it.** The map grid is bracketed by `N ^ NORTH` above and `S v SOUTH` below; `run_history` prints a bearing beside every position (`16 NNW of Lisbon`). **Use those words rather than working it out from the numbers** — that derivation is the step that has failed every time.
+
+The map usually wraps in `x` (`game.wrapX`) and never in `y`, so the short way east may be around the seam. The printed bearings and distances already account for it.
 
 ## The tools
 
@@ -59,21 +61,30 @@ Each render carries its own legend and a `THIS VIEW OMITS` block; `--brief` drop
 ### `run_history.py` — anything across turns
 
 ```
-python harness/run_history.py <run-folder> [--view timeline|intel] [--from N] [--to M] [--as-of N]
+python harness/run_history.py <run-folder> [--view timeline|intel|lost] [--from N] [--to M] [--as-of N]
 ```
 
 Takes the **run folder**, not one turn.
 
 - **`timeline`** — what changed each turn: techs, cities, units gained and lost, contacts, sightings, tiles revealed, territory, resources unhidden. Unchanged turns are skipped. `--from`/`--to` scope it.
 - **`intel`** — per rival: recent sightings with positions, then every unit type ever fielded with the turn first seen. Plus barbarian sightings, and what's standing in each of your cities.
+- **`lost`** — every unit of yours that disappeared: its track, damage history, the tiles revealed on its final turn, and what was in sight beforehand. Reach for this whenever a unit dies.
+
+**A unit's last exported position is usually not where it died** — it moves during the turn it is lost, and the export is the previous turn's snapshot. `lost` gives you that turn's revealed tiles as evidence: a unit sees radius 1 from flat ground, radius 2 from a hill, so the reveal shape constrains where it got to. That inference is yours.
+
+**Nothing can tell you what killed it.** No combat log, and a killer on a fogged tile is invisible by construction. Rival units listed near a loss are what you could *see*, which is rarely the answer — say so rather than naming a plausible culprit.
+
+**`[NON-COMBAT]`** on a city's occupants means combat strength 0 (settlers, workers, work boats). A city holding only those is undefended however occupied it looks.
 
 `intel`'s two per-rival sections differ in how fast they go stale. **Recent sightings** are perishable — read them before moving anything vulnerable. **Ever fielded** is permanent: a type seen once is one they can build, forever. That's how you read their tech level — look each type up in `CIV4UnitInfos.xml`.
 
 **Barbarians are listed apart from civs** (they imply nothing about anyone's tech) but with full positions, since early on they're the main threat.
 
-Positions carry **distance from your nearest city**. That's straight-line Chebyshev, ignoring terrain and borders — **a lower bound on travel turns, never an estimate**.
+Positions carry **distance and bearing from your nearest city**. When the walk differs from the straight line the walk leads — `14 TO WALK NW of Lisbon (6 straight)` — because that is the number you act on. On the baseline map nearly half of all walkable tiles diverge, and the worst reads 4 straight against 17 on foot. **Neither figure is turns**; terrain costs more. `render_map.py`'s site report uses the same measure for settler-to-site distance.
 
-**`--as-of N` makes turn N the present**, discarding later files entirely. Only needed when replaying a finished run; live, the newest file already is now. It affects both views, unlike `--from`/`--to`. `intel` ignores `--from`/`--to` on purpose — truncating a dossier drops the earliest sighting of a type, which is the fact that proves the capability.
+`timeline` also reports **rival territory the first time you see it**, which is often the earliest hard evidence of where a rival city is: a border implies a city within about two tiles, possibly beyond your revealed edge. And it lists the **coordinates** of small reveals, which is what lets you work out where an unseen event happened.
+
+**`--as-of N` makes turn N the present**, discarding later files entirely. Only needed when replaying a finished run; live, the newest file already is now. It affects every view, unlike `--from`/`--to`, which scope `timeline` only. `intel` ignores them on purpose — truncating a dossier drops the earliest sighting of a type, which is the fact that proves the capability.
 
 The tool **exits non-zero on a run that isn't one continuous game**. That's a real problem with the files, not something to work around.
 
@@ -89,7 +100,9 @@ Reading the JSON directly. Filtering units, comparing city yields, checking rese
 
 **Never manufacture a cause for something you can't see.** If a unit died with no hostile in sight, say something killed it off-screen and you can't tell what. In testing an agent built a mechanism out of two unrelated timeline lines that happened to sit near each other.
 
-**Reachability before alarm.** `intel` counts what's standing in each city; that's a count, not a verdict. An empty city isn't automatically in danger — what matters is what can actually reach it, and the export can't tell you (no landmass id, so "can a land unit walk here" is unanswerable). A city reachable only by sea is safe early with no garrison; one on an open approach may be exposed with a defender in it. Barbarians also need unowned, unwatched land to spawn in. Check `--view military` and say which case it is. Equally, don't call the player safe because a count looks fine.
+**Reachability before alarm.** `intel` counts what's standing in each city; that's a count, not a verdict. An empty city isn't automatically in danger — what matters is what can actually reach it. `intel` gives you the land distance where it differs from the straight line, and says outright when there's **no land route over revealed tiles**. A threat across water is a different kind of threat, not a nearer one; a city on an open land approach may be exposed even with a defender in it. Barbarians also need unowned, unwatched land to spawn in. Say which case it is. Equally, don't call the player safe because a count looks fine.
+
+**Fog limits what land distance can tell you.** Land figures are computed over *revealed* tiles only — never routed through fog, because that would be inventing a path. So a printed land distance is the best known route, and an unrevealed shortcut could make it shorter. It is never longer.
 
 **One strong tile usually decides an early city site, not a total** — a city works `pop + 1` tiles. Yields shown are *displayed* yields, so an improved tile reports its improved number, flattering sites that overlap land you've already developed.
 

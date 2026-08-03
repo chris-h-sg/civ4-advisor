@@ -7,10 +7,11 @@ sequence is what restores the memory a human player keeps. Answering "what has
 Rome ever fielded" from the raw files means reading every one of them, which is
 expensive enough that it does not happen reliably.
 
-Two views:
+Three views:
 
     timeline  what changed, turn by turn
     intel     what is known about each rival, and when it was learned
+    lost      what happened to a unit of yours that disappeared
 
 THE BOUNDARY THIS TOOL IS BUILT ON: a past turn is evidence about the past, not
 current state. Every fact below is printed with the turn it was observed and is
@@ -28,13 +29,46 @@ import json
 import os
 import sys
 
-VIEWS = ("timeline", "intel")
+VIEWS = ("timeline", "intel", "lost")
 
 # Fields on a map tile whose turn-to-turn change is worth reporting. Terrain is
 # deliberately absent: it never changes, so a change would mean the run is broken,
 # and the continuity check owns that. `visibleNow` is absent because it flips
 # constantly by design - it is the fog, not a change in the world.
 TRACKED_TILE_FIELDS = ("improvement", "route", "owner", "bonus", "feature")
+
+# Above this, a reveal is a scouting sweep and the coordinates are noise; at or
+# below it they are evidence about a specific event, which is how a trial pinned
+# down where a unit died.
+MAX_REVEALED_LISTED = 8
+
+# How much of a lost unit's history to print, and how wide to look for what was
+# near it. Both bounded rather than complete: the whole track of a 40-turn scout
+# is noise around the question "what happened at the end", and a radius wide
+# enough to catch everything would list units that could never have reached it.
+TRACK_TURNS = 8
+NEARBY_TURNS = 5
+NEARBY_RADIUS = 6
+
+# Units with iCombat 0 in CIV4UnitInfos.xml - present in a city but unable to
+# defend it. Two trials read `Lisbon (75,15) SETTLER` as a garrison before
+# registering that a settler has no combat strength at all, so the count was
+# quietly overstating the position. Transcribed at development time like the
+# founding rules in render_map.py, and deliberately short: these are the ones
+# that exist before turn 50. A unit missing from this list is simply unflagged,
+# which is the safe direction - it never claims something CAN fight.
+NON_COMBAT_UNITS = (
+    "UNIT_SETTLER",
+    "UNIT_WORKER",
+    "UNIT_WORKBOAT",
+    "UNIT_MISSIONARY_HINDUISM",
+    "UNIT_MISSIONARY_BUDDHISM",
+    "UNIT_MISSIONARY_JUDAISM",
+    "UNIT_MISSIONARY_CONFUCIANISM",
+    "UNIT_MISSIONARY_TAOISM",
+    "UNIT_MISSIONARY_CHRISTIANITY",
+    "UNIT_MISSIONARY_ISLAM",
+)
 
 # How a tracked field's change should be described. The engine has several distinct
 # mechanisms that all surface as "this field differs from last turn", and collapsing
@@ -141,6 +175,8 @@ class Run(object):
             self.states = kept
 
         self.gaps = []
+        # Turn -> {city name: land distance map}; see land_from().
+        self.land_cache = {}
         self._check_continuity()
 
         first = self.states[0][1]
@@ -327,21 +363,235 @@ def chebyshev(state, a, b):
     return max(dx, dy)
 
 
-def nearest_city_note(run, state, pos):
-    """'  4 from Lisbon' for the nearest OWN city, or '' when there are none.
+def _walkable(tile):
+    """A land unit can stand here. Peaks are impassable; all water is PLOT_OCEAN.
+
+    TERRAIN_COAST vs TERRAIN_OCEAN is depth, not land-vs-water - a trial got this
+    wrong at first and only caught it by dumping distributions, so key on plotType
+    and never on terrain.
+    """
+    if tile is None:
+        return False
+    return tile.get("plotType") not in ("PLOT_OCEAN", "PLOT_PEAK")
+
+
+def land_path(state, origin, target):
+    """(steps, unrevealed_gaps) walking over REVEALED land, or (None, gaps).
+
+    Chebyshev is a lower bound that this map makes wildly optimistic: at t34 a
+    lion sat 6 tiles from Lisbon as the crow flies and 14 steps by land, because
+    a water channel forces the walk right around a bay. Two agent trials found
+    that independently and both called it the most misleading number they were
+    given - "6 tiles is an emergency, 14 tiles is a non-issue".
+
+    So this reports the real walk where the map is known. What it cannot do is
+    route through fog, and pretending otherwise would be the same error in the
+    other direction: `unrevealed_gaps` counts unrevealed tiles ADJACENT to the
+    reachable region, i.e. how many doors might open a shorter path. A returned
+    distance is therefore an UPPER bound on the revealed map and neither bound
+    once fog is involved - which is why both numbers are always printed together.
+    """
+    if origin == target:
+        return (0, 0)
+    tiles = tile_map(state)
+    if not _walkable(tiles.get(origin)) or not _walkable(tiles.get(target)):
+        return (None, 0)
+
+    width = state["game"]["mapWidth"]
+    wrap_x = state["game"]["wrapX"]
+    seen = {origin: 0}
+    frontier = [origin]
+    gaps = set()
+    while frontier:
+        nxt = []
+        for pos in frontier:
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    if not dx and not dy:
+                        continue
+                    x = pos[0] + dx
+                    if wrap_x:
+                        x %= width
+                    step = (x, pos[1] + dy)
+                    if step in seen:
+                        continue
+                    tile = tiles.get(step)
+                    if tile is None:
+                        gaps.add(step)
+                        continue
+                    if not _walkable(tile):
+                        continue
+                    seen[step] = seen[pos] + 1
+                    if step == target:
+                        return (seen[step], len(gaps))
+                    nxt.append(step)
+        frontier = nxt
+    return (None, len(gaps))
+
+
+def distance_note(state, origin, target):
+    """'6 straight / 14 by land' - both, because either alone misleads.
+
+    Straight-line alone invites treating a bay as a border; land-only would hide
+    that the two are ever different, which is the fact worth noticing.
+    """
+    straight = chebyshev(state, origin, target)
+    steps, gaps = land_path(state, origin, target)
+    if steps is None:
+        if gaps:
+            return ("%d straight / NO LAND ROUTE over revealed tiles (%d unrevealed"
+                    " tile(s) border the reachable area, so one may exist)"
+                    % (straight, gaps))
+        return "%d straight / NO LAND ROUTE - separated by water or peaks" % straight
+    if steps == straight:
+        return "%d by land" % steps
+    note = "%d straight / %d by land" % (straight, steps)
+    if gaps:
+        note += " (%d unrevealed tile(s) adjacent to the route - could be shorter)" % gaps
+    return note
+
+
+def bearing(state, origin, pos):
+    """Compass bearing from `origin` to `pos`, e.g. 'NNW'. '' when identical.
+
+    THIS EXISTS BECAUSE PROSE DID NOT FIX IT. Across ten agent trials, every
+    single one read coordinates correctly and then narrated north and south
+    backwards - including five whose instructions stated "higher y is north" in
+    bold with a worked example and an explicit warning about this exact failure.
+    East/west was never once wrong. The asymmetry is the tell: x behaves the way
+    a reader expects and y does not, so the y sign gets normalised away silently.
+
+    Computing it here makes the direction a thing the agent READS rather than a
+    convention it has to hold and apply. Wrap-aware on x for the same reason
+    chebyshev() is: the short way east may be across the seam.
+    """
+    dx = pos[0] - origin[0]
+    if state["game"]["wrapX"]:
+        width = state["game"]["mapWidth"]
+        if dx > width // 2:
+            dx -= width
+        elif dx < -(width // 2):
+            dx += width
+    dy = pos[1] - origin[1]
+    if not dx and not dy:
+        return ""
+
+    # Two letters when one axis clearly dominates, one when it is close to pure,
+    # three ('NNW') when the minor axis is present but much smaller. Anything
+    # finer would imply a precision the grid does not have.
+    ns = "N" if dy > 0 else ("S" if dy < 0 else "")
+    ew = "E" if dx > 0 else ("W" if dx < 0 else "")
+    if not ns:
+        return ew
+    if not ew:
+        return ns
+    # Standard compass ordering: the DOMINANT axis leads, so a mostly-westward
+    # bearing is WNW, not NWW. Getting this backwards would be its own small
+    # version of the bug this function exists to prevent.
+    if abs(dy) >= 2 * abs(dx):
+        return ns + ns + ew
+    if abs(dx) >= 2 * abs(dy):
+        return ew + ns + ew
+    return ns + ew
+
+
+def land_distances_from(state, origin):
+    """Steps over revealed land from `origin` to everywhere reachable.
+
+    One sweep reused for every sighting, rather than a BFS per pair: `intel`
+    prints dozens of positions and the map is thousands of tiles.
+    """
+    tiles = tile_map(state)
+    if not _walkable(tiles.get(origin)):
+        return {}
+    width = state["game"]["mapWidth"]
+    wrap_x = state["game"]["wrapX"]
+    seen = {origin: 0}
+    frontier = [origin]
+    while frontier:
+        nxt = []
+        for pos in frontier:
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    if not dx and not dy:
+                        continue
+                    x = pos[0] + dx
+                    if wrap_x:
+                        x %= width
+                    step = (x, pos[1] + dy)
+                    if step in seen or not _walkable(tiles.get(step)):
+                        continue
+                    seen[step] = seen[pos] + 1
+                    nxt.append(step)
+        frontier = nxt
+    return seen
+
+
+def land_from(run, state):
+    """{city name: distance map} for `state`, computed once per turn file.
+
+    The cache lives on the Run, which is the object that owns these states'
+    lifetime. Two alternatives were rejected: a module-level dict keyed by
+    id(state) is correct only while every key stays alive, since CPython reuses
+    an id the moment an object is collected - fine today, silently wrong later;
+    and stashing the result on the state dict itself would add a key to data the
+    schema declares `additionalProperties: false`, so anything that re-validated
+    or re-serialised it would break.
+    """
+    key = state["game"]["gameTurn"]
+    cached = run.land_cache.get(key)
+    if cached is None:
+        cached = dict(
+            (c["name"], land_distances_from(state, (c["x"], c["y"])))
+            for c in state["cities"]
+        )
+        run.land_cache[key] = cached
+    return cached
+
+
+def nearest_city_note(run, state, pos, land=None):
+    """'  6 NW of Lisbon (14 by land)' for the nearest OWN city, or ''.
 
     Nearest rather than one figure per city: 'how far is this from me' is a single
     number a reader scans, while a per-city list grows with the empire and mostly
-    repeats. Two cities makes per-city look cheap; ten makes it noise. A specific
-    pair can always be computed from the coordinates, which are right there.
+    repeats. A specific pair can always be computed from the coordinates.
+
+    The bearing is FROM the city TO the thing - "6 NW of Lisbon" means walk
+    northwest from Lisbon to reach it, which is how a player reads a map.
+
+    `land` is the precomputed {city name: distance map} from land_distances_from.
+    The land figure is appended only when it DIFFERS from the straight line, since
+    printing "6 (6 by land)" on every row would bury the case that matters. When
+    no land route exists over revealed tiles that is stated outright: a threat
+    across water is a different kind of threat, not a nearer one.
     """
     cities = state["cities"]
     if not cities:
         return ""
     best = min(cities, key=lambda c: chebyshev(state, pos, (c["x"], c["y"])))
-    return "  %d from %s" % (
-        chebyshev(state, pos, (best["x"], best["y"])), best["name"],
-    )
+    home = (best["x"], best["y"])
+    straight = chebyshev(state, pos, home)
+    compass = bearing(state, home, pos)
+    where = "%s of %s" % (compass, best["name"]) if compass else best["name"]
+
+    steps = None if land is None else land.get(best["name"], {}).get(pos)
+    if land is None:
+        return "  %d %s" % (straight, where)
+    if steps is None:
+        return "  %d %s - NO LAND ROUTE over revealed tiles" % (straight, where)
+    # EVERY line says "to walk", including when the two figures agree. Leading
+    # with the walk fixed the original problem - trials read the straight line as
+    # the actionable number - but printing a bare "12 NNW of Lisbon" beside a
+    # "14 TO WALK NNW of Lisbon (12 straight)" created a second one: two trials
+    # independently reported not knowing whether the bare form meant the walk or
+    # the straight line, and one noticed the worse consequence, that the longer
+    # louder string lands on the entries which are actually FURTHER away. The
+    # convention was inferable from the guide, which is precisely the derivation
+    # step the compass work showed does not survive contact. So the unit of
+    # measurement is stated on every line and only the parenthetical varies.
+    if steps == straight:
+        return "  %d to walk %s (straight line agrees)" % (steps, where)
+    return "  %d TO WALK %s (only %d straight)" % (steps, where, straight)
 
 
 def format_year(year):
@@ -628,10 +878,29 @@ def timeline_block(run, names, before, after):
         if unit["type"] == "UNIT_SETTLER" and founded:
             note = ("  (a city was also founded this turn - too many settlers/cities"
                     " to pair them safely, so check whether this one founded it)")
+        pos = (unit["x"], unit["y"])
+        # "last at" read as the DEATH TILE to two separate trials, and it is not:
+        # it is the last position ever EXPORTED, from the previous turn's snapshot.
+        # A unit moves during the turn it dies, so the two differ whenever it was
+        # doing anything. One trial recovered the real tile from that turn's reveal
+        # diff and noted the wording had nearly convinced it otherwise.
         body.append(
-            "  unit      LOST %s (id %d), last at (%d,%d)%s"
-            % (unit["type"], unit["id"], unit["x"], unit["y"], note)
+            "  unit      LOST %s (id %d), last exported at (%d,%d) on t%d%s"
+            % (
+                unit["type"], unit["id"], pos[0], pos[1],
+                before["game"]["gameTurn"], note,
+            )
         )
+        # Distance and bearing on the one event where "how far away was this" most
+        # decides the response. Rival sightings carried it already; our own unit's
+        # death carried a bare coordinate, which a trial called out as backwards
+        # given the guide's own reachability-before-alarm rule.
+        where = nearest_city_note(run, after, pos, land_from(run, after))
+        if where:
+            body.append(
+                "            %s - it may have moved before dying, so treat this as"
+                " the last KNOWN position" % where.strip()
+            )
 
     known = set(c["playerId"] for c in before["contacts"])
     for contact in after["contacts"]:
@@ -703,6 +972,43 @@ def timeline_block(run, names, before, after):
     revealed, changes = diff_tiles(before, after)
     if revealed:
         body.append("  map       %d tile(s) newly revealed" % len(revealed))
+        # Small reveals get their coordinates. A trial had to write Python to
+        # recover exactly this - the five tiles revealed the turn a warrior died
+        # were the whole evidence base for working out where it died - and a bare
+        # count threw the information away. Capped because a 48-tile reveal is a
+        # scouting move, not evidence, and would bury the block.
+        if len(revealed) <= MAX_REVEALED_LISTED:
+            body.append(
+                "            %s"
+                % ", ".join("(%d,%d)" % p for p in revealed)
+            )
+
+    # A tile that is ALREADY rival-owned the moment you first see it never shows
+    # up as an owner CHANGE, because there is no previous value to differ from -
+    # so the borders of a civ you have never met were invisible to this view.
+    # That was the first hard evidence of a rival city's location in the sample
+    # run (Greek borders at (66,17-19), t35-36, implying a city just west of the
+    # reveal edge) and it produced no output at all.
+    after_tiles = tile_map(after)
+    first_seen_owned = {}
+    for pos in revealed:
+        owner = after_tiles[pos].get("owner")
+        if owner is not None and owner != run.player_id:
+            first_seen_owned.setdefault(owner, []).append(pos)
+    for owner in sorted(first_seen_owned):
+        seen = first_seen_owned[owner]
+        body.append(
+            "  rival     TERRITORY FIRST SEEN: %d tile(s) owned by %s - %s"
+            % (
+                len(seen), owner_label(run, names, owner),
+                ", ".join("(%d,%d)" % p for p in seen[:6])
+                + (" and %d more" % (len(seen) - 6) if len(seen) > 6 else ""),
+            )
+        )
+        body.append(
+            "            a border implies a city within ~2 tiles of it, possibly"
+            " beyond your revealed edge"
+        )
     for pos, field, old, new in changes:
         if field == "owner":
             body.append(
@@ -787,6 +1093,11 @@ def render_intel(run):
     latest = run.latest()
     latest_turn = latest["game"]["gameTurn"]
     sightings = collect_sightings(run)
+    # One BFS per city, reused for every position printed below.
+    land = dict(
+        (c["name"], land_distances_from(latest, (c["x"], c["y"])))
+        for c in latest["cities"]
+    )
 
     lines = []
 
@@ -800,7 +1111,7 @@ def render_intel(run):
         lines.append("")
     for player_id in civ_ids:
         lines.extend(_rival_block(run, names, sightings, contacts, player_id,
-                                  latest, latest_turn))
+                                  latest, latest_turn, land))
         lines.append("")
 
     if barb_ids:
@@ -830,7 +1141,7 @@ def render_intel(run):
                         "      t%-4d (%d,%d)%s%s  %s"
                         % (
                             sighting.turn, sighting.x, sighting.y,
-                            nearest_city_note(run, latest, (sighting.x, sighting.y)),
+                            nearest_city_note(run, latest, (sighting.x, sighting.y), land),
                             "  damage %d%%" % sighting.damage
                             if sighting.damage else "",
                             "LATEST TURN" if age == 0 else "%d turn(s) ago" % age,
@@ -844,13 +1155,214 @@ def render_intel(run):
         )
         lines.append("")
 
-    lines.extend(_garrisons(run, latest, latest_turn))
+    lines.extend(_garrisons(run, latest, latest_turn, land))
     lines.append("")
     lines.extend(_intel_footer(run, latest_turn))
     return lines
 
 
-def _garrisons(run, latest, latest_turn):
+def render_lost(run):
+    """Every own unit that disappeared, with the track that led up to it.
+
+    Scoped to LOSSES rather than offered as `--unit <id>`, deliberately. "What
+    happened to my unit" is the question that actually gets asked - a unit dying
+    is one of the most advice-triggering events in the early game - and three
+    ad-hoc scripts were written to answer it in each of two trial rounds. Keying
+    on the event keeps this from growing into the general object browser that
+    would be the query language this folder refuses to build.
+
+    It PRESENTS and does not conclude. It hands over the track, the damage
+    history, the reveal diff of the final turn and what was known to be nearby -
+    and stops. Inferring which tile the unit actually died on from the reveal
+    pattern is real judgement, and a trial did it well twice; that work belongs
+    to the reader, not to a heuristic in here that would be wrong quietly.
+    """
+    lines = []
+    losses = []
+    for before, after in run.pairs():
+        founded, _, _ = diff_own_cities(before, after)
+        _, lost_units = diff_own_units(before, after)
+        consumed, lost_units = pair_settlers_with_foundings(lost_units, founded)
+        consumed_ids = set(u["id"] for u, _ in consumed)
+        for unit in lost_units:
+            if unit["id"] not in consumed_ids:
+                losses.append((before, after, unit))
+
+    if not losses:
+        lines.append("No unit of yours has disappeared in this run.")
+        lines.append("")
+        lines.append(
+            "Settlers consumed founding a city are not losses and are excluded;"
+        )
+        lines.append("see --view timeline for the foundings themselves.")
+        return lines
+
+    lines.append(
+        "%d unit(s) of yours disappeared. Ours carry stable engine ids, so a"
+        % len(losses)
+    )
+    lines.append(
+        "disappearance is certain - unlike a rival's, which usually just means"
+    )
+    lines.append("you stopped looking.")
+    lines.append("")
+
+    for before, after, unit in losses:
+        lines.extend(_loss_block(run, before, after, unit))
+        lines.append("")
+
+    lines.append("HOW TO READ THIS")
+    lines.append(
+        "  The last position is the last one EXPORTED, from the turn before the"
+    )
+    lines.append(
+        "  unit vanished. A unit moves during the turn it dies, so the tile it"
+    )
+    lines.append(
+        "  died on is often NOT this one. The tiles revealed on the final turn"
+    )
+    lines.append(
+        "  are the evidence for where it actually got to - a unit reveals radius"
+    )
+    lines.append(
+        "  1 from flat ground and radius 2 from a hill, so the shape of that"
+    )
+    lines.append("  reveal constrains where it stood. That inference is yours.")
+    lines.append("")
+    lines.append(
+        "  NOTHING here says what killed it. The export has no combat log, and a"
+    )
+    lines.append(
+        "  killer standing on a fogged tile is invisible by construction. Rival"
+    )
+    lines.append(
+        "  units listed below are what you could SEE, which is rarely the answer."
+    )
+    lines.append("")
+    lines.append("THIS VIEW OMITS")
+    lines.append(
+        "  %-54s ->  %s" % ("rival units you never saw", "nothing can show these")
+    )
+    lines.append(
+        "  %-54s ->  %s" % ("what changed elsewhere that turn", "--view timeline")
+    )
+    lines.append(
+        "  %-54s ->  %s" % ("the terrain around the site", "harness/render_map.py")
+    )
+    return lines
+
+
+def _loss_block(run, before, after, unit):
+    """One lost unit: track, damage, final-turn reveals, what was in sight."""
+    names = leader_names(run)
+    turn = after["game"]["gameTurn"]
+    pos = (unit["x"], unit["y"])
+    lines = [
+        "%s id %d - gone from the turn %d export" % (unit["type"], unit["id"], turn),
+    ]
+    where = nearest_city_note(run, after, pos, land_from(run, after))
+    lines.append(
+        "  last exported at (%d,%d) on t%d%s"
+        % (pos[0], pos[1], before["game"]["gameTurn"], where)
+    )
+
+    # The track. Where a unit had been is what makes a loss interpretable - a unit
+    # walking steadily away from home for thirteen turns is a different story from
+    # one that died in its own borders.
+    track = []
+    damaged = []
+    for _, state in run.states:
+        if state["game"]["gameTurn"] > before["game"]["gameTurn"]:
+            break
+        for candidate in state["units"]:
+            if candidate["id"] != unit["id"]:
+                continue
+            track.append((state["game"]["gameTurn"], candidate["x"], candidate["y"]))
+            if candidate.get("damage"):
+                damaged.append(
+                    (state["game"]["gameTurn"], candidate["damage"])
+                )
+    if track:
+        recent = track[-TRACK_TURNS:]
+        # The "first exported" line only earns its place when the track is
+        # truncated; otherwise it restates the first entry of the very next line.
+        if len(recent) < len(track):
+            lines.append(
+                "  first exported t%d at (%d,%d), %d turn(s) tracked"
+                % (track[0][0], track[0][1], track[0][2], len(track))
+            )
+            label = "  track (last %d of %d)" % (len(recent), len(track))
+        else:
+            label = "  track (%d turn(s))" % len(track)
+        lines.append(
+            "%s: %s"
+            % (label, " -> ".join("t%d (%d,%d)" % row for row in recent))
+        )
+    if damaged:
+        lines.append(
+            "  damage seen: %s"
+            % ", ".join("t%d %d%%" % row for row in damaged)
+        )
+    else:
+        lines.append(
+            "  damage seen: none, ever - it was undamaged in every export,"
+            " so it did not die slowly"
+        )
+
+    revealed, _ = diff_tiles(before, after)
+    if revealed and len(revealed) <= MAX_REVEALED_LISTED:
+        lines.append(
+            "  tiles revealed on t%d: %s"
+            % (turn, ", ".join("(%d,%d)" % p for p in revealed))
+        )
+        lines.append(
+            "    (evidence for where it actually got to - see HOW TO READ below)"
+        )
+    elif revealed:
+        lines.append(
+            "  tiles revealed on t%d: %d - too many to attribute to this unit"
+            % (turn, len(revealed))
+        )
+
+    # What was in sight in the run-up. Explicitly bounded: this is what you could
+    # see, and the thing that killed it was almost certainly not among it.
+    nearby = []
+    for _, state in run.states:
+        state_turn = state["game"]["gameTurn"]
+        if state_turn > before["game"]["gameTurn"]:
+            break
+        if state_turn < before["game"]["gameTurn"] - NEARBY_TURNS:
+            continue
+        for other in state["foreignUnits"]:
+            gap = chebyshev(state, pos, (other["x"], other["y"]))
+            if gap <= NEARBY_RADIUS:
+                nearby.append((state_turn, other, gap))
+    if nearby:
+        lines.append(
+            "  rival units seen within %d tiles in the %d turns before:"
+            % (NEARBY_RADIUS, NEARBY_TURNS)
+        )
+        for state_turn, other, gap in nearby:
+            lines.append(
+                "    t%-4d %-18s (%d,%d) %d away, owner %s"
+                % (
+                    state_turn, other["type"], other["x"], other["y"], gap,
+                    owner_label(run, names, other["owner"]),
+                )
+            )
+    else:
+        lines.append(
+            "  no rival unit was seen within %d tiles in the %d turns before -"
+            % (NEARBY_RADIUS, NEARBY_TURNS)
+        )
+        lines.append(
+            "    which means nothing: whatever killed it was on a tile you could"
+            " not see."
+        )
+    return lines
+
+
+def _garrisons(run, latest, latest_turn, land=None):
     """Which of your units are standing in each city, as of the latest turn.
 
     A COUNT, deliberately, and never a verdict. Joining `units` against `cities`
@@ -878,9 +1390,14 @@ def _garrisons(run, latest, latest_turn):
         inside = at.get(pos, [])
         if inside:
             what = ", ".join(
-                "%s (id %d)" % (u["type"].replace("UNIT_", ""), u["id"])
+                "%s (id %d)%s" % (
+                    u["type"].replace("UNIT_", ""), u["id"],
+                    " [NON-COMBAT]" if u["type"] in NON_COMBAT_UNITS else "",
+                )
                 for u in inside
             )
+            if all(u["type"] in NON_COMBAT_UNITS for u in inside):
+                what += " - nothing here can defend"
         else:
             what = "nothing standing in it"
         lines.append("  %-12s (%d,%d)  %s" % (city["name"], pos[0], pos[1], what))
@@ -896,7 +1413,7 @@ def _garrisons(run, latest, latest_turn):
                 "    %-16s id %-6d (%d,%d)%s"
                 % (
                     unit["type"], unit["id"], unit["x"], unit["y"],
-                    nearest_city_note(run, latest, (unit["x"], unit["y"])),
+                    nearest_city_note(run, latest, (unit["x"], unit["y"]), land),
                 )
             )
     lines.append(
@@ -909,7 +1426,8 @@ def _garrisons(run, latest, latest_turn):
     return lines
 
 
-def _rival_block(run, names, sightings, contacts, player_id, latest, latest_turn):
+def _rival_block(run, names, sightings, contacts, player_id, latest,
+                 latest_turn, land=None):
     lines = []
     contact = contacts.get(player_id)
     label = names.get(player_id, "player %d" % player_id)
@@ -964,7 +1482,7 @@ def _rival_block(run, names, sightings, contacts, player_id, latest, latest_turn
                 "    t%-4d %-18s (%d,%d)%s%s%s  %s"
                 % (
                     turn, unit_type, x, y,
-                    nearest_city_note(run, latest, (x, y)),
+                    nearest_city_note(run, latest, (x, y), land),
                     " x%d STACKED" % entry["count"] if entry["count"] > 1 else "",
                     damage,
                     "LATEST TURN" if age == 0 else "%d turn(s) ago" % age,
@@ -1123,6 +1641,8 @@ def render(run, view, first_turn, last_turn):
     lines = preamble(run, view, first_turn, last_turn)
     if view == "timeline":
         lines.extend(render_timeline(run, first_turn, last_turn))
+    elif view == "lost":
+        lines.extend(render_lost(run))
     else:
         lines.extend(render_intel(run))
     return "\n".join(line.rstrip() for line in lines).rstrip() + "\n"
@@ -1143,6 +1663,10 @@ def main(argv=None):
             "            you), then every unit type ever fielded with the turn it\n"
             "            was first seen (what they can build). Barbarians and\n"
             "            animals are listed separately - they imply no tech.\n"
+            "  lost      every unit of yours that disappeared, with its track, its\n"
+            "            damage history, the tiles revealed on the final turn and\n"
+            "            what was in sight beforehand. Says nothing about what\n"
+            "            killed it - the export has no combat log.\n"
         ),
     )
     parser.add_argument(
@@ -1179,13 +1703,19 @@ def main(argv=None):
     last = run.turns[-1] if args.last is None else args.last
     if first > last:
         parser.error("--from %d is after --to %d" % (first, last))
-    if args.view == "intel" and (args.first is not None or args.last is not None):
-        # A dossier truncated at turn M silently drops the first sighting that
-        # carries the tech implication - the one fact the view exists to surface.
+    if args.view != "timeline" and (args.first is not None or args.last is not None):
+        # Only `timeline` is a per-turn report, so only it can be scoped by one.
+        # Both other views deliberately span the whole run: a dossier truncated at
+        # turn M drops the earliest sighting of a unit type, which is the fact that
+        # proves a capability, and a loss report scoped to a window would hide the
+        # track that led into it. Warned rather than silently ignored - an accepted
+        # flag that does nothing is worse than a rejected one, since the caller
+        # believes the output is scoped when it is not. --as-of is the way to move
+        # the clock for every view.
         sys.stderr.write(
-            "run_history: --from/--to are ignored for --view intel (a truncated"
-            " dossier would drop the earliest sighting of a unit type, which is"
-            " exactly the fact that proves a capability).\n"
+            "run_history: --from/--to are ignored for --view %s; they scope"
+            " --view timeline only. Use --as-of N to move the present for every"
+            " view.\n" % args.view
         )
 
     sys.stdout.write(render(run, args.view, first, last))

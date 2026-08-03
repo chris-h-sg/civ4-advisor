@@ -185,6 +185,52 @@ class State(object):
                 if pos is not None:
                     yield pos
 
+    def land_distance(self, origin, target):
+        """Steps over REVEALED walkable land, or None if no such route exists.
+
+        The same measure run_history.py reports, and it is here because the two
+        tools disagreeing about what a distance means is worse than neither
+        printing one. The site report used to give Chebyshev alone, labelled "a
+        LOWER BOUND on turns" - honest, and on this map badly misleading: an
+        agent trial found a settler site 3 tiles away by straight line whose real
+        walk was twice that and crossed a one-tile isthmus, and the same gap made
+        a lion look 6 tiles away when the walk was 14.
+
+        Revealed tiles only. Routing through fog would be inventing a path, so an
+        unrevealed shortcut can make the true figure smaller but never larger.
+        """
+        if origin == target:
+            return 0
+        if not self._walkable(origin) or not self._walkable(target):
+            return None
+        seen = set([origin])
+        frontier = [origin]
+        steps = 0
+        while frontier:
+            steps += 1
+            nxt = []
+            for pos in frontier:
+                for other in self.neighbours(pos[0], pos[1]):
+                    if other in seen or not self._walkable(other):
+                        continue
+                    if other == target:
+                        return steps
+                    seen.add(other)
+                    nxt.append(other)
+            frontier = nxt
+        return None
+
+    def _walkable(self, pos):
+        """A land unit can stand here. Peaks are impassable, all water is ocean.
+
+        Keyed on plotType, never terrain: TERRAIN_COAST vs TERRAIN_OCEAN is depth,
+        not land-vs-water, and a trial got that wrong before catching itself.
+        """
+        tile = self.tiles.get(pos)
+        if tile is None:
+            return False
+        return tile.get("plotType") not in ("PLOT_OCEAN", "PLOT_PEAK")
+
     def city_cross(self, x, y):
         """The 21 tiles a city at (x, y) could work, in row-major order."""
         out = []
@@ -480,6 +526,36 @@ IMPROVED_YIELD_NOTE = (
     " against",
     "  what an UNDEVELOPED tile of the same terrain yields, not against each other.",
 )
+
+
+def describe_distance(state, origin, target):
+    """How far apart two tiles are, LEADING WITH THE WALK when they differ.
+
+    The ordering is the point. Both figures were already printed side by side in
+    run_history, straight line first - and two independent agent trials reported
+    that the straight-line number is the one the eye takes, one of them saying it
+    "still caught me on first read" despite a warning in its instructions telling
+    it not to. A caveat that does not stick is a caveat that needs a layout fix
+    rather than more words, which is the same conclusion the compass reached.
+
+    So the actionable number goes first and the straight line becomes the aside.
+    """
+    straight = state.distance(origin, target)
+    walk = state.land_distance(origin, target)
+    if walk is None:
+        return (
+            "%d tiles straight line, but NO LAND ROUTE over revealed tiles -"
+            " water or peaks block every path a land unit could take" % straight
+        )
+    if walk == straight:
+        return (
+            "%d tiles to walk (straight line agrees, so the ground is open) -"
+            " still a LOWER BOUND on turns, terrain costs more" % walk
+        )
+    return (
+        "%d TILES TO WALK over revealed land (only %d straight line) - a LOWER"
+        " BOUND on turns, terrain costs more" % (walk, straight)
+    )
 
 
 def relief_label(tile):
@@ -931,13 +1007,11 @@ class SettleRenderer(Renderer):
                             for name, n in overlap)
             )
         for unit in self.settlers:
+            start = (unit["x"], unit["y"])
             rows.append(
-                "    settler    id %d at (%d,%d) is %d tile(s) away (Chebyshev - a"
-                " LOWER BOUND on turns, terrain costs more)"
-                % (
-                    unit["id"], unit["x"], unit["y"],
-                    state.distance((unit["x"], unit["y"]), self.around),
-                )
+                "    settler    id %d at (%d,%d) - %s"
+                % (unit["id"], unit["x"], unit["y"],
+                   describe_distance(state, start, self.around))
             )
 
         rows.append("")
@@ -1877,9 +1951,19 @@ def render(state, view, around=None, radius=5, brief=False):
             + compose([renderer.cell((x, y)).ljust(cell) for x in xs])
             + "%3d" % y
         )
+    # Compass rules bounding the grid. Ten agent trials across two rounds read
+    # coordinates correctly and then narrated north and south INVERTED - every
+    # single one, including five that had the orientation stated in bold in their
+    # instructions. East/west was never wrong. So prose does not fix this, and the
+    # fix has to be something you cannot read the grid without seeing: the letter
+    # sits on the edge it names, in the same place the reader is already looking to
+    # find a row's y label.
+    width = len(header)
+    lines.append(("  N ^ NORTH (higher y)").ljust(width))
     lines.append(header)
     lines.extend(body)
     lines.append(header)
+    lines.append(("  S v SOUTH (lower y)").ljust(width))
     lines.append("")
 
     if not brief:
