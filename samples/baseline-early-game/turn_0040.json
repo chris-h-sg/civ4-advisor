@@ -1,6 +1,9 @@
 {
   "cities": [
     {
+      "bonuses": {"happiness": [], "health": ["BONUS_COW", "BONUS_WHEAT"], "strategic": []},
+      "buildings": ["BUILDING_PALACE"],
+      "coastal": false,
       "culture": 80,
       "cultureThreshold": 100,
       "food": 4,
@@ -22,10 +25,13 @@
       "y": 15
     },
     {
+      "bonuses": {"happiness": [], "health": ["BONUS_COW", "BONUS_WHEAT"], "strategic": []},
+      "buildings": [],
+      "coastal": true,
       "culture": 0,
       "cultureThreshold": 10,
       "food": 10,
-      "foodPerTurn": 2,
+      "foodPerTurn": 1,
       "growthThreshold": 22,
       "happy": 4,
       "healthy": 9,
@@ -35,10 +41,10 @@
       "producing": "UNIT_WARRIOR",
       "production": 10,
       "productionNeeded": 15,
-      "productionPerTurn": 2,
+      "productionPerTurn": 5,
       "unhappy": 1,
       "unhealthy": 1,
-      "workedTiles": [[77, 14], [78, 14]],
+      "workedTiles": [[78, 14], [79, 14]],
       "x": 78,
       "y": 14
     }
@@ -134,7 +140,7 @@
       {"x": 76, "y": 14, "feature": "FEATURE_FOREST", "freshWater": true, "owner": 0, "river": true, "terrain": "TERRAIN_GRASS", "visibleNow": true, "yields": [2, 1, 0]},
       {"x": 77, "y": 14, "feature": "FEATURE_FOREST", "freshWater": true, "owner": 0, "river": true, "terrain": "TERRAIN_GRASS", "visibleNow": true, "yields": [2, 1, 0]},
       {"x": 78, "y": 14, "owner": 0, "route": "ROUTE_ROAD", "terrain": "TERRAIN_PLAINS", "visibleNow": true, "yields": [2, 1, 1]},
-      {"x": 79, "y": 14, "bonus": "BONUS_HORSE", "owner": 0, "terrain": "TERRAIN_PLAINS", "visibleNow": true, "yields": [1, 2, 0]},
+      {"x": 79, "y": 14, "bonus": "BONUS_HORSE", "improvement": "IMPROVEMENT_PASTURE", "owner": 0, "terrain": "TERRAIN_PLAINS", "visibleNow": true, "yields": [1, 4, 1]},
       {"x": 80, "y": 14, "plotType": "PLOT_OCEAN", "terrain": "TERRAIN_COAST", "visibleNow": true, "yields": [1, 0, 2]},
       {"x": 81, "y": 14, "plotType": "PLOT_OCEAN", "terrain": "TERRAIN_OCEAN", "visibleNow": true, "yields": [1, 0, 1]},
       {"x": 82, "y": 14, "plotType": "PLOT_OCEAN", "terrain": "TERRAIN_OCEAN", "yields": [0, 0, 0]},
@@ -349,9 +355,15 @@
       {"x": 73, "y": 31, "plotType": "PLOT_OCEAN", "terrain": "TERRAIN_OCEAN", "yields": [1, 0, 1]}
     ]
   },
-  "meta": {"schemaVersion": 1, "trigger": "onEndGameTurn"},
+  "meta": {"schemaVersion": 1, "trigger": "onLoadGame"},
   "player": {
-    "beakersPerTurn": 16,
+    "beakersPerTurn": 18,
+    "bonuses": {
+      "counts": {"BONUS_COW": 1, "BONUS_WHEAT": 1},
+      "happiness": [],
+      "health": ["BONUS_COW", "BONUS_WHEAT"],
+      "strategic": []
+    },
     "civics": {
       "CIVICOPTION_ECONOMY": "CIVIC_DECENTRALIZATION",
       "CIVICOPTION_GOVERNMENT": "CIVIC_DESPOTISM",
@@ -376,12 +388,13 @@
       "current": "TECH_WRITING",
       "progress": 138,
       "sciencePercent": 100,
-      "turnsLeft": 4
+      "turnsLeft": 3
     },
     "score": 109
   },
   "units": [
     {"id": 24576, "moves": 1, "type": "UNIT_WARRIOR", "x": 77, "y": 11},
     {"id": 32770, "moves": 2, "type": "UNIT_WORKER", "x": 79, "y": 14}
-  ]
+  ],
+  "wonders": {"built": [], "national": ["BUILDINGCLASS_PALACE"]}
 }

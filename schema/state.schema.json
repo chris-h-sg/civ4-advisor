@@ -154,9 +154,43 @@
                         "^CIVICOPTION_[A-Z0-9_]+$": {"type": "string", "pattern": "^CIVIC_[A-Z0-9_]+$"}
                     },
                     "additionalProperties": false
+                },
+                "bonuses": {
+                    "type": "object",
+                    "description": "Resources connected to the player's trade network anywhere in the empire, grouped by what they do, plus per-resource quantities. A resource sitting unimproved or unroaded in the ground is NOT here - it is in map.tiles; this section is what the trade network actually delivers. QUANTITY IS A PLAYER-LEVEL FACT and deliberately appears only here, never on a city: the engine tracks how many of a resource the empire has, while a city merely has the connection or does not. The count is what matters for trading a spare away and is meaningless inside a city. See cities[].bonuses for the per-city membership, which uses the same three groups.",
+                    "properties": {
+                        "strategic": {
+                            "type": "array",
+                            "description": "Resources some unit or building requires in order to be built - the ones that gate what you can produce. There is no bStrategic flag in the XML and no isStrategic() in the API (CvBonusInfo exposes no reverse index either), so this is derived by sweeping every unit and building for its prerequisite bonuses, in both forms: getPrereqAndBonus, a single required resource, and the getPrereqOrBonuses array of alternatives any one of which suffices (the Spearman's Bronze/Iron/Horse). Derived rather than hardcoded by name so it stays correct if resources are ever added or retuned.",
+                            "items": {"type": "string", "pattern": "^BONUS_[A-Z0-9_]+$"},
+                            "uniqueItems": true
+                        },
+                        "happiness": {
+                            "type": "array",
+                            "description": "Resources whose XML iHappiness is positive - the luxuries a city's happiness bar credits when they are connected. Strictly positive, not merely non-zero: the engine permits a negative iHappiness, and listing such a resource here would read as a benefit.",
+                            "items": {"type": "string", "pattern": "^BONUS_[A-Z0-9_]+$"},
+                            "uniqueItems": true
+                        },
+                        "health": {
+                            "type": "array",
+                            "description": "Resources whose XML iHealth is positive - the food/health resources a city's health bar credits when connected. Same strictly-positive rule as happiness.",
+                            "items": {"type": "string", "pattern": "^BONUS_[A-Z0-9_]+$"},
+                            "uniqueItems": true
+                        },
+                        "counts": {
+                            "type": "object",
+                            "description": "How many of each connected resource the empire has (CyPlayer.getNumAvailableBonuses), for resources with at least one. Sits beside the grouped lists rather than replacing them: the lists answer 'what do I have', the counts answer 'what can I spare'. Keys here are every connected resource including pure trade goods, so this is a superset of the three lists above.",
+                            "patternProperties": {
+                                "^BONUS_[A-Z0-9_]+$": {"type": "integer", "minimum": 1}
+                            },
+                            "additionalProperties": false
+                        }
+                    },
+                    "required": ["strategic", "happiness", "health", "counts"],
+                    "additionalProperties": false
                 }
             },
-            "required": ["id", "leader", "civilization", "gold", "goldPerTurn", "beakersPerTurn", "score", "research", "knownTechs", "civics"],
+            "required": ["id", "leader", "civilization", "gold", "goldPerTurn", "beakersPerTurn", "score", "research", "knownTechs", "civics", "bonuses"],
             "additionalProperties": false
         },
         "units": {
@@ -234,11 +268,64 @@
                             "items": false,
                             "minItems": 2
                         }
+                    },
+                    "buildings": {
+                        "type": "array",
+                        "description": "Buildings already standing in this city, sorted. The prerequisite half of 'what can this city build now': a building is gated on its tech and on its prerequisite BUILDING, and only this section answers the second - it also prevents recommending something the city already has. BUILDING_ keys, deliberately NOT the BUILDINGCLASS_ keys the wonders section uses: there the limit is a property of the class, so the class is the right key, whereas here what matters is the actual thing standing in the city with its real effects (Portugal's Feitoria and a generic Trading Post share a class but are not the same building). The two are NOT interconvertible by string surgery - 28 stock buildings have a class whose name differs from their own, several many-to-one (BUILDING_COAL_PLANT, BUILDING_HYDRO_PLANT and BUILDING_NUCLEAR_PLANT are all BUILDINGCLASS_FACTORY) - so if a class key is ever needed it must be exported as its own field rather than derived from this one. Expect BUILDING_PALACE in the capital from turn 0. No fog concern: our own cities. Rivals' buildings are absent from foreignCities by design, which exports only what the nameplate shows.",
+                        "items": {"type": "string", "pattern": "^BUILDING_[A-Z0-9_]+$"},
+                        "uniqueItems": true
+                    },
+                    "bonuses": {
+                        "type": "object",
+                        "description": "Resources connected TO THIS CITY, in the same three groups as player.bonuses (see there for how each group is derived). Membership only - no counts, because quantity is an empire-level fact and a city either has the connection or does not. Read via CyCity.hasBonus, the engine's own 'is this resource connected here' test, which already folds in everything: revealed by the right tech, improved with the right improvement, linked by road/river/coast to this city, not severed by war and not traded away. That makes it the right question for 'can this city build an Axeman' and deliberately NOT a diagnosis - it cannot say WHY something is missing. Distinguishing 'no copper anywhere' from 'copper in the fat cross but unroaded' means joining map.tiles (bonus, improvement, route) against this. No fog concern: our own cities, our own trade network.",
+                        "properties": {
+                            "strategic": {
+                                "type": "array",
+                                "items": {"type": "string", "pattern": "^BONUS_[A-Z0-9_]+$"},
+                                "uniqueItems": true
+                            },
+                            "happiness": {
+                                "type": "array",
+                                "items": {"type": "string", "pattern": "^BONUS_[A-Z0-9_]+$"},
+                                "uniqueItems": true
+                            },
+                            "health": {
+                                "type": "array",
+                                "items": {"type": "string", "pattern": "^BONUS_[A-Z0-9_]+$"},
+                                "uniqueItems": true
+                            }
+                        },
+                        "required": ["strategic", "happiness", "health"],
+                        "additionalProperties": false
+                    },
+                    "coastal": {
+                        "type": "boolean",
+                        "description": "Whether this city is on the coast, i.e. whether a Harbour, Lighthouse or any naval unit is possible here at all - a hard gate on a whole branch of what the city can build. CyCity.isCoastal(gc.getMIN_WATER_SIZE_FOR_OCEAN()), the engine's own test, exported rather than left to the harness because the obvious hand-rolled version is subtly wrong: it is not 'is any of the eight neighbours water' but 'is this adjacent to a water body of at least the minimum size', so a city on a two-tile pond is NOT coastal."
                     }
                 },
-                "required": ["id", "name", "x", "y", "population", "food", "foodPerTurn", "growthThreshold", "producing", "production", "productionNeeded", "productionPerTurn", "culture", "cultureThreshold", "happy", "unhappy", "healthy", "unhealthy", "workedTiles"],
+                "required": ["id", "name", "x", "y", "population", "food", "foodPerTurn", "growthThreshold", "producing", "production", "productionNeeded", "productionPerTurn", "culture", "cultureThreshold", "happy", "unhappy", "healthy", "unhealthy", "workedTiles", "buildings", "bonuses", "coastal"],
                 "additionalProperties": false
             }
+        },
+        "wonders": {
+            "type": "object",
+            "description": "Which wonders are gone and which the player has already built. This is the one fact in the file that cannot be derived from anything else exported: whether a world wonder is still available depends on whether some rival completed it, which has nothing to do with our techs, resources or cities. Without it, advice will confidently recommend a wonder that was finished elsewhere ten turns ago. NOT A FOG-OF-WAR LEAK, and this was checked rather than assumed: the game's own Info screen lists every world wonder built anywhere in the world and gates only the BUILDER'S IDENTITY on isHasMet, showing 'Unknown' for the civ and city of an unmet builder while showing the wonder itself unconditionally - and every player gets a global popup the moment any world wonder completes. So 'this wonder is taken' is public knowledge while 'Hammurabi built it in Babylon' is not, and this section exports the former only: no owner, no city, no date. Both lists hold BUILDINGCLASS_ keys rather than BUILDING_ ones, because the limit is a property of the class and the class is what a civ's unique replacement shares (a Ziggurat and a Courthouse are one class).",
+            "properties": {
+                "built": {
+                    "type": "array",
+                    "description": "World wonders (building classes with iMaxGlobalInstances 1) completed ANYWHERE in the world, i.e. the ones no longer available to anyone including us. CyGame.getBuildingClassCreatedCount, a game-level counter - deliberately not a sweep of rivals' cities, which would need their city lists and would in any case miss wonders in cities the player has never seen.",
+                    "items": {"type": "string", "pattern": "^BUILDINGCLASS_[A-Z0-9_]+$"},
+                    "uniqueItems": true
+                },
+                "national": {
+                    "type": "array",
+                    "description": "National wonders (building classes with iMaxPlayerInstances 1) THIS PLAYER has built, from CyPlayer.getBuildingClassCount. Rivals' national wonders are absent because they are neither public nor relevant - one civ building the Heroic Epic uses nothing up for anyone else. Expect BUILDINGCLASS_PALACE here from turn 0: the Palace really does carry iMaxPlayerInstances 1 and every player starts with one, so it is a correct entry rather than a glitch - the list is 'one-per-civ classes we own', which the Palace is.",
+                    "items": {"type": "string", "pattern": "^BUILDINGCLASS_[A-Z0-9_]+$"},
+                    "uniqueItems": true
+                }
+            },
+            "required": ["built", "national"],
+            "additionalProperties": false
         },
         "map": {
             "type": "object",
@@ -395,6 +482,6 @@
             }
         }
     },
-    "required": ["meta", "game", "player", "units", "cities", "map", "contacts", "foreignUnits", "foreignCities"],
+    "required": ["meta", "game", "player", "units", "cities", "wonders", "map", "contacts", "foreignUnits", "foreignCities"],
     "additionalProperties": false
 }

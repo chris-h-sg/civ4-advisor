@@ -1,6 +1,9 @@
 {
   "cities": [
     {
+      "bonuses": {"happiness": [], "health": ["BONUS_COW", "BONUS_WHEAT"], "strategic": []},
+      "buildings": ["BUILDING_PALACE"],
+      "coastal": false,
       "culture": 72,
       "cultureThreshold": 100,
       "food": 16,
@@ -22,6 +25,9 @@
       "y": 15
     },
     {
+      "bonuses": {"happiness": [], "health": [], "strategic": []},
+      "buildings": [],
+      "coastal": true,
       "culture": 0,
       "cultureThreshold": 10,
       "food": 2,
@@ -347,6 +353,12 @@
   "meta": {"schemaVersion": 1, "trigger": "onEndGameTurn"},
   "player": {
     "beakersPerTurn": 13,
+    "bonuses": {
+      "counts": {"BONUS_COW": 1, "BONUS_WHEAT": 1},
+      "happiness": [],
+      "health": ["BONUS_COW", "BONUS_WHEAT"],
+      "strategic": []
+    },
     "civics": {
       "CIVICOPTION_ECONOMY": "CIVIC_DECENTRALIZATION",
       "CIVICOPTION_GOVERNMENT": "CIVIC_DESPOTISM",
@@ -379,5 +391,6 @@
     {"id": 16385, "moves": 1, "type": "UNIT_WARRIOR", "x": 68, "y": 19},
     {"id": 24576, "moves": 1, "type": "UNIT_WARRIOR", "x": 77, "y": 11},
     {"id": 32770, "moves": 2, "type": "UNIT_WORKER", "x": 77, "y": 15}
-  ]
+  ],
+  "wonders": {"built": [], "national": ["BUILDINGCLASS_PALACE"]}
 }

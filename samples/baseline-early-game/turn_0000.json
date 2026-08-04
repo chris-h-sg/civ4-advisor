@@ -62,9 +62,10 @@
       {"x": 76, "y": 17, "feature": "FEATURE_FOREST", "freshWater": true, "terrain": "TERRAIN_PLAINS", "visibleNow": true, "yields": [1, 2, 0]}
     ]
   },
-  "meta": {"schemaVersion": 1, "trigger": "onGameStart"},
+  "meta": {"schemaVersion": 1, "trigger": "onLoadGame"},
   "player": {
     "beakersPerTurn": 1,
+    "bonuses": {"counts": {}, "happiness": [], "health": [], "strategic": []},
     "civics": {
       "CIVICOPTION_ECONOMY": "CIVIC_DECENTRALIZATION",
       "CIVICOPTION_GOVERNMENT": "CIVIC_DESPOTISM",
@@ -90,5 +91,6 @@
   "units": [
     {"id": 8192, "moves": 2, "type": "UNIT_SETTLER", "x": 75, "y": 15},
     {"id": 16385, "moves": 1, "type": "UNIT_WARRIOR", "x": 74, "y": 13}
-  ]
+  ],
+  "wonders": {"built": [], "national": []}
 }

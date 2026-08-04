@@ -146,6 +146,24 @@ class _Context(object):
 		# The plot getters want the raw team ID, not the CyTeam object.
 		self.teamId = self.player.getTeam()
 		self.team = self.gc.getTeam(self.teamId)
+		# Memo slot for _strategicBonuses, filled on first use. Not resolved in
+		# __init__ because getTurnFilePath builds a _Context purely to read the
+		# leader and game ID, and would otherwise pay for a sweep of every unit
+		# and building it never looks at.
+		self._strategicBonuses = None
+
+	def strategicBonuses(self):
+		'''The memoized strategic-bonus set, or None if not yet computed.
+
+		An accessor pair rather than callers touching ctx._strategicBonuses
+		directly: the underscore says "not yours", and every other piece of
+		state on _Context is read through a plain attribute, so a lone private
+		one being poked from a module-level function is exactly the kind of
+		thing that gets copied into the next builder that needs a cache.'''
+		return self._strategicBonuses
+
+	def setStrategicBonuses(self, strategic):
+		self._strategicBonuses = strategic
 
 
 def _requireActivePlayer(ctx):
@@ -195,6 +213,7 @@ def buildState(gameTurn, playerId, trigger):
 		'player': _buildPlayer(ctx),
 		'units': _buildUnits(ctx),
 		'cities': _buildCities(ctx),
+		'wonders': _buildWonders(ctx),
 		'contacts': _buildContacts(ctx),
 		'foreignUnits': _buildForeignUnits(ctx),
 		'foreignCities': _buildForeignCities(ctx),
@@ -308,7 +327,193 @@ def _buildPlayer(ctx):
 		'research': _buildResearch(ctx),
 		'knownTechs': _buildKnownTechs(ctx),
 		'civics': _buildCivics(ctx),
+		'bonuses': _buildPlayerBonuses(ctx),
 	}
+
+
+## The three buckets bonuses are grouped into, in the order a player thinks about
+## them. Keys of the `bonuses` objects on both player and city.
+_BONUS_GROUPS = ('strategic', 'happiness', 'health')
+
+
+def _bonusGroup(iBonus, info, strategic):
+	'''Which of _BONUS_GROUPS a bonus belongs to, or None to leave it out entirely.
+
+	`strategic` is the precomputed set of bonus indices something can be built
+	with - see _strategicBonuses, which has to sweep every unit and building to
+	work it out, so it is built once per export rather than per bonus.
+
+	Health and happiness come straight off the XML: CIV4BonusInfos carries iHealth
+	and iHappiness per bonus, and they are exactly what the city's health and
+	happiness bars credit when the resource is connected (the base game's own
+	advisor tests getBonusInfo(i).getHealth()/getHappiness() > 0 to decide which
+	"resource connected" popup to show).
+
+	STRATEGIC HAS NO XML FLAG - there is no bStrategic, and inventing one from a
+	hardcoded name list would silently go wrong under any mod that adds resources.
+	It is derived instead, from the only thing that actually makes a resource
+	strategic: something needs it in order to be built. A bonus that unlocks no
+	unit and no building is a trade good, however valuable.
+
+	Precedence matters and is deliberate: a bonus that both unlocks units AND
+	gives happiness (Ivory, Horses in some rulesets) is filed under strategic,
+	because that is the fact that changes what you build. Each bonus appears in at
+	most one group, so the three lists partition rather than overlap - a bonus in
+	two places reads as two separate resources at a glance.
+
+	Bonuses in none of the three (pure trade goods with no yield effect) return
+	None and are omitted. They are still visible per-tile in map.tiles; what is
+	being grouped here is the connected-resource summary, not the map.'''
+	if iBonus in strategic:
+		return 'strategic'
+	# > 0 rather than != 0: a NEGATIVE iHealth exists (the engine allows it) and
+	# listing such a bonus under "health" would read as a benefit.
+	if info.getHappiness() > 0:
+		return 'happiness'
+	if info.getHealth() > 0:
+		return 'health'
+	return None
+
+
+def _strategicBonuses(ctx):
+	'''The set of bonus indices that some unit or building requires to be built.
+
+	There is no bStrategic flag in the XML and no isStrategic() on CvBonusInfo -
+	checked against the BUG Python API reference, which is also where the tempting
+	shortcut dies: CvBonusInfo does NOT expose a reverse index (no
+	getNumUnitsWithBonus / getNumBuildingsWithBonus), so a bonus cannot be asked
+	what it unlocks. The relation only exists in the other direction, on each unit
+	and building, hence this sweep.
+
+	Deriving it beats a hardcoded name list, which would be wrong under any mod
+	that adds resources and silently wrong under any that retunes them.
+
+	Both prerequisite forms count, and they mean different things: getPrereqAndBonus
+	is a single REQUIRED bonus, while getPrereqOrBonuses(i) is an array of
+	alternatives, any one of which suffices (the Spearman's Bronze/Iron/Horse). For
+	deciding "is this resource strategic" either form qualifies it. The array is
+	fixed-length, sized by the global defines rather than a hardcoded 4, and its
+	unused slots hold NO_BONUS.
+
+	Cost is numUnits + numBuildings times a handful of calls, once per export -
+	independent of map size, and dwarfed by the map scan. Memoized on the context
+	because _buildBonusGroups runs once per city as well as once for the player,
+	and the answer is the same every time (it depends only on the XML rules).'''
+	cached = ctx.strategicBonuses()
+	if cached is not None:
+		return cached
+	strategic = {}
+	unitOrs = ctx.gc.getDefineINT('NUM_UNIT_PREREQ_OR_BONUSES')
+	for i in range(ctx.gc.getNumUnitInfos()):
+		_collectPrereqBonuses(ctx.gc.getUnitInfo(i), unitOrs, strategic)
+	buildingOrs = ctx.gc.getDefineINT('NUM_BUILDING_PREREQ_OR_BONUSES')
+	for i in range(ctx.gc.getNumBuildingInfos()):
+		_collectPrereqBonuses(ctx.gc.getBuildingInfo(i), buildingOrs, strategic)
+	ctx.setStrategicBonuses(strategic)
+	return strategic
+
+
+def _collectPrereqBonuses(info, numOrs, strategic):
+	'''Add every bonus one unit/building requires into the `strategic` set.
+
+	A dict used as a set - Python 2.4 has no set literal and the built-in set is
+	only just available; a dict with dummy values is the idiom that works either
+	way and is what the rest of this module would need anyway.'''
+	iBonus = info.getPrereqAndBonus()
+	if iBonus != BonusTypes.NO_BONUS:
+		strategic[iBonus] = True
+	for i in range(numOrs):
+		iBonus = info.getPrereqOrBonuses(i)
+		if iBonus != BonusTypes.NO_BONUS:
+			strategic[iBonus] = True
+
+
+def _emptyBonusGroups():
+	'''A fresh {group: []} for every group, so absent groups never mean anything.
+
+	Written even when empty, unlike the field-level omission used in map.tiles: the
+	groups are a fixed set of three, not open-ended defaults, and "no strategic
+	resources connected" is a fact worth stating rather than an absence to infer.'''
+	groups = {}
+	for group in _BONUS_GROUPS:
+		groups[group] = []
+	return groups
+
+
+def _buildBonusGroups(ctx, include):
+	'''XML Type keys of every bonus include(i) accepts, grouped and sorted.
+
+	`include` is the per-bonus test that differs between the two callers - the
+	player's trade network (getNumAvailableBonuses) and one city's connection
+	(hasBonus) - so the grouping and ordering live here once rather than twice.'''
+	strategic = _strategicBonuses(ctx)
+	groups = _emptyBonusGroups()
+	for i in range(ctx.gc.getNumBonusInfos()):
+		if not include(i):
+			continue
+		info = ctx.gc.getBonusInfo(i)
+		group = _bonusGroup(i, info, strategic)
+		if group is not None:
+			groups[group].append(info.getType())
+	for group in _BONUS_GROUPS:
+		groups[group].sort()
+	return groups
+
+
+def _buildPlayerBonuses(ctx):
+	'''Resources connected to the player's trade network anywhere, with counts.
+
+	Quantity is a PLAYER-level fact and deliberately not repeated per city: the
+	engine tracks how many of a resource you have empire-wide, while a city merely
+	has the connection or does not. The count is what matters for trading a spare
+	away, and is meaningless inside a city.
+
+	Counted, not boolean, so `counts` sits beside the grouped lists rather than
+	replacing them: the lists answer "what do I have", the counts answer "what can
+	I spare". Only connected resources appear at all - one sitting unimproved in
+	the ground is not here, it is in map.tiles.
+
+	The counts are collected in one pass and the grouping reads that same dict,
+	so getNumAvailableBonuses is asked once per bonus rather than twice. The two
+	must agree: a resource in `counts` but missing from every group (or the
+	reverse) would be a contradiction within one section.'''
+	counts = {}
+	for i in range(ctx.gc.getNumBonusInfos()):
+		count = ctx.player.getNumAvailableBonuses(i)
+		if count > 0:
+			counts[i] = count
+	# `in` rather than counts.has_key: has_key is the 2.4 idiom but was removed in
+	# Python 3, which mod/tests runs this same source under.
+	bonuses = _buildBonusGroups(ctx, lambda i: i in counts)
+	bonuses['counts'] = _keyedByType(ctx, counts)
+	return bonuses
+
+
+def _keyedByType(ctx, byIndex):
+	'''Re-key a {bonusIndex: value} dict by XML Type key.
+
+	Indices are the engine's currency and Type keys are the export's; converting
+	at the boundary keeps the lookup loops above working in indices without
+	leaking them into the file.'''
+	out = {}
+	for i in byIndex.keys():
+		out[ctx.gc.getBonusInfo(i).getType()] = byIndex[i]
+	return out
+
+
+def _buildCityBonuses(ctx, city):
+	'''Resources connected TO THIS CITY, grouped the same way as the player's.
+
+	hasBonus is the engine's own "is this resource connected here" test, the one
+	the base game's advisor uses. It already folds in everything: revealed by tech,
+	improved correctly, linked by road/river/coast to this city, not severed by war
+	and not traded away. That makes it the right question for "can this city build
+	an Axeman", and deliberately not a diagnosis - it cannot say WHY a resource is
+	missing. Joining map.tiles (bonus, improvement, route) against this is what
+	distinguishes "no copper anywhere" from "copper in the fat cross, unroaded".
+
+	No fog concern: our own cities, our own trade network.'''
+	return _buildBonusGroups(ctx, city.hasBonus)
 
 
 def _buildResearch(ctx):
@@ -367,6 +572,57 @@ def _buildCivics(ctx):
 		if iCivic != CivicTypes.NO_CIVIC:
 			civics[ctx.gc.getCivicOptionInfo(i).getType()] = ctx.gc.getCivicInfo(iCivic).getType()
 	return civics
+
+
+def _buildWonders(ctx):
+	'''Which wonders are gone and which the player has already built.
+
+	The one fact in this file that CANNOT be derived from anything else exported,
+	and the reason this section exists: whether the Pyramids are still available
+	depends on whether some rival built them, which is nothing to do with our
+	techs, resources or cities. Without it, advice will confidently recommend a
+	wonder that was completed elsewhere ten turns ago.
+
+	NOT a fog-of-war leak, and this was checked rather than assumed. The game's own
+	Info screen (CvInfoScreen's wonder tab) lists every world wonder built anywhere
+	in the world, and gates only the BUILDER'S IDENTITY on isHasMet - showing
+	"Unknown" for the civ and city when the player has not met them, while showing
+	the wonder itself unconditionally. So "this wonder is taken" is public
+	knowledge; "Hammurabi built it in Babylon" is not. This section therefore
+	exports the former and never the latter: no owner, no city, no date. The
+	player also gets a global popup message the moment any world wonder completes.
+
+	built/national split by scope, since the two answer different questions:
+	  - `built` is world wonders (getMaxGlobalInstances 1) completed ANYWHERE, i.e.
+	    the ones no longer available to anyone. Read via
+	    CyGame.getBuildingClassCreatedCount, a game-level counter - deliberately
+	    not by sweeping rivals' cities, which would need their city lists and would
+	    miss wonders in cities we have never seen.
+	  - `national` is national wonders (getMaxPlayerInstances 1) THIS PLAYER has
+	    built, from CyPlayer.getBuildingClassCount. Rivals' national wonders are
+	    absent because they are neither public nor relevant - they do not use
+	    anything up for us.
+
+	Both are lists of BUILDINGCLASS_ Type keys, not BUILDING_ ones: the limit is a
+	property of the class, and the class is what joins against a rival civ's unique
+	replacement (a Ziggurat and a Courthouse are one class). Sorted for diffability
+	like every other list here.'''
+	built = []
+	national = []
+	for i in range(ctx.gc.getNumBuildingClassInfos()):
+		info = ctx.gc.getBuildingClassInfo(i)
+		if info.getMaxGlobalInstances() == 1:
+			if ctx.game.getBuildingClassCreatedCount(i) > 0:
+				built.append(info.getType())
+		# elif, not a second if: the two limits are mutually exclusive in practice
+		# and a class carrying both would otherwise be listed twice, in sections
+		# that mean different things.
+		elif info.getMaxPlayerInstances() == 1:
+			if ctx.player.getBuildingClassCount(i) > 0:
+				national.append(info.getType())
+	built.sort()
+	national.sort()
+	return {'built': built, 'national': national}
 
 
 def _sortedRows(rows):
@@ -479,7 +735,65 @@ def _buildCity(ctx, city):
 		'healthy': city.goodHealth(),
 		'unhealthy': city.badHealth(False),
 		'workedTiles': _buildWorkedTiles(ctx, city),
+		'buildings': _buildCityBuildings(ctx, city),
+		'bonuses': _buildCityBonuses(ctx, city),
+		# Whether a Harbour, Lighthouse or any naval unit is possible here at all -
+		# a hard gate on a whole branch of what the city can build, and one the
+		# harness would otherwise have to rebuild from map.tiles by testing all
+		# eight neighbours for water and then excluding lakes. isCoastal is the
+		# engine's own test, and takes the minimum water-body size the XML requires
+		# (MIN_WATER_SIZE_FOR_OCEAN), which is exactly the part a hand-rolled
+		# adjacency check gets wrong: a city on a two-tile pond is not coastal.
+		'coastal': bool(city.isCoastal(ctx.gc.getMIN_WATER_SIZE_FOR_OCEAN())),
 	}
+
+
+def _buildCityBuildings(ctx, city):
+	'''What this city has already built, as BUILDING_ Type keys, sorted.
+
+	The prerequisite half of "what can this city build now": the two things that
+	gate a building are its tech and its prerequisite BUILDING, and the second is
+	only answerable from here. It also stops the obvious mistake in the other
+	direction - recommending something the city already has.
+
+	BUILDING_ keys, not BUILDINGCLASS_ ones, and this is the opposite choice from
+	the `wonders` section on purpose. There the limit is a property of the class,
+	so the class is the right key. Here what matters is the actual thing standing
+	in the city, with its real effects: Portugal's Feitoria and a generic Trading
+	Post are one class but not the same building. The mapping is NOT a rename
+	either - 28 stock buildings have a class whose name differs from their own,
+	several of them many-to-one (BUILDING_COAL_PLANT, BUILDING_HYDRO_PLANT and
+	BUILDING_NUCLEAR_PLANT are all BUILDINGCLASS_FACTORY), so the harness cannot
+	recover one from the other by string surgery. If a class key is ever needed
+	alongside this, export it as its own field rather than swapping this one.
+
+	Iterating buildings rather than classes for the same reason: hasBuilding takes
+	a building, and going via classes would need the civ's class->building
+	resolution, which would hand back the generic building for any class where
+	this civ has a unique - the exact confusion this field is meant to avoid.
+
+	getNumBuilding, NOT hasBuilding - which does not exist on CyCity and cost a
+	live export to discover. The base game's own Python calls pCity.hasBuilding()
+	in eight places, so it looks unimpeachable, but those call sites run against
+	WorldBuilder screens and getPlotCity() results; the real binding is
+	isHasBuilding, and the BUG reference flags even that as a compatibility shim
+	that "no longer exists in C++" and merely forwards to getNumBuilding. So the
+	underlying method is used directly: one fewer layer, and nothing to be
+	deprecated out from under us.
+
+	getNumBuilding rather than getNumRealBuilding because it counts FREE buildings
+	too, and the Palace in the capital is exactly that - a free building. The
+	"real" variant would silently omit the one building this field is most obviously
+	expected to show.
+
+	No fog concern: our own cities. Rivals' buildings are deliberately absent from
+	foreignCities, which exports only what the nameplate shows.'''
+	buildings = []
+	for i in range(ctx.gc.getNumBuildingInfos()):
+		if city.getNumBuilding(i) > 0:
+			buildings.append(ctx.gc.getBuildingInfo(i).getType())
+	buildings.sort()
+	return buildings
 
 
 def _buildWorkedTiles(ctx, city):

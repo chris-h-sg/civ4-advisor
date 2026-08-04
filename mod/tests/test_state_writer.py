@@ -61,7 +61,38 @@ GAME_OPTIONS = ["GAMEOPTION_NO_BARBARIANS", "GAMEOPTION_RAGING_BARBARIANS",
 VICTORIES = ["VICTORY_CONQUEST", "VICTORY_DOMINATION", "VICTORY_CULTURAL"]
 TERRAINS = ["TERRAIN_GRASS", "TERRAIN_PLAINS", "TERRAIN_COAST", "TERRAIN_DESERT"]
 FEATURES = ["FEATURE_FOREST", "FEATURE_FLOOD_PLAINS"]
-BONUSES = ["BONUS_CORN", "BONUS_COPPER"]
+# Index order matters: BONUS_INFOS below describes each of these in the same order.
+BONUSES = ["BONUS_CORN", "BONUS_COPPER", "BONUS_GOLD", "BONUS_DYE"]
+# (health, happiness) per bonus, as CIV4BonusInfos.xml carries them. Corn is a
+# food resource, Copper a strategic one (a unit needs it - see UNIT_PREREQ_BONUS),
+# Gold a luxury, and Dye a pure trade good that does nothing but sell.
+BONUS_INFOS = [
+    {"health": 1, "happiness": 0},
+    {"health": 0, "happiness": 0},
+    {"health": 0, "happiness": 1},
+    {"health": 0, "happiness": 0},
+]
+# There is no bStrategic flag, so "strategic" is derived from units/buildings
+# naming a bonus as a prerequisite. UNIT_WARRIOR (index 1) requires Copper
+# outright; UNIT_SETTLER (index 3) lists Copper and Gold as OR-alternatives, so
+# both count - and Gold lands in `strategic` rather than `happiness`, since
+# unlocking something takes precedence.
+UNIT_PREREQ_BONUS = {1: 1}
+UNIT_PREREQ_OR_BONUSES = {3: [1, 2]}
+BUILDING_PREREQ_BONUS = {}
+NUM_PREREQ_OR_BONUSES = 4
+
+# Building CLASSES, which is what wonder limits are a property of and what the
+# wonders section reports - a civ's unique replacement shares its class.
+BUILDING_CLASSES = ["BUILDINGCLASS_PALACE", "BUILDINGCLASS_BARRACKS",
+                    "BUILDINGCLASS_PYRAMIDS", "BUILDINGCLASS_GREAT_LIBRARY",
+                    "BUILDINGCLASS_HEROIC_EPIC"]
+# iMaxGlobalInstances 1 marks a world wonder, iMaxPlayerInstances 1 a national
+# one; -1 is "no limit" and is what an ordinary building carries.
+WORLD_WONDER_CLASSES = (2, 3)
+NATIONAL_WONDER_CLASSES = (4,)
+
+MIN_WATER_SIZE_FOR_OCEAN = 10
 IMPROVEMENTS = ["IMPROVEMENT_FARM", "IMPROVEMENT_GOODY_HUT"]
 ROUTES = ["ROUTE_ROAD", "ROUTE_RAILROAD"]
 LEADERS = ["LEADER_HATSHEPSUT", "LEADER_GANDHI", "LEADER_JULIUS_CAESAR",
@@ -105,14 +136,85 @@ class Info(object):
         return self._t
 
 
+class BonusInfo(Info):
+    """A bonus, plus the two XML fields that decide its health/happiness group.
+
+    getNumUnitsWithBonus/getNumBuildingsWithBonus are tripwires: they are the
+    obvious way to ask a bonus what it unlocks, and they DO NOT EXIST in the
+    Python layer (confirmed against the BUG API reference - CvBonusInfo exposes
+    no reverse index at all). Calling one would raise inside the game and lose
+    the whole export, so the mock fails the same way rather than inventing them.
+    """
+
+    def __init__(self, t, health=0, happiness=0):
+        Info.__init__(self, t)
+        self._health = health
+        self._happiness = happiness
+
+    def getHealth(self):
+        return self._health
+
+    def getHappiness(self):
+        return self._happiness
+
+
+_forbid(BonusInfo, "CvBonusInfo has no reverse index in the Python API; sweep the "
+        "unit and building infos for their prerequisite bonuses instead", """
+    getNumUnitsWithBonus getNumBuildingsWithBonus""")
+
+
+class BuildInfo(Info):
+    """A unit or building info, carrying only its bonus prerequisites.
+
+    Both forms are modelled because they mean different things: getPrereqAndBonus
+    is one REQUIRED bonus, getPrereqOrBonuses(i) an array of alternatives any one
+    of which suffices. The array is fixed-length with NO_BONUS in unused slots.
+    """
+
+    def __init__(self, t, prereqBonus=NO_BONUS, prereqOrBonuses=()):
+        Info.__init__(self, t)
+        self._prereqBonus = prereqBonus
+        self._prereqOrBonuses = list(prereqOrBonuses)
+
+    def getPrereqAndBonus(self):
+        return self._prereqBonus
+
+    def getPrereqOrBonuses(self, i):
+        if i < len(self._prereqOrBonuses):
+            return self._prereqOrBonuses[i]
+        return NO_BONUS
+
+
+class BuildingClassInfo(Info):
+    """A building class and its instance limits.
+
+    getMaxGlobalInstances 1 is a world wonder (one in the world),
+    getMaxPlayerInstances 1 a national wonder (one per civ); -1 means no limit.
+    """
+
+    def __init__(self, t, maxGlobal=-1, maxPlayer=-1):
+        Info.__init__(self, t)
+        self._maxGlobal = maxGlobal
+        self._maxPlayer = maxPlayer
+
+    def getMaxGlobalInstances(self):
+        return self._maxGlobal
+
+    def getMaxPlayerInstances(self):
+        return self._maxPlayer
+
+
 class Game(object):
     def __init__(self, activePlayer=PLAYER_ID, options=(1,), victories=(0, 2),
-                 scriptData=""):
+                 scriptData="", builtWonders=()):
         self._activePlayer = activePlayer
         self._options = options
         self._victories = victories
         self._scriptData = scriptData
+        # Building-class indices completed anywhere in the world.
+        self._builtWonders = builtWonders
         self.scriptDataSets = []
+        self.buildingClassCreatedArgs = []
 
     def getScriptData(self):
         return self._scriptData
@@ -150,6 +252,10 @@ class Game(object):
 
     def isVictoryValid(self, i):
         return i in self._victories
+
+    def getBuildingClassCreatedCount(self, i):
+        self.buildingClassCreatedArgs.append(i)
+        return i in self._builtWonders and 1 or 0
 
 
 class Plot(object):
@@ -445,7 +551,18 @@ class City(object):
 
     def __init__(self, cityId, name=u"Thebes", x=32, y=40, owner=PLAYER_ID,
                  unit=2, building=None, project=None, process=None,
-                 production=10, productionNeeded=60, none=False, worked=None):
+                 production=10, productionNeeded=60, none=False, worked=None,
+                 bonuses=(0, 1), coastal=False, buildings=(0,)):
+        # Building indices standing in this city. The Palace by default, which is
+        # what a real capital carries from turn 0.
+        self._buildings = buildings
+        self.hasBuildingArgs = []
+        # Bonus indices connected to THIS city. Membership only - quantity is an
+        # empire-level fact and belongs on the player.
+        self._bonuses = bonuses
+        self._coastal = coastal
+        self.coastalArgs = []
+        self.hasBonusArgs = []
         # index -> (x, y) for a worked city plot. A value of None or of a Plot
         # stands in for what getCityIndexPlot returns off the edge of the map.
         # Index 0 is the city centre, which is always worked.
@@ -556,6 +673,35 @@ class City(object):
         self.badHealthArgs.append(bNoAngry)
         return 2
 
+    def getNumBuilding(self, i):
+        self.hasBuildingArgs.append(i)
+        return i in self._buildings and 1 or 0
+
+    def hasBuilding(self, i):
+        # NOT a real CyCity method, despite the base game's own Python calling
+        # pCity.hasBuilding() in eight places - those run against WorldBuilder
+        # screens and getPlotCity() results. The live game raises
+        # "AttributeError: 'CyCity' object has no attribute 'hasBuilding'" and
+        # loses the whole export. Caught only by actually playing a turn, which
+        # is why it is pinned here now.
+        raise AssertionError(
+            "CyCity has no hasBuilding(); the binding is isHasBuilding, itself a "
+            "compatibility shim forwarding to getNumBuilding - use getNumBuilding")
+
+    def getNumRealBuilding(self, i):
+        raise AssertionError(
+            "getNumRealBuilding excludes FREE buildings, and the Palace in the "
+            "capital is free - use getNumBuilding, which counts real and free")
+
+    def hasBonus(self, i):
+        self.hasBonusArgs.append(i)
+        return i in self._bonuses
+
+    def isCoastal(self, minWaterSize):
+        self.coastalArgs.append(minWaterSize)
+        # An int, as the C++ binding returns: the exporter has to coerce it.
+        return self._coastal and 1 or 0
+
     def isWorkingPlotByIndex(self, i):
         return i in self._worked
 
@@ -623,7 +769,7 @@ _forbid(ForeignCity, "a rival's city shows only what is painted on its nameplate
     getCurrentProductionDifference isProductionUnit isProductionBuilding
     isProductionProject isProductionProcess getCulture getCultureThreshold
     happyLevel unhappyLevel goodHealth badHealth isWorkingPlotByIndex
-    getCityIndexPlot""")
+    getCityIndexPlot hasBonus isCoastal getNumBuilding getNumRealBuilding""")
 
 
 def _cursor(items, index):
@@ -634,7 +780,14 @@ def _cursor(items, index):
 
 
 class Player(object):
-    def __init__(self, research=1, units=None, cities=None):
+    def __init__(self, research=1, units=None, cities=None, bonuses=None,
+                 nationalWonders=()):
+        # bonus index -> how many the empire has connected. Corn and Copper by
+        # default, so the strategic/health split is exercised without opting in.
+        self._bonuses = bonuses
+        if self._bonuses is None:
+            self._bonuses = {0: 1, 1: 2}
+        self._nationalWonders = nationalWonders
         self._research = research
         self._units = units
         if self._units is None:
@@ -700,6 +853,12 @@ class Player(object):
 
     def getCivics(self, i):
         return i  # civic option i -> civic i
+
+    def getNumAvailableBonuses(self, i):
+        return self._bonuses.get(i, 0)
+
+    def getBuildingClassCount(self, i):
+        return i in self._nationalWonders and 1 or 0
 
 
 class Team(object):
@@ -863,7 +1022,33 @@ class Gc(object):
         return Info(FEATURES[i])
 
     def getBonusInfo(self, i):
-        return Info(BONUSES[i])
+        return BonusInfo(BONUSES[i], **BONUS_INFOS[i])
+
+    def getNumBonusInfos(self):
+        return len(BONUSES)
+
+    def getDefineINT(self, name):
+        assert name in ("NUM_UNIT_PREREQ_OR_BONUSES",
+                        "NUM_BUILDING_PREREQ_OR_BONUSES"), name
+        return NUM_PREREQ_OR_BONUSES
+
+    def getNumUnitInfos(self):
+        return len(UNITS)
+
+    def getNumBuildingInfos(self):
+        return len(BUILDINGS)
+
+    def getNumBuildingClassInfos(self):
+        return len(BUILDING_CLASSES)
+
+    def getBuildingClassInfo(self, i):
+        return BuildingClassInfo(
+            BUILDING_CLASSES[i],
+            maxGlobal=(i in WORLD_WONDER_CLASSES) and 1 or -1,
+            maxPlayer=(i in NATIONAL_WONDER_CLASSES) and 1 or -1)
+
+    def getMIN_WATER_SIZE_FOR_OCEAN(self):
+        return MIN_WATER_SIZE_FOR_OCEAN
 
     def getImprovementInfo(self, i):
         return Info(IMPROVEMENTS[i])
@@ -944,10 +1129,13 @@ class Gc(object):
         return Info(VICTORIES[i])
 
     def getUnitInfo(self, i):
-        return Info(UNITS[i])
+        return BuildInfo(UNITS[i],
+                         prereqBonus=UNIT_PREREQ_BONUS.get(i, NO_BONUS),
+                         prereqOrBonuses=UNIT_PREREQ_OR_BONUSES.get(i, ()))
 
     def getBuildingInfo(self, i):
-        return Info(BUILDINGS[i])
+        return BuildInfo(BUILDINGS[i],
+                         prereqBonus=BUILDING_PREREQ_BONUS.get(i, NO_BONUS))
 
     def getProjectInfo(self, i):
         return Info(PROJECTS[i])
@@ -1087,7 +1275,7 @@ class BuildStateTests(unittest.TestCase):
         # section that hasn't been written yet.
         self.assertEqual(sorted(self.parsed.keys()),
                          ["cities", "contacts", "foreignCities", "foreignUnits",
-                          "game", "map", "meta", "player", "units"])
+                          "game", "map", "meta", "player", "units", "wonders"])
 
     def test_meta(self):
         self.assertEqual(self.parsed["meta"], {"schemaVersion": 1, "trigger": "onEndGameTurn"})
@@ -1299,6 +1487,10 @@ class CityTests(unittest.TestCase):
             "productionPerTurn": 4, "culture": 12, "cultureThreshold": 100,
             "happy": 4, "unhappy": 1, "healthy": 5, "unhealthy": 2,
             "workedTiles": [[31, 40], [32, 40], [33, 40]],
+            "buildings": ["BUILDING_PALACE"],
+            "bonuses": {"strategic": ["BONUS_COPPER"], "happiness": [],
+                        "health": ["BONUS_CORN"]},
+            "coastal": False,
         }])
 
     def test_sorted_by_id(self):
@@ -1395,6 +1587,287 @@ class WorkedTilesTests(unittest.TestCase):
     def test_no_worked_tiles_is_an_empty_list(self):
         _, parsed = buildWith(cities=[City(0, worked={})])
         self.assertEqual(parsed["cities"][0]["workedTiles"], [])
+
+
+class PlayerBonusTests(unittest.TestCase):
+    """Empire-wide connected resources, grouped by what they do."""
+
+    def bonuses(self, **kwargs):
+        _, parsed = exportState(player=Player(**kwargs))
+        return parsed["player"]["bonuses"]
+
+    def test_grouped_by_effect(self):
+        # Corn (health), Copper (a unit needs it), Gold (luxury), Dye (nothing).
+        self.assertEqual(self.bonuses(bonuses={0: 1, 1: 1, 2: 1, 3: 1}), {
+            "strategic": ["BONUS_COPPER", "BONUS_GOLD"],
+            "happiness": [],
+            "health": ["BONUS_CORN"],
+            "counts": {"BONUS_CORN": 1, "BONUS_COPPER": 1, "BONUS_GOLD": 1,
+                       "BONUS_DYE": 1},
+        })
+
+    def test_unlocking_something_outranks_being_a_luxury(self):
+        # Gold has iHappiness 1 AND is an OR-prerequisite for the Settler. It is
+        # filed under strategic, because that is the fact that changes what you
+        # build - and it appears in exactly one group, never both.
+        bonuses = self.bonuses(bonuses={2: 1})
+        self.assertEqual(bonuses["strategic"], ["BONUS_GOLD"])
+        self.assertEqual(bonuses["happiness"], [])
+
+    def test_or_prerequisites_count_as_strategic(self):
+        # getPrereqOrBonuses is an array of alternatives, any one of which
+        # suffices; a resource named only there is still strategic.
+        self.assertIn("BONUS_GOLD", self.bonuses(bonuses={2: 1})["strategic"])
+
+    def test_pure_trade_goods_are_left_out_of_the_groups(self):
+        # Dye unlocks nothing and has neither health nor happiness. It still
+        # appears in counts, which is every connected resource.
+        bonuses = self.bonuses(bonuses={3: 2})
+        for group in ("strategic", "happiness", "health"):
+            self.assertEqual(bonuses[group], [])
+        self.assertEqual(bonuses["counts"], {"BONUS_DYE": 2})
+
+    def test_unconnected_resources_are_absent(self):
+        # A resource in the ground but unimproved or unroaded is not here; it is
+        # in map.tiles. getNumAvailableBonuses is the trade network, not the map.
+        bonuses = self.bonuses(bonuses={})
+        self.assertEqual(bonuses["counts"], {})
+        for group in ("strategic", "happiness", "health"):
+            self.assertEqual(bonuses[group], [])
+
+    def test_counts_are_the_quantity_not_a_boolean(self):
+        self.assertEqual(self.bonuses(bonuses={1: 3})["counts"], {"BONUS_COPPER": 3})
+
+    def test_groups_are_always_present_even_when_empty(self):
+        # A fixed set of three, unlike the field-level omission in map.tiles:
+        # "no strategic resources connected" is a fact worth stating.
+        bonuses = self.bonuses(bonuses={})
+        self.assertEqual(sorted(bonuses.keys()),
+                         ["counts", "happiness", "health", "strategic"])
+
+    def test_sorted_for_diffability(self):
+        self.assertEqual(self.bonuses(bonuses={2: 1, 1: 1})["strategic"],
+                         ["BONUS_COPPER", "BONUS_GOLD"])
+
+    def test_counts_and_groups_describe_the_same_set(self):
+        # Both come from one getNumAvailableBonuses pass, so they cannot drift.
+        # Every grouped bonus must be in counts; counts may hold more, since
+        # pure trade goods belong to no group.
+        bonuses = self.bonuses(bonuses={0: 1, 1: 1, 2: 1, 3: 1})
+        grouped = set()
+        for group in ("strategic", "happiness", "health"):
+            grouped.update(bonuses[group])
+        self.assertTrue(grouped.issubset(set(bonuses["counts"])))
+        self.assertEqual(set(bonuses["counts"]) - grouped, {"BONUS_DYE"})
+
+    def test_availability_is_asked_once_per_bonus(self):
+        # It used to be asked twice - once to group, once to count. Cheap either
+        # way, but the two passes could disagree, which within one section would
+        # be a contradiction rather than a slow export.
+        calls = []
+        player = Player(bonuses={0: 1, 1: 2})
+        real = player.getNumAvailableBonuses
+
+        def counting(i):
+            calls.append(i)
+            return real(i)
+
+        player.getNumAvailableBonuses = counting
+        exportState(player=player)
+        self.assertEqual(sorted(calls), list(range(len(BONUSES))))
+
+    def test_reverse_index_on_bonus_info_is_never_used(self):
+        # getNumUnitsWithBonus/getNumBuildingsWithBonus are the obvious way to ask
+        # a bonus what it unlocks and DO NOT EXIST in the Python layer - calling
+        # one would raise inside the game and lose the whole export. The mock
+        # raises so that reintroducing the shortcut fails here instead.
+        mod = loadModule()
+        info = mod["_testGc"].getBonusInfo(0)
+        self.assertRaises(AssertionError, info.getNumUnitsWithBonus)
+        self.assertRaises(AssertionError, info.getNumBuildingsWithBonus)
+
+
+class CityBuildingTests(unittest.TestCase):
+    """What already stands in the city - the prerequisite half of what it can build."""
+
+    def buildings(self, **kwargs):
+        _, parsed = buildWith(cities=[City(0, **kwargs)])
+        return parsed["cities"][0]["buildings"]
+
+    def test_lists_what_the_city_has(self):
+        self.assertEqual(self.buildings(buildings=(0, 1)),
+                         ["BUILDING_BARRACKS", "BUILDING_PALACE"])
+
+    def test_capital_carries_the_palace(self):
+        # What a real capital looks like on turn 0, and the first thing a live
+        # capture should show.
+        self.assertEqual(self.buildings(buildings=(0,)), ["BUILDING_PALACE"])
+
+    def test_a_city_with_nothing_built_is_an_empty_list(self):
+        # Honest and unambiguous: a newly founded non-capital really has nothing.
+        self.assertEqual(self.buildings(buildings=()), [])
+
+    def test_every_building_index_is_examined(self):
+        city = City(0)
+        buildWith(cities=[city])
+        self.assertEqual(city.hasBuildingArgs, list(range(len(BUILDINGS))))
+
+    def test_building_keys_not_building_class_keys(self):
+        # The opposite choice from `wonders`, deliberately: there the limit is a
+        # property of the class; here what matters is the actual building, since
+        # a civ's unique replacement shares a class but not its effects.
+        for name in self.buildings(buildings=(0, 1)):
+            self.assertTrue(name.startswith("BUILDING_"), name)
+            self.assertFalse(name.startswith("BUILDINGCLASS_"), name)
+
+    def test_sorted_for_diffability(self):
+        self.assertEqual(self.buildings(buildings=(1, 0)),
+                         ["BUILDING_BARRACKS", "BUILDING_PALACE"])
+
+    def test_cities_can_differ_from_each_other(self):
+        _, parsed = buildWith(cities=[City(0, buildings=(0,)), City(1, buildings=())])
+        self.assertEqual(parsed["cities"][0]["buildings"], ["BUILDING_PALACE"])
+        self.assertEqual(parsed["cities"][1]["buildings"], [])
+
+    def test_rivals_buildings_are_never_read(self):
+        # foreignCities exports only what the nameplate shows; a rival's building
+        # list is a city-screen internal. The mock raises if anyone reaches for it.
+        city = ForeignCity(0)
+        self.assertRaises(AssertionError, city.getNumBuilding, 0)
+
+    def test_the_nonexistent_has_building_accessor_is_never_used(self):
+        # CyCity has no hasBuilding(), though the base game's Python appears to
+        # call it - those call sites are WorldBuilder/getPlotCity objects. Using
+        # it raises in the live game and loses the entire export, which is how
+        # this was found. Pinned so it cannot come back.
+        city = City(0)
+        self.assertRaises(AssertionError, city.hasBuilding, 0)
+
+    def test_free_buildings_count(self):
+        # getNumRealBuilding would exclude the Palace, which is a FREE building
+        # in the capital - the single most expected entry in this field.
+        city = City(0)
+        buildWith(cities=[city])
+        self.assertRaises(AssertionError, city.getNumRealBuilding, 0)
+
+
+class CityBonusTests(unittest.TestCase):
+    """Per-city connected resources: membership only, no counts."""
+
+    def bonuses(self, **kwargs):
+        _, parsed = buildWith(cities=[City(0, **kwargs)])
+        return parsed["cities"][0]["bonuses"]
+
+    def test_grouped_like_the_players(self):
+        self.assertEqual(self.bonuses(bonuses=(0, 1)), {
+            "strategic": ["BONUS_COPPER"],
+            "happiness": [],
+            "health": ["BONUS_CORN"],
+        })
+
+    def test_no_counts_on_a_city(self):
+        # Quantity is an empire-level fact: a city either has the connection or
+        # does not, and "two copper in this city" is not a thing the engine models.
+        self.assertNotIn("counts", self.bonuses())
+
+    def test_city_without_connections_gets_empty_groups(self):
+        self.assertEqual(self.bonuses(bonuses=()),
+                         {"strategic": [], "happiness": [], "health": []})
+
+    def test_read_through_the_engines_own_connection_test(self):
+        # hasBonus already folds in tech, improvement, route, war and trades -
+        # every bonus index is asked, and the answer is the trade network's.
+        city = City(0)
+        buildWith(cities=[city])
+        self.assertEqual(city.hasBonusArgs, list(range(len(BONUSES))))
+
+    def test_cities_can_differ_from_each_other(self):
+        # The whole point of the per-city section: one city connected to copper
+        # and another not is the difference between building Axemen and not.
+        _, parsed = buildWith(cities=[City(0, bonuses=(1,)), City(1, bonuses=())])
+        self.assertEqual(parsed["cities"][0]["bonuses"]["strategic"], ["BONUS_COPPER"])
+        self.assertEqual(parsed["cities"][1]["bonuses"]["strategic"], [])
+
+
+class CityCoastalTests(unittest.TestCase):
+    def test_coastal_city(self):
+        _, parsed = buildWith(cities=[City(0, coastal=True)])
+        self.assertIs(parsed["cities"][0]["coastal"], True)
+
+    def test_inland_city(self):
+        _, parsed = buildWith(cities=[City(0, coastal=False)])
+        self.assertIs(parsed["cities"][0]["coastal"], False)
+
+    def test_asks_with_the_engines_minimum_water_size(self):
+        # NOT "is any neighbour water": the test is adjacency to a water body of
+        # at least MIN_WATER_SIZE_FOR_OCEAN, so a city on a two-tile pond is not
+        # coastal. Passing the define is what makes this the engine's own answer
+        # rather than a hand-rolled approximation of it.
+        city = City(0)
+        buildWith(cities=[city])
+        self.assertEqual(city.coastalArgs, [MIN_WATER_SIZE_FOR_OCEAN])
+
+
+class WonderTests(unittest.TestCase):
+    """What is gone (world) and what we have built (national)."""
+
+    def wonders(self, builtWonders=(), nationalWonders=()):
+        _, parsed = exportState(game=Game(builtWonders=builtWonders),
+                                player=Player(nationalWonders=nationalWonders))
+        return parsed["wonders"]
+
+    def test_world_wonders_built_anywhere_are_listed(self):
+        # The fact that cannot be derived from anything else in the file: whether
+        # a wonder is still available depends on rivals we may never have met.
+        self.assertEqual(self.wonders(builtWonders=(2,))["built"],
+                         ["BUILDINGCLASS_PYRAMIDS"])
+
+    def test_unbuilt_world_wonders_are_absent(self):
+        self.assertEqual(self.wonders()["built"], [])
+
+    def test_national_wonders_are_our_own(self):
+        self.assertEqual(self.wonders(nationalWonders=(4,))["national"],
+                         ["BUILDINGCLASS_HEROIC_EPIC"])
+
+    def test_ordinary_buildings_are_in_neither_list(self):
+        # Palace and Barracks have no instance limit at all (-1), so they are
+        # not wonders and must not appear however many exist.
+        wonders = self.wonders(builtWonders=(0, 1), nationalWonders=(0, 1))
+        self.assertEqual(wonders["built"], [])
+        self.assertEqual(wonders["national"], [])
+
+    def test_world_and_national_lists_do_not_overlap(self):
+        wonders = self.wonders(builtWonders=(2, 3), nationalWonders=(4,))
+        self.assertEqual(wonders["built"],
+                         ["BUILDINGCLASS_GREAT_LIBRARY", "BUILDINGCLASS_PYRAMIDS"])
+        self.assertEqual(wonders["national"], ["BUILDINGCLASS_HEROIC_EPIC"])
+
+    def test_building_classes_not_buildings(self):
+        # The limit is a property of the class, and the class is what a civ's
+        # unique replacement shares - a Ziggurat and a Courthouse are one class.
+        for name in self.wonders(builtWonders=(2,))["built"]:
+            self.assertTrue(name.startswith("BUILDINGCLASS_"), name)
+
+    def test_sorted_for_diffability(self):
+        self.assertEqual(self.wonders(builtWonders=(3, 2))["built"],
+                         ["BUILDINGCLASS_GREAT_LIBRARY", "BUILDINGCLASS_PYRAMIDS"])
+
+    def test_global_count_is_read_from_the_game_not_from_rivals(self):
+        # A sweep of rivals' cities would need their city lists and would miss
+        # wonders in cities we have never seen. The game-level counter is both
+        # correct and public - the Info screen shows it to every player.
+        mod, _ = exportState(game=Game(builtWonders=(2,)))
+        # Asked only of the world-wonder classes: an unlimited building has no
+        # global count worth reading, and a national wonder's count is per-player.
+        self.assertEqual(mod["_testGc"].getGame().buildingClassCreatedArgs,
+                         list(WORLD_WONDER_CLASSES))
+
+    def test_no_wonder_owner_or_city_is_exported(self):
+        # "This wonder is taken" is public; "Hammurabi built it in Babylon" is
+        # not - the Info screen shows Unknown for an unmet builder. The section
+        # is two flat lists of names precisely so there is nowhere to put one.
+        wonders = self.wonders(builtWonders=(2,), nationalWonders=(4,))
+        self.assertEqual(sorted(wonders.keys()), ["built", "national"])
 
 
 class MapScanTests(unittest.TestCase):

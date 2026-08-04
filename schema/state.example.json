@@ -40,6 +40,12 @@
             "CIVICOPTION_LABOR": "CIVIC_TRIBALISM",
             "CIVICOPTION_ECONOMY": "CIVIC_DECENTRALIZATION",
             "CIVICOPTION_RELIGION": "CIVIC_PAGANISM"
+        },
+        "bonuses": {
+            "strategic": ["BONUS_COPPER"],
+            "happiness": ["BONUS_GOLD"],
+            "health": ["BONUS_CORN"],
+            "counts": {"BONUS_COPPER": 1, "BONUS_CORN": 2, "BONUS_DYE": 1, "BONUS_GOLD": 1}
         }
     },
     "units": [
@@ -67,9 +73,20 @@
             "unhappy": 1,
             "healthy": 5,
             "unhealthy": 2,
-            "workedTiles": [[31, 40], [32, 40], [33, 40]]
+            "workedTiles": [[31, 40], [32, 40], [33, 40]],
+            "buildings": ["BUILDING_PALACE"],
+            "bonuses": {
+                "strategic": ["BONUS_COPPER"],
+                "happiness": [],
+                "health": ["BONUS_CORN"]
+            },
+            "coastal": false
         }
     ],
+    "wonders": {
+        "built": ["BUILDINGCLASS_PYRAMIDS", "BUILDINGCLASS_STONEHENGE"],
+        "national": ["BUILDINGCLASS_PALACE"]
+    },
     "map": {
         "tiles": [
             {"x": 30, "y": 39, "plotType": "PLOT_PEAK", "terrain": "TERRAIN_DESERT", "visibleNow": true, "yields": [0, 0, 0]},

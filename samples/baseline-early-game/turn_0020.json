@@ -1,6 +1,9 @@
 {
   "cities": [
     {
+      "bonuses": {"happiness": [], "health": [], "strategic": []},
+      "buildings": ["BUILDING_PALACE"],
+      "coastal": false,
       "culture": 40,
       "cultureThreshold": 100,
       "food": 16,
@@ -231,6 +234,7 @@
   "meta": {"schemaVersion": 1, "trigger": "onEndGameTurn"},
   "player": {
     "beakersPerTurn": 13,
+    "bonuses": {"counts": {}, "happiness": [], "health": [], "strategic": []},
     "civics": {
       "CIVICOPTION_ECONOMY": "CIVIC_DECENTRALIZATION",
       "CIVICOPTION_GOVERNMENT": "CIVIC_DESPOTISM",
@@ -257,5 +261,6 @@
     {"id": 16385, "moves": 1, "type": "UNIT_WARRIOR", "x": 71, "y": 23},
     {"damage": 6, "id": 24576, "moves": 1, "type": "UNIT_WARRIOR", "x": 78, "y": 11},
     {"id": 32770, "moves": 2, "type": "UNIT_WORKER", "x": 75, "y": 15}
-  ]
+  ],
+  "wonders": {"built": [], "national": ["BUILDINGCLASS_PALACE"]}
 }
