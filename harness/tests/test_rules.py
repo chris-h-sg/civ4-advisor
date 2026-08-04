@@ -56,7 +56,8 @@ def _tech(type_key, cost, or_reqs=(), and_reqs=(), flags=(), values=()):
 
 def _unit(type_key, prereq, unit_class="UNITCLASS_X", strength=1, moves=1,
           cost=10, combat="UNITCOMBAT_MELEE", bonuses=(), mods=(),
-          first_strikes=0, city_defense=0, filler_lines=0):
+          first_strikes=0, city_defense=0, filler_lines=0,
+          domain="DOMAIN_LAND", religion="NONE", corporation="NONE"):
     # `filler_lines` pushes PrereqTech far from <Type>, reproducing the real
     # file's ~90-line gap that defeats `grep -A6`.
     filler = "\n".join("      <iFiller%d>0</iFiller%d>" % (i, i)
@@ -65,10 +66,13 @@ def _unit(type_key, prereq, unit_class="UNITCLASS_X", strength=1, moves=1,
     <UnitInfo>
       <Type>%s</Type>
       <Class>%s</Class>
+      <Domain>%s</Domain>
       <Combat>%s</Combat>
 %s
       <UnitCombatMods>%s</UnitCombatMods>
       <PrereqTech>%s</PrereqTech>
+      <PrereqReligion>%s</PrereqReligion>
+      <PrereqCorporation>%s</PrereqCorporation>
       <BonusType>NONE</BonusType>
       <PrereqBonuses>%s</PrereqBonuses>
       <iCost>%d</iCost>
@@ -81,13 +85,13 @@ def _unit(type_key, prereq, unit_class="UNITCLASS_X", strength=1, moves=1,
       <TerrainImpassables/>
       <FeatureImpassables/>
     </UnitInfo>""" % (
-        type_key, unit_class, combat, filler,
+        type_key, unit_class, domain, combat, filler,
         "".join(
             "<UnitCombatMod><UnitCombatType>%s</UnitCombatType>"
             "<iUnitCombatMod>%d</iUnitCombatMod></UnitCombatMod>" % m
             for m in mods
         ),
-        prereq,
+        prereq, religion, corporation,
         "".join("<BonusType>%s</BonusType>" % b for b in bonuses),
         cost, moves, strength, first_strikes, city_defense,
     )
@@ -216,6 +220,48 @@ def xml_root(tmp_path):
              <PrereqBonuses/>
              <iCost>90</iCost>
            </BuildingInfo>""",
+        # An ORDINARY coastal building - TESTNATIONAL is also bWater, but a
+        # national wonder short-circuits before the coastal gate is reached, so
+        # it cannot exercise it.
+        """<BuildingInfo>
+             <Type>BUILDING_TESTPORT</Type>
+             <PrereqTech>NONE</PrereqTech>
+             <ObsoleteTech>NONE</ObsoleteTech>
+             <Bonus>NONE</Bonus>
+             <PrereqBonuses/>
+             <iCost>60</iCost>
+             <bWater>1</bWater>
+           </BuildingInfo>""",
+        # Gated on another building being present in the same city.
+        """<BuildingInfo>
+             <Type>BUILDING_TESTANNEX</Type>
+             <PrereqTech>NONE</PrereqTech>
+             <ObsoleteTech>NONE</ObsoleteTech>
+             <Bonus>NONE</Bonus>
+             <PrereqBonuses/>
+             <PrereqBuildingClasses>
+               <BuildingClassType>BUILDINGCLASS_TESTHOUSE</BuildingClassType>
+             </PrereqBuildingClasses>
+             <iCost>70</iCost>
+           </BuildingInfo>""",
+        # Another civ's unique building.
+        """<BuildingInfo>
+             <Type>BUILDING_THEIR_UNIQUE</Type>
+             <PrereqTech>NONE</PrereqTech>
+             <ObsoleteTech>NONE</ObsoleteTech>
+             <Bonus>NONE</Bonus>
+             <PrereqBonuses/>
+             <iCost>90</iCost>
+           </BuildingInfo>""",
+        # iCost -1: placed by a great person, never produced by a city.
+        """<BuildingInfo>
+             <Type>BUILDING_TESTACADEMY</Type>
+             <PrereqTech>NONE</PrereqTech>
+             <ObsoleteTech>NONE</ObsoleteTech>
+             <Bonus>NONE</Bonus>
+             <PrereqBonuses/>
+             <iCost>-1</iCost>
+           </BuildingInfo>""",
     ])
     (root / "Buildings" / "CIV4BuildingInfos.xml").write_text(
         buildings, encoding="latin-1")
@@ -305,8 +351,51 @@ def xml_root(tmp_path):
         _unit("UNIT_OTHER_CLASS", "TECH_SIMPLE", unit_class="UNITCLASS_Y"),
         _unit("UNIT_ELSEWHERE", "TECH_ROOT_B", unit_class="UNITCLASS_Z"),
         _unit("UNIT_DEFENDER", "TECH_ROOT_A", first_strikes=1, city_defense=50),
+        # The gates `city` needs and the single lookups do not.
+        _unit("UNIT_BOAT", "TECH_ROOT_A", unit_class="UNITCLASS_BOAT",
+              domain="DOMAIN_SEA", cost=30),
+        _unit("UNIT_ZEALOT", "TECH_ROOT_A", unit_class="UNITCLASS_ZEALOT",
+              religion="RELIGION_TESTFAITH", cost=40),
+        # Another civ's unique, replacing a class whose default is buildable.
+        _unit("UNIT_THEIR_UNIQUE", "TECH_ROOT_A", unit_class="UNITCLASS_X"),
+        # iCost 0: an animal, in the units file and never trained by a city.
+        _unit("UNIT_CRITTER", "NONE", unit_class="UNITCLASS_CRITTER", cost=0),
+        # The Settler shape: BTS blanks iCost to 0, vanilla holds the real
+        # cost. Both trees must be consulted or the unit vanishes from `city`.
+        _unit("UNIT_FREEBIE", "NONE", unit_class="UNITCLASS_FREEBIE", cost=0),
     ])
     (root / "Units" / "CIV4UnitInfos.xml").write_text(units, encoding="latin-1")
+
+    # The same file in vanilla, where UNIT_FREEBIE still carries its cost and
+    # UNIT_TESTER carries an OLDER one that BTS re-priced - so the fallback has
+    # to be zero-only rather than "prefer vanilla".
+    vanilla_units = "<Civ4UnitInfos><UnitInfos>%s</UnitInfos></Civ4UnitInfos>" % "".join([
+        _unit("UNIT_FREEBIE", "NONE", unit_class="UNITCLASS_FREEBIE", cost=100),
+        _unit("UNIT_TESTER", "TECH_SIMPLE", cost=25),
+        _unit("UNIT_CRITTER", "NONE", unit_class="UNITCLASS_CRITTER", cost=0),
+    ])
+    (vanilla / "Units" / "CIV4UnitInfos.xml").write_text(
+        vanilla_units, encoding="latin-1")
+
+    # Two civs: ours replaces nothing, theirs replaces UNITCLASS_X. Without
+    # this file every civ's uniques read as available to everyone.
+    civs = ("<Civ4CivilizationInfos><CivilizationInfos>"
+            "<CivilizationInfo><Type>CIVILIZATION_MINE</Type>"
+            "<Units/><Buildings/></CivilizationInfo>"
+            "<CivilizationInfo><Type>CIVILIZATION_THEIRS</Type>"
+            "<Units><Unit>"
+            "<UnitClassType>UNITCLASS_X</UnitClassType>"
+            "<UnitType>UNIT_THEIR_UNIQUE</UnitType>"
+            "</Unit></Units>"
+            "<Buildings><Building>"
+            "<BuildingClassType>BUILDINGCLASS_TESTHOUSE</BuildingClassType>"
+            "<BuildingType>BUILDING_THEIR_UNIQUE</BuildingType>"
+            "</Building></Buildings>"
+            "</CivilizationInfo>"
+            "</CivilizationInfos></Civ4CivilizationInfos>")
+    (root / "Civilizations").mkdir(parents=True, exist_ok=True)
+    (root / "Civilizations" / "CIV4CivilizationInfos.xml").write_text(
+        civs, encoding="latin-1")
 
     handicaps = "<Civ4HandicapInfos><HandicapInfos>%s</HandicapInfos></Civ4HandicapInfos>" % "".join([
         _handicap("HANDICAP_EASY", research=75, iAnimalAttackProb=85,
@@ -350,9 +439,24 @@ def config(tmp_path, xml_root):
     return str(path)
 
 
+def make_city(name="Testville", x=10, y=10, rate=13, coastal=False,
+              buildings=(), bonuses=None, population=2, producing=None):
+    """A city as the mod exports one, including the increment-5 fields."""
+    city = {
+        "name": name, "x": x, "y": y, "population": population,
+        "productionPerTurn": rate, "coastal": coastal,
+        "buildings": list(buildings),
+        "bonuses": bonuses or {"strategic": [], "happiness": [], "health": []},
+    }
+    if producing:
+        city["producing"] = producing
+    return city
+
+
 def make_state(tmp_path, known=(), handicap="HANDICAP_HARD",
                world="WORLDSIZE_STANDARD", speed="GAMESPEED_NORMAL", turn=34,
-               rate=13, tiles=(), research=None):
+               rate=13, tiles=(), research=None, cities=None, wonders=None,
+               civilization=None):
     state = {
         "game": {"gameTurn": turn, "handicap": handicap, "worldSize": world,
                  "gameSpeed": speed},
@@ -361,6 +465,12 @@ def make_state(tmp_path, known=(), handicap="HANDICAP_HARD",
                    "research": research or {}},
         "map": {"tiles": list(tiles)},
     }
+    if civilization:
+        state["player"]["civilization"] = civilization
+    if cities is not None:
+        state["cities"] = list(cities)
+    if wonders is not None:
+        state["wonders"] = wonders
     path = tmp_path / ("turn_%04d.json" % turn)
     path.write_text(json.dumps(state), encoding="utf-8")
     return str(path), state
@@ -1055,11 +1165,11 @@ def test_world_wonder_states_the_race_it_cannot_check(xml_root, tmp_path):
     text = rules.view_building(r, "BUILDING_TESTWONDER", state, False, None)
 
     assert "cannot see" in text
-    assert "race you cannot check" in text
+    assert "this is a race" in text
     assert "hammers to gold" in text
 
     ordinary = rules.view_building(r, "BUILDING_TESTHOUSE", state, False, None)
-    assert "race you cannot check" not in ordinary
+    assert "this is a race" not in ordinary
 
 
 def test_building_view_always_warns_that_effects_are_incomplete(xml_root, tmp_path):
@@ -1378,3 +1488,438 @@ def test_cli_names_the_missing_state_file_rather_than_misbinding_it(capsys):
     err = capsys.readouterr().err
     assert "needs both a TYPE and a state file" in err
     assert "UNIT_AXEMAN <state.json>" in err
+
+
+# ---------------------------------------------------------------------------
+# Per-city buildability - `city`, and the gates only increment 5 can answer
+# ---------------------------------------------------------------------------
+
+
+def _city_state(tmp_path, wonders=None, cities=None, **kwargs):
+    """A one-city game whose civ is ours, so uniques filter correctly."""
+    cities = cities or [make_city(**kwargs)]
+    return make_state(tmp_path, known=["TECH_ROOT_A"], cities=cities,
+                      civilization="CIVILIZATION_MINE", wonders=wonders)[1]
+
+
+def test_city_view_needs_a_city_that_exists(xml_root, tmp_path):
+    state = _city_state(tmp_path, name="Lisbon")
+    r = build_rules(xml_root, state)
+    with pytest.raises(rules.RulesError) as excinfo:
+        rules.view_city(r, "Nowhere", state)
+    # The available names are in hand at the point of failure, so listing them
+    # costs nothing - same argument as the near-match suggestions.
+    assert "Lisbon" in str(excinfo.value)
+
+
+def test_city_view_matches_a_name_case_insensitively(xml_root, tmp_path):
+    state = _city_state(tmp_path, name="Lisbon")
+    r = build_rules(xml_root, state)
+    assert "Lisbon" in rules.view_city(r, "lisbon", state)
+
+
+def test_a_sea_unit_is_blocked_in_a_landlocked_city(xml_root, tmp_path):
+    """DOMAIN_SEA against cities[].coastal.
+
+    Not derivable from map.tiles: the engine's test is adjacency to a water
+    body of a minimum size, so "a neighbour is water" would call a city on a
+    pond coastal. This is the gate that had a landlocked Lisbon listing a Work
+    Boat as available.
+    """
+    inland = _city_state(tmp_path, name="Inland", coastal=False)
+    r = build_rules(xml_root, inland)
+    blockers = rules.unit_availability(
+        r, "UNIT_BOAT", r.units["UNIT_BOAT"], inland["cities"][0], inland,
+        rules.effective_known(inland), set(), set())
+    assert any("not coastal" in b for b in blockers)
+
+    port = _city_state(tmp_path, name="Port", coastal=True)
+    assert rules.unit_availability(
+        r, "UNIT_BOAT", r.units["UNIT_BOAT"], port["cities"][0], port,
+        rules.effective_known(port), set(), set()) == []
+
+
+def test_a_coastal_building_is_blocked_in_a_landlocked_city(xml_root, tmp_path):
+    inland = _city_state(tmp_path, name="Inland", coastal=False)
+    r = build_rules(xml_root, inland)
+    blockers = rules.building_availability(
+        r, "BUILDING_TESTPORT", r.buildings["BUILDING_TESTPORT"],
+        inland["cities"][0], inland, rules.effective_known(inland), set(),
+        set(), {})
+    assert any("not coastal" in b for b in blockers)
+
+
+def test_a_prereq_building_is_checked_against_this_city(xml_root, tmp_path):
+    """cities[].buildings - per-city state held nowhere else in the export."""
+    without = _city_state(tmp_path, name="Bare", buildings=[])
+    r = build_rules(xml_root, without)
+    blockers = rules.building_availability(
+        r, "BUILDING_TESTANNEX", r.buildings["BUILDING_TESTANNEX"],
+        without["cities"][0], without, rules.effective_known(without), set(),
+        set(), {})
+    assert any("BUILDINGCLASS_TESTHOUSE" in b for b in blockers)
+
+    with_it = _city_state(tmp_path, name="Built",
+                          buildings=["BUILDING_TESTHOUSE"])
+    assert rules.building_availability(
+        r, "BUILDING_TESTANNEX", r.buildings["BUILDING_TESTANNEX"],
+        with_it["cities"][0], with_it, rules.effective_known(with_it), set(),
+        set(), {}) == []
+
+
+def test_an_already_built_building_says_so(xml_root, tmp_path):
+    state = _city_state(tmp_path, buildings=["BUILDING_TESTHOUSE"])
+    r = build_rules(xml_root, state)
+    blockers = rules.building_availability(
+        r, "BUILDING_TESTHOUSE", r.buildings["BUILDING_TESTHOUSE"],
+        state["cities"][0], state, rules.effective_known(state), set(), set(),
+        {})
+    assert blockers == ["already built here"]
+
+
+def test_a_world_wonder_already_built_is_gone_not_a_race(xml_root, tmp_path):
+    """wonders.built - the field that was exported and read by nothing.
+
+    NOT exercised by samples/baseline-early-game: `built` is [] in all 44
+    files, so this branch is synthetic-only and that gap is recorded in
+    harness/README.md rather than left to be discovered.
+    """
+    wonders = {"built": ["BUILDINGCLASS_TESTWONDER"], "national": []}
+    state = _city_state(tmp_path, wonders=wonders)
+    r = build_rules(xml_root, state)
+    blockers = rules.building_availability(
+        r, "BUILDING_TESTWONDER", r.buildings["BUILDING_TESTWONDER"],
+        state["cities"][0], state, rules.effective_known(state), set(), set(),
+        wonders)
+    assert any("ALREADY BUILT" in b for b in blockers)
+
+
+def test_a_national_wonder_you_hold_is_blocked(xml_root, tmp_path):
+    wonders = {"built": [], "national": ["BUILDINGCLASS_TESTNATIONAL"]}
+    state = _city_state(tmp_path, wonders=wonders)
+    r = build_rules(xml_root, state)
+    blockers = rules.building_availability(
+        r, "BUILDING_TESTNATIONAL", r.buildings["BUILDING_TESTNATIONAL"],
+        state["cities"][0], state, rules.effective_known(state), set(), set(),
+        wonders)
+    assert any("already have one" in b for b in blockers)
+
+
+def test_other_civs_uniques_are_excluded_and_ours_are_not(xml_root, tmp_path):
+    """Without this filter every civ's unique is tech-open for you.
+
+    Measured on the real install at t43: 34 rows instead of 18, most of them
+    units the player can never build.
+    """
+    state = _city_state(tmp_path)
+    r = build_rules(xml_root, state)
+    other_units, other_buildings = rules._unique_sets(r, state)
+    assert "UNIT_THEIR_UNIQUE" in other_units
+    assert "BUILDING_THEIR_UNIQUE" in other_buildings
+    # Ours replaces nothing, so the generic stays available to us.
+    assert "UNIT_TESTER" not in other_units
+
+
+def test_your_own_unique_replaces_the_generic(xml_root, tmp_path):
+    """The civ that HAS the override builds it and loses the class default."""
+    state = _city_state(tmp_path)
+    state["player"]["civilization"] = "CIVILIZATION_THEIRS"
+    r = build_rules(xml_root, state)
+    other_units, _ = rules._unique_sets(r, state)
+    assert "UNIT_THEIR_UNIQUE" not in other_units
+    # UNITCLASS_X's other members are replaced for this civ.
+    assert "UNIT_TESTER" in other_units
+
+
+def test_the_city_list_is_alphabetical_and_never_ranked(xml_root, tmp_path):
+    """The no-ranking guarantee, in the same shape as the tech-route test.
+
+    Cost order or available-first would each be an opinion about what to build;
+    the tool's line is that the list is derived, not selected.
+    """
+    state = _city_state(tmp_path, name="Lisbon")
+    r = build_rules(xml_root, state)
+    text = rules.view_city(r, "Lisbon", state)
+
+    for word in ("best", "recommend", "should build", "cheapest", "strongest",
+                 "optimal", "priority"):
+        assert word not in text.lower()
+
+    section = text.split("UNITS")[1].split("BUILDINGS")[0]
+    listed = [line.split()[0] for line in section.splitlines()
+              if line.startswith("  UNIT_")]
+    assert listed == sorted(listed)
+
+
+def test_blocked_rows_stay_listed_with_the_reason(xml_root, tmp_path):
+    """A buildable-only list reads as a shortlist and cannot answer what you
+    are about to unlock, which is the question behind switching production."""
+    state = _city_state(tmp_path, name="Lisbon", coastal=False)
+    r = build_rules(xml_root, state)
+    text = rules.view_city(r, "Lisbon", state)
+    assert "BLOCKED" in text
+    assert "UNIT_BOAT" in text
+
+
+def test_untrainable_entries_are_not_listed_as_available(xml_root, tmp_path):
+    """iCost <= 0 is animals and great-person builds - a city produces neither.
+
+    Listing BUILDING_TESTACADEMY as "available, ~0 turns" was the first
+    version, and it invited ordering something uncommandable.
+    """
+    state = _city_state(tmp_path, name="Lisbon")
+    r = build_rules(xml_root, state)
+    text = rules.view_city(r, "Lisbon", state)
+    assert "UNIT_CRITTER" not in text
+    assert "BUILDING_TESTACADEMY" not in text
+
+
+def test_a_religion_gate_is_reported_as_unknown_not_as_met(xml_root, tmp_path):
+    """Religion presence is not in the export at all.
+
+    Calling a missionary available because the tech is open would be a
+    confident wrong answer of exactly the kind this tool exists to prevent.
+    """
+    state = _city_state(tmp_path)
+    r = build_rules(xml_root, state)
+    blockers = rules.unit_availability(
+        r, "UNIT_ZEALOT", r.units["UNIT_ZEALOT"], state["cities"][0], state,
+        rules.effective_known(state), set(), set())
+    assert blockers and "RELIGION_TESTFAITH" in blockers[0]
+    assert "not in the export" in blockers[0]
+
+
+def test_city_view_states_what_it_omits(xml_root, tmp_path):
+    state = _city_state(tmp_path, name="Lisbon")
+    r = build_rules(xml_root, state)
+    text = rules.view_city(r, "Lisbon", state)
+    assert "THIS OMITS" in text
+    assert "cannot see rival production" in text
+    assert rules.MOD_WARNING in text
+
+
+def test_build_turns_exclude_a_city_the_gate_rules_out(xml_root, tmp_path):
+    """The Lighthouse defect: `~5 turns in Lisbon` printed directly above
+    `city must be coastal`, with Lisbon not coastal.
+
+    Two lines of one block contradicting each other, with nothing in the
+    output able to catch it. Excluded cities are NAMED, because a city missing
+    with no explanation reads as a data problem.
+    """
+    state = make_state(
+        tmp_path, known=["TECH_ROOT_A"], civilization="CIVILIZATION_MINE",
+        cities=[make_city(name="Lisbon", rate=13, coastal=False),
+                make_city(name="Oporto", x=20, rate=7, coastal=True)])[1]
+    r = build_rules(xml_root, state)
+    text = rules.view_building(r, "BUILDING_TESTPORT", state, False, None)
+
+    assert "turns in Oporto" in text
+    assert "turns in Lisbon" not in text
+    assert "excluded: Lisbon is not coastal" in text
+
+
+def test_build_turns_are_unchanged_for_an_ungated_building(xml_root, tmp_path):
+    state = make_state(
+        tmp_path, known=["TECH_ROOT_A"], civilization="CIVILIZATION_MINE",
+        cities=[make_city(name="Lisbon", rate=13),
+                make_city(name="Oporto", x=20, rate=7)])[1]
+    r = build_rules(xml_root, state)
+    text = rules.view_building(r, "BUILDING_TESTHOUSE", state, False, None)
+    assert "turns in Lisbon" in text
+    assert "turns in Oporto" in text
+    assert "excluded" not in text
+
+
+def test_a_site_gate_reports_which_of_your_cities_pass(xml_root, tmp_path):
+    state = make_state(
+        tmp_path, known=["TECH_ROOT_A"], civilization="CIVILIZATION_MINE",
+        cities=[make_city(name="Lisbon", coastal=False),
+                make_city(name="Oporto", x=20, coastal=True)])[1]
+    r = build_rules(xml_root, state)
+    text = rules.view_building(r, "BUILDING_TESTPORT", state, False, None)
+    assert "must be coastal - yes: Oporto; no: Lisbon" in text
+
+
+def test_cli_city_reports_a_missing_name_rather_than_misbinding(capsys):
+    """`city` takes a plain name, so the missing-state guard cannot key off a
+    TYPE prefix - a bare word is exactly what a city argument looks like."""
+    assert rules.main(["city", "Lisbon"]) == 2
+    err = capsys.readouterr().err
+    assert "needs both a city name and a state file" in err
+    assert "Lisbon <state.json>" in err
+
+
+# ---------------------------------------------------------------------------
+# Food builds - settlers and workers eat the food surplus
+# ---------------------------------------------------------------------------
+
+
+def test_a_food_build_adds_the_food_surplus_to_its_rate():
+    """Settlers and workers are built with food AND hammers.
+
+    Ground truth from the baseline run, Lisbon on consecutive turns:
+        t42  UNIT_WARRIOR   foodPerTurn 6  productionPerTurn 7
+        t43  UNIT_SETTLER   foodPerTurn 0  productionPerTurn 13   (= 6 + 7)
+    Ignoring it roughly doubled the quoted time on the two builds that
+    dominate turns 0-50.
+    """
+    city = {"productionPerTurn": 7, "foodPerTurn": 6, "producing": "UNIT_WARRIOR"}
+    assert rules.food_build_rate(city, {"food_production": True}) == (13, True)
+    assert rules.food_build_rate(city, {"food_production": False}) == (7, False)
+
+
+def test_food_already_in_the_rate_is_not_counted_twice():
+    """foodPerTurn reads 0 exactly while a food build is in the queue, so the
+    surplus is already inside productionPerTurn and must not be re-added."""
+    city = {"productionPerTurn": 13, "foodPerTurn": 0,
+            "producing": "UNIT_SETTLER"}
+    assert rules.food_build_rate(city, {"food_production": True}) == (13, True)
+
+
+def test_an_ordinary_build_is_flagged_when_the_rate_carries_food():
+    """The same double-count in the other direction.
+
+    At t43 Lisbon's 13 hpt includes the 6 food its settler is eating; reading
+    that as a Warrior's rate overstates it by the whole surplus. The split is
+    not recoverable from one file - Lisbon's hammers move 8 -> 2 across
+    t37 -> t38 as worked tiles change - so it is flagged, not silently used.
+    """
+    city = {"productionPerTurn": 13, "foodPerTurn": 0,
+            "producing": "UNIT_SETTLER"}
+    rate, folded = rules.food_build_rate(city, {"food_production": False})
+    assert rate == 13
+    assert folded == "optimistic"
+
+
+def test_a_starving_city_does_not_get_a_negative_food_bonus():
+    city = {"productionPerTurn": 4, "foodPerTurn": -2, "producing": None}
+    assert rules.food_build_rate(city, {"food_production": True}) == (4, False)
+
+
+def test_the_food_note_is_stated_once_not_on_every_row(xml_root, tmp_path):
+    state = _city_state(tmp_path, name="Lisbon", rate=13,
+                        producing="UNIT_SETTLER")
+    state["cities"][0]["foodPerTurn"] = 0
+    r = build_rules(xml_root, state)
+    text = rules.view_city(r, "Lisbon", state)
+    assert text.count("a little optimistic") == 1
+
+
+def test_a_settler_cost_blanked_by_bts_falls_back_to_vanilla(xml_root, tmp_path):
+    """BTS sets UNIT_SETTLER's <iCost> to 0 while vanilla holds the real 100.
+
+    Taken literally the 0 looked like an animal or great-person build, and the
+    `city` view dropped the single most important early build from the list.
+    The engine's own number settles it: cities[].productionNeeded reads 100 on
+    every turn Lisbon builds one.
+
+    Narrow on purpose - BTS genuinely re-prices units (a Chariot is 25 in
+    vanilla, 30 in BTS), so only a ZERO falls through.
+    """
+    state = _city_state(tmp_path)
+    r = build_rules(xml_root, state)
+    assert r.units["UNIT_FREEBIE"]["cost"] == 100
+    assert r.units["UNIT_FREEBIE"].get("cost_from_vanilla") is True
+    # A unit BTS re-priced keeps the BTS value, not vanilla's.
+    assert r.units["UNIT_TESTER"]["cost"] == 35
+
+
+def test_a_unit_costing_zero_in_both_trees_stays_unbuildable(xml_root, tmp_path):
+    """A genuine 0 marks something a city never trains - that is the filter
+    that keeps animals out of the list."""
+    state = _city_state(tmp_path, name="Lisbon")
+    r = build_rules(xml_root, state)
+    assert r.units["UNIT_CRITTER"]["cost"] == 0
+    assert "UNIT_CRITTER" not in rules.view_city(r, "Lisbon", state)
+
+
+def test_a_tech_being_researched_does_not_make_things_available(xml_root, tmp_path):
+    """`city` is the one view that must NOT use effective_known.
+
+    That set folds in the tech in progress, which is right when costing a route
+    and wrong here. On the baseline at t43 Masonry sits at 4/124 with 7 turns
+    left, and folding it in reported the Pyramids, the Great Wall and Walls as
+    available NOW - three world/ordinary builds the city could not start.
+    """
+    state = _city_state(tmp_path, name="Lisbon")
+    # TECH_SIMPLE is not known; it is being researched.
+    state["player"]["knownTechs"] = ["TECH_ROOT_A"]
+    state["player"]["research"] = {"current": "TECH_SIMPLE", "turnsLeft": 7}
+    r = build_rules(xml_root, state)
+    text = rules.view_city(r, "Lisbon", state)
+
+    row = [l for l in text.splitlines() if "BUILDING_TESTHOUSE" in l][0]
+    assert "BLOCKED" in row
+    assert "available" not in row
+    assert "RESEARCHING NOW" in text
+    assert "7 turns left" in text
+
+
+def test_the_researching_label_is_only_for_the_current_tech(xml_root, tmp_path):
+    state = _city_state(tmp_path, name="Lisbon")
+    state["player"]["knownTechs"] = ["TECH_ROOT_A"]
+    state["player"]["research"] = {"current": "TECH_SIMPLE", "turnsLeft": 7}
+    r = build_rules(xml_root, state)
+    text = rules.view_city(r, "Lisbon", state)
+    # TECH_ROOT_B gates UNIT_ELSEWHERE and is not being researched.
+    elsewhere = [l for l in text.splitlines() if "TECH_ROOT_B" in l]
+    assert elsewhere and all("RESEARCHING" not in l for l in elsewhere)
+
+
+@pytest.mark.parametrize("sample", sorted(
+    os.path.basename(p) for p in
+    (os.listdir(SAMPLES) if os.path.isdir(SAMPLES) else [])
+    if os.path.isdir(os.path.join(SAMPLES, p))
+))
+def test_nothing_is_available_without_its_tech_on_any_sample_turn(sample):
+    """The invariant that caught the effective_known bug, as a test.
+
+    `city` reported the Pyramids, the Great Wall and Walls as available at t43
+    while Masonry was still 4/124 with seven turns left. Nothing in the output
+    contradicted it - the rows were indistinguishable from genuinely available
+    ones - and no unit test covered it, because the synthetic fixture happened
+    not to have a tech in progress.
+
+    What found it was sweeping every turn of a real run and asserting one
+    property. That is cheap, so it runs over every sample rather than a chosen
+    turn: a future capture that breaks it fails here instead of quietly
+    advising someone to build something they cannot.
+    """
+    try:
+        xml_root = rules.resolve_xml_root()
+    except rules.RulesError as exc:
+        pytest.skip("no Civ IV install: %s" % exc)
+
+    folder = os.path.join(SAMPLES, sample)
+    turns = sorted(f for f in os.listdir(folder) if f.startswith("turn_"))
+    if not turns:
+        pytest.skip("%s has no turn files" % sample)
+
+    checked = 0
+    for name in turns:
+        with open(os.path.join(folder, name), encoding="utf-8") as handle:
+            state = json.load(handle)
+        cities = state.get("cities") or []
+        if not cities:
+            continue
+        r = rules.Rules(xml_root, state.get("game") or {})
+        # Strictly what the player has - NOT effective_known, which is the
+        # whole point of the assertion.
+        known = set((state.get("player") or {}).get("knownTechs") or [])
+        for city in cities:
+            text = rules.view_city(r, city["name"], state)
+            for line in text.splitlines():
+                if "available" not in line:
+                    continue
+                key = line.strip().split()[0]
+                entry = r.buildings.get(key) or r.units.get(key)
+                if entry is None:
+                    continue
+                tech = entry.get("tech") or entry.get("prereq_tech")
+                assert not (tech and tech != "NONE" and tech not in known), (
+                    "%s/%s: %s listed available in %s but needs %s, which is "
+                    "not known" % (sample, name, key, city["name"], tech)
+                )
+                checked += 1
+
+    assert checked, "no available rows were checked in %s" % sample

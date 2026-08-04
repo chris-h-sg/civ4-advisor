@@ -77,6 +77,10 @@ YIELD_FILE = os.path.join("Terrain", "CIV4YieldInfos.xml")
 IMPROVEMENT_FILE = os.path.join("Terrain", "CIV4ImprovementInfos.xml")
 PROJECT_FILE = os.path.join("GameInfo", "CIV4ProjectInfo.xml")
 RELIGION_FILE = os.path.join("GameInfo", "CIV4ReligionInfo.xml")
+# Maps each civ to the unit/building types that replace a class for them only.
+# Needed by `city`: without it every other civ's unique unit is tech-open for
+# you and the list is 34 rows instead of 18, most of them unbuildable forever.
+CIVILIZATION_FILE = os.path.join("Civilizations", "CIV4CivilizationInfos.xml")
 # Vanilla-only on the measured install - BTS did not change resources.
 BONUS_FILE = os.path.join("Terrain", "CIV4BonusInfos.xml")
 # The game's own one-line pitch for a building, keyed from <Strategy>. This is
@@ -149,6 +153,20 @@ BARBARIAN_FIELDS = (
 # Printed at the foot of every view. One copy, because four hand-maintained
 # copies of the same caveat is how one of them quietly drifts.
 MOD_WARNING = "Vanilla BTS rules only - wrong if a gameplay mod is loaded."
+
+# How many techs beyond what you know a blocked row may sit before it is
+# horizon noise rather than a blocker. 1 means "the tech you could finish next".
+# Measured at t43 on the baseline: of 64 tech-blocked units, 13 are one tech
+# away and 8 need twenty-one - the far tail is Battleships and Airships, which
+# buried the four rows that mattered under 453 lines of output.
+NEAR_TECH_HORIZON = 1
+
+# Blockers that no amount of research clears soon, and that the tech-distance
+# cut therefore cannot see: religion presence and corporations are both
+# tech-open at t43 while being eras away in practice. Marked with a prefix
+# rather than matched on prose, so rewording a message cannot silently change
+# which rows are listed.
+OUT_OF_SCOPE = "[later] "
 
 
 class RulesError(Exception):
@@ -327,10 +345,23 @@ def parse_units(text):
             if bonus != "NONE"
         ]
         bonus_type = _tag(block, "BonusType")
+        religion = _tag(block, "PrereqReligion")
+        corporation = _tag(block, "PrereqCorporation")
 
         units[key] = {
             "type": key,
             "line": line,
+            # bFood: this unit is built with food AND hammers. Settlers and
+            # workers convert the city's whole food surplus into production, so
+            # the city stops growing and the build finishes much faster. See
+            # food_build_rate().
+            "food_production": _int_tag(block, "bFood") == 1,
+            # DOMAIN_SEA needs a coastal city - the gate that let a landlocked
+            # Lisbon list a Work Boat as available.
+            "domain": _tag(block, "Domain"),
+            "religion": religion if religion and religion != "NONE" else None,
+            "corporation": (corporation
+                            if corporation and corporation != "NONE" else None),
             "combat_class": _tag(block, "Combat"),
             "strength": _int_tag(block, "iCombat"),
             "moves": _int_tag(block, "iMoves"),
@@ -502,9 +533,16 @@ def parse_buildings(text, commerce_order=(), yield_order=()):
         prereq_buildings = _list_tag(block, "PrereqBuildingClasses",
                                      "BuildingClassType")
         bonus = _tag(block, "Bonus")
+        religion = _tag(block, "PrereqReligion")
+        holy_city = _tag(block, "HolyCity")
+        corporation = _tag(block, "PrereqCorporation")
         buildings[key] = {
             "type": key,
             "line": line,
+            "religion": religion if religion and religion != "NONE" else None,
+            "holy_city": holy_city if holy_city and holy_city != "NONE" else None,
+            "corporation": (corporation
+                            if corporation and corporation != "NONE" else None),
             "strategy_key": _tag(block, "Strategy"),
             "tech": _tag(block, "PrereqTech"),
             "cost": _int_tag(block, "iCost"),
@@ -587,6 +625,43 @@ def parse_building_classes(text):
     return classes
 
 
+def parse_civilizations(text):
+    """Per-civ unit and building overrides: which class each civ replaces.
+
+    Only `city` needs this, and it needs it to be honest rather than merely
+    tidy. Every civ's unique unit sits in CIV4UnitInfos.xml with an ordinary
+    PrereqTech, so a tech-open filter alone reports UNIT_ROME_PRAETORIAN as
+    available to Portugal - 34 rows instead of 18 at t43, most of them things
+    the player can never build. A unit is yours if no OTHER civ overrides its
+    class with it; your own overrides stay, and the class default drops out
+    when you override it, which is what "replaces" means.
+    """
+    civs = {}
+    for key, block, line in iter_blocks(text, "CivilizationInfo"):
+        units = {}
+        for entry in re.finditer(
+            r"<UnitClassType>(.*?)</UnitClassType>\s*<UnitType>(.*?)</UnitType>",
+            block, re.S,
+        ):
+            if entry.group(2) != "NONE":
+                units[entry.group(1).strip()] = entry.group(2).strip()
+        buildings = {}
+        for entry in re.finditer(
+            r"<BuildingClassType>(.*?)</BuildingClassType>\s*"
+            r"<BuildingType>(.*?)</BuildingType>",
+            block, re.S,
+        ):
+            if entry.group(2) != "NONE":
+                buildings[entry.group(1).strip()] = entry.group(2).strip()
+        civs[key] = {
+            "type": key,
+            "line": line,
+            "units": units,
+            "buildings": buildings,
+        }
+    return civs
+
+
 def parse_bonuses(text):
     """Resources, with the tech that REVEALS each one.
 
@@ -667,6 +742,7 @@ class Rules(object):
         self.techs = parse_techs(tech_text)
         self.units = parse_units(unit_text)
         self.handicaps = parse_handicap(handicap_text)
+        self._fill_inherited_unit_costs()
 
         # Everything a tech reveals. Each source is optional so a partial
         # install degrades to a stated omission rather than a crash; `sources`
@@ -706,6 +782,8 @@ class Rules(object):
         self.improvements = self._load(
             IMPROVEMENT_FILE, "improvements",
             lambda text: parse_simple(text, "ImprovementInfo", "PrereqTech"))
+        self.civilizations = self._load(
+            CIVILIZATION_FILE, "civilizations", parse_civilizations)
 
         # A building does not name its own class, so the wonder lookup joins
         # backwards through <DefaultBuilding>.
@@ -725,6 +803,40 @@ class Rules(object):
         handicap = self.handicaps.get(game.get("handicap"), {})
         self.handicap_pct = handicap.get("iResearchPercent", 100)
         self.setup = game
+
+    def _fill_inherited_unit_costs(self):
+        """Recover a cost that BTS blanked and vanilla still holds.
+
+        BTS sets UNIT_SETTLER's <iCost> to 0 while vanilla carries the real
+        100, and the game charges 100 - `cities[].productionNeeded` reads 100
+        on every turn Lisbon builds one, which is the engine's own number and
+        settles it. Taken literally, the 0 made the Settler look like an
+        animal or a great-person build and the `city` view dropped it from the
+        list entirely: the single most important early-game build, missing.
+
+        Deliberately narrow. BTS genuinely re-prices units (a Chariot is 25 in
+        vanilla and 30 in BTS), so BTS-first stays right and only a ZERO falls
+        through to vanilla - measured, that is exactly one unit in the file.
+        A cost of 0 in both trees is left alone: that is a real "not trained by
+        a city" marker, which is what filters animals out.
+        """
+        zeroed = [key for key, unit in self.units.items()
+                  if not unit.get("cost")]
+        if not zeroed:
+            return
+        text, _path, tree = read_xml(self.roots, UNIT_FILE, required=False)
+        if text is None or tree != "BTS":
+            return
+        vanilla_path = os.path.join(self.roots[1], UNIT_FILE)
+        if not os.path.isfile(vanilla_path):
+            return
+        with open(vanilla_path, "rb") as handle:
+            fallback = parse_units(handle.read().decode(XML_ENCODING))
+        for key in zeroed:
+            inherited = (fallback.get(key) or {}).get("cost") or 0
+            if inherited > 0:
+                self.units[key]["cost"] = inherited
+                self.units[key]["cost_from_vanilla"] = True
 
     def _load(self, relative, name, parse, default=None):
         """Parse an optional XML source, recording which tree answered.
@@ -1187,6 +1299,304 @@ def _resource_status(rules, bonus_type, state, known):
     return lines
 
 
+# ---------------------------------------------------------------------------
+# Per-city buildability
+# ---------------------------------------------------------------------------
+
+
+def find_city(state, name):
+    """Match a city by name, case-insensitively. Exact match wins."""
+    cities = state.get("cities") or []
+    for city in cities:
+        if (city.get("name") or "") == name:
+            return city
+    lowered = name.lower()
+    for city in cities:
+        if (city.get("name") or "").lower() == lowered:
+            return city
+    return None
+
+
+def city_connected_bonuses(city):
+    """The resources this city's trade network delivers, as a set.
+
+    Per city rather than per empire because they genuinely differ: Oporto is
+    founded on t36 with nothing connected and picks up both of Lisbon's
+    resources on t37, when the road at (77,15) closes the chain. Membership
+    only - quantity is an empire fact the engine does not model per city.
+    """
+    grouped = city.get("bonuses") or {}
+    found = set()
+    for group in ("strategic", "happiness", "health"):
+        found.update(grouped.get(group) or [])
+    return found
+
+
+def food_build_rate(city, unit):
+    """Hammers per turn for this unit, folding in food if it is a bFood build.
+
+    Settlers and workers are built with food AND hammers: while one is in the
+    queue the city's entire food surplus is added to production, so the city
+    stops growing and the unit arrives much sooner. Ignoring it made the tool
+    quote roughly double the real time on the two builds that dominate turns
+    0-50.
+
+    The export already carries this, and the baseline run shows it cleanly.
+    Lisbon on consecutive turns:
+
+        t42  UNIT_WARRIOR   foodPerTurn 6   productionPerTurn 7
+        t43  UNIT_SETTLER   foodPerTurn 0   productionPerTurn 13   (= 6 + 7)
+
+    So `productionPerTurn` ALREADY includes the food while such a build is in
+    progress, and `foodPerTurn` reads 0 - which is why the schema notes food
+    reading 0 during disorder and this case. That makes the correction
+    conditional on what the city is building right now: add the surplus only
+    when the city is NOT already running a food build, or it is counted twice.
+
+    The correction runs BOTH ways, which the first version got wrong. When the
+    city is already on a food build the surplus is inside `productionPerTurn`,
+    so it must be added for other food builds (it is already there) and
+    SUBTRACTED for ordinary ones. Measured on Lisbon:
+
+        t42  UNIT_WARRIOR   food 6  prod 7    <- warrior's true rate is 7
+        t43  UNIT_SETTLER   food 0  prod 13   <- and 13 is 7 + the 6 food
+
+    Reading t43's 13 as a Warrior's rate overstates it by the whole surplus,
+    which is the same double-count in the opposite direction.
+
+    Returns (rate, folded) so the caller can label an estimate that assumes
+    growth stops - the trade is real and belongs to the reader.
+    """
+    rate = city.get("productionPerTurn") or 0
+    surplus = city.get("foodPerTurn") or 0
+    producing = city.get("producing") or ""
+    # foodPerTurn reads 0 exactly while a food build is in the queue, so a
+    # unit under production with no surplus is the "already folded in" case.
+    # (Disorder also zeroes food, and then rate is 0 too, so nothing moves.)
+    already_folded = producing.startswith("UNIT_") and surplus == 0 and rate > 0
+
+    if unit.get("food_production"):
+        if already_folded:
+            return rate, True
+        if surplus > 0:
+            return rate + surplus, True
+        return rate, False
+
+    if already_folded:
+        # Ordinary build while a food build is running: part of `rate` is food
+        # this build would not get, so the estimate is optimistic. The split is
+        # NOT recoverable from one file - Lisbon's hammers move 8 -> 2 across
+        # t37 -> t38 as the worked tiles change, so last turn's figure does not
+        # decompose this one. Flagged rather than silently overstated.
+        return rate, "optimistic"
+    return rate, False
+
+
+def _resource_gate(bonus_type, connected, rules, state, known):
+    """One resource prerequisite, as a short blocker phrase or None if met.
+
+    Deliberately terser than `_resource_status`: that block is the whole answer
+    for a single lookup, whereas here it is one cell in a list of twenty, and
+    the per-tile detail belongs in the drill-down the row points at.
+    """
+    if bonus_type in connected:
+        return None
+    entry = rules.bonuses.get(bonus_type) or {}
+    reveal = entry.get("reveal")
+    if reveal and reveal != "NONE" and reveal not in known:
+        # The honest answer is not "you lack it" - you cannot yet tell either
+        # way, which is a different fact and the one that decides whether to
+        # research the revealing tech at all.
+        return "%s not revealed yet (needs %s)" % (bonus_type, reveal)
+    tiles = [t for t in (state.get("map") or {}).get("tiles") or []
+             if t.get("bonus") == bonus_type]
+    if not tiles:
+        return "%s: none on your map yet" % bonus_type
+    # Visible but not connected: name the nearest thing to act on. Borders
+    # first, since an unowned tile needs a city or culture before anything
+    # else can be done to it.
+    for tile in tiles:
+        gaps = []
+        if tile.get("owner") is None:
+            gaps.append("outside your borders")
+        if not tile.get("improvement"):
+            gaps.append("unimproved")
+        if not tile.get("route"):
+            gaps.append("no road")
+        if gaps:
+            return "%s at (%d,%d): %s" % (bonus_type, tile["x"], tile["y"],
+                                          ", ".join(gaps))
+    return "%s visible but not connected" % bonus_type
+
+
+def _tech_blocker(tech, state, in_progress=None):
+    """`needs TECH_X`, saying so when TECH_X is the one being researched.
+
+    "needs TECH_MASONRY" and "needs TECH_MASONRY - researching now, 7 turns
+    left" are different decisions: the first is a plan, the second is a wait.
+    """
+    if in_progress and tech == in_progress:
+        research = (state.get("player") or {}).get("research") or {}
+        left = research.get("turnsLeft")
+        if left is not None:
+            return ("needs %s - RESEARCHING NOW, ~%d turns left"
+                    % (tech, left))
+        return "needs %s - RESEARCHING NOW" % tech
+    return "needs %s" % tech
+
+
+def unit_availability(rules, unit_type, unit, city, state, known, connected,
+                      other_uniques, in_progress=None):
+    """Why this unit can or cannot be trained here, as a list of blockers.
+
+    An empty list means buildable now. The list is every reason, not the first
+    one: "needs Bronze Working AND copper" is a different plan from either
+    alone, and stopping at the first gate would hide the second until the
+    first is paid.
+    """
+    blockers = []
+    if unit_type in other_uniques:
+        return ["another civilization's unique unit"]
+    if unit.get("domain") == "DOMAIN_SEA" and not city.get("coastal"):
+        blockers.append("city is not coastal (sea unit)")
+    # Religion and corporation state is not in the export at all, so these are
+    # reported as unknown rather than as met or unmet. Calling a missionary
+    # available when no religion has spread here would be a confident wrong
+    # answer of exactly the kind this tool exists to prevent.
+    if unit.get("religion"):
+        blockers.append(OUT_OF_SCOPE + "needs %s present here - not in the "
+                        "export, check the city screen" % unit["religion"])
+    if unit.get("corporation"):
+        blockers.append(OUT_OF_SCOPE + "needs %s - corporations are out of "
+                        "scope" % unit["corporation"])
+    tech = unit.get("prereq_tech")
+    if tech and tech != "NONE" and tech not in known:
+        blockers.append(_tech_blocker(tech, state, in_progress))
+    # BonusType is required outright; PrereqBonuses is an AND-list beside it.
+    if unit.get("bonus_type"):
+        gate = _resource_gate(unit["bonus_type"], connected, rules,
+                              state, known)
+        if gate:
+            blockers.append(gate)
+    for bonus in unit.get("prereq_bonuses") or []:
+        gate = _resource_gate(bonus, connected, rules, state, known)
+        if gate:
+            blockers.append(gate)
+    return blockers
+
+
+def building_availability(rules, building_type, building, city, state, known,
+                          connected, other_uniques, wonders, in_progress=None):
+    """Why this building can or cannot be constructed here.
+
+    Carries the three gates that made the empire-wide list impossible: bWater
+    against cities[].coastal, bRiver against the city tile's river flag, and
+    PrereqBuildingClasses against cities[].buildings - all per city, none
+    derivable from anywhere else in the export.
+    """
+    blockers = []
+    if building_type in other_uniques:
+        return ["another civilization's unique building"]
+
+    class_key = rules.class_of_building.get(building_type)
+    class_entry = rules.building_classes.get(class_key) if class_key else None
+    if class_entry:
+        built = set((wonders or {}).get("built") or [])
+        national = set((wonders or {}).get("national") or [])
+        if class_entry["max_global"] == 1 and class_key in built:
+            # Gone globally. The tool used to say only that rival production is
+            # invisible, which is still true of a wonder nobody has finished.
+            return ["ALREADY BUILT somewhere in the world - no longer available"]
+        if class_entry["max_player"] == 1 and class_key in national:
+            return ["you already have one (national wonder, one per player)"]
+
+    if building_type in (city.get("buildings") or []):
+        return ["already built here"]
+
+    if building.get("holy_city"):
+        # A shrine is buildable only in the city that founded the religion, and
+        # only by a Great Prophet. Neither fact is in the export.
+        return [OUT_OF_SCOPE + "holy city of %s only, and built by a Great "
+                "Prophet" % building["holy_city"]]
+    if building.get("religion"):
+        blockers.append(OUT_OF_SCOPE + "needs %s present here - not in the "
+                        "export, check the city screen" % building["religion"])
+    if building.get("corporation"):
+        blockers.append(OUT_OF_SCOPE + "needs %s - corporations are out of "
+                        "scope" % building["corporation"])
+
+    tech = building.get("tech")
+    if tech and tech != "NONE" and tech not in known:
+        blockers.append(_tech_blocker(tech, state, in_progress))
+
+    if building.get("water") and not city.get("coastal"):
+        blockers.append("city is not coastal")
+    if building.get("river") and not _city_on_river(city, state):
+        blockers.append("city is not on a river")
+
+    have_classes = set()
+    for existing in city.get("buildings") or []:
+        existing_class = rules.class_of_building.get(existing)
+        if existing_class:
+            have_classes.add(existing_class)
+    for required in building.get("prereq_buildings") or []:
+        if required not in have_classes:
+            blockers.append("needs %s here" % required)
+
+    resources = list(building.get("prereq_bonuses") or [])
+    if building.get("bonus"):
+        resources.append(building["bonus"])
+    for bonus in resources:
+        gate = _resource_gate(bonus, connected, rules, state, known)
+        if gate:
+            blockers.append(gate)
+    return blockers
+
+
+def _city_on_river(city, state):
+    """Whether the city's own tile is on a river.
+
+    Not exported as a city field, but the city stands on a map tile and `river`
+    is exported there, so this is a join rather than a derivation. A city tile
+    missing from map.tiles would be a broken export; treated as not-a-river
+    rather than raising, since this gates one line of one row.
+    """
+    for tile in (state.get("map") or {}).get("tiles") or []:
+        if tile.get("x") == city.get("x") and tile.get("y") == city.get("y"):
+            return bool(tile.get("river"))
+    return False
+
+
+def _unique_sets(rules, state):
+    """(units you may build, buildings you may build) as exclusion sets.
+
+    Returns the types belonging to OTHER civs. Your own uniques are not in it,
+    so they list normally; the class default you replace is, so it drops out.
+    """
+    mine = (state.get("player") or {}).get("civilization")
+    ours = (rules.civilizations or {}).get(mine) or {"units": {}, "buildings": {}}
+    our_units = set(ours["units"].values())
+    our_buildings = set(ours["buildings"].values())
+
+    other_units, other_buildings = set(), set()
+    for key, civ in (rules.civilizations or {}).items():
+        if key == mine:
+            continue
+        other_units.update(civ["units"].values())
+        other_buildings.update(civ["buildings"].values())
+
+    # A class we override loses its other members: our unique REPLACES them.
+    for unit_type, unit in (rules.units or {}).items():
+        if unit.get("unit_class") in ours["units"]:
+            other_units.add(unit_type)
+    for building_type in (rules.buildings or {}):
+        if rules.class_of_building.get(building_type) in ours["buildings"]:
+            other_buildings.add(building_type)
+
+    # ...but never our own uniques, which the sweep above just swept up.
+    return other_units - our_units, other_buildings - our_buildings
+
+
 def _closure_block(rules, tech_type, known, show_known, max_depth, out, state):
     """Shared by `unit` and `tech`: the tree, then the totals."""
     needed = closure(rules, tech_type, known)
@@ -1544,7 +1954,7 @@ def _building_effects(building):
     return effects
 
 
-def _city_build_turns(cost, state):
+def _city_build_turns(cost, state, building=None):
     """`~5 turns in Lisbon (12 hpt), ~25 in Oporto (2 hpt)`.
 
     Per-city because production is wildly uneven early: in the baseline run at
@@ -1552,18 +1962,52 @@ def _city_build_turns(cost, state):
     that gap decides the answer. Same extrapolation caveat as research turns -
     productionPerTurn carries one-off overflow the turn after a build finishes,
     so it is not a steady-state rate.
+
+    `building` excludes cities the site gates rule out. Without it the
+    Lighthouse printed `~5 turns in Lisbon` directly above `city must be
+    coastal`, with Lisbon not coastal - two lines of one block contradicting
+    each other, and nothing in the output able to catch it. Excluded cities are
+    NAMED rather than silently dropped: a city missing from the list with no
+    explanation reads as a data problem, and the reason is the actionable part.
     """
     parts = []
+    excluded = []
     for city in sorted(state.get("cities") or [],
                        key=lambda c: -(c.get("productionPerTurn") or 0)):
+        name = city.get("name", "?")
+        if building is not None:
+            if building.get("water") and not city.get("coastal"):
+                excluded.append("%s is not coastal" % name)
+                continue
+            if building.get("river") and not _city_on_river(city, state):
+                excluded.append("%s is not on a river" % name)
+                continue
         rate = city.get("productionPerTurn") or 0
         turns = turns_estimate(cost, rate)
         if turns is None:
-            parts.append("%s cannot build (0 hpt)" % city.get("name", "?"))
+            parts.append("%s cannot build (0 hpt)" % name)
         else:
-            parts.append("~%d turns in %s (%d hpt)"
-                         % (turns, city.get("name", "?"), rate))
+            parts.append("~%d turns in %s (%d hpt)" % (turns, name, rate))
+    if not parts and excluded:
+        parts.append("no city of yours can build this")
+    for reason in excluded:
+        parts.append("excluded: %s" % reason)
     return parts
+
+
+def _gate_summary(state, passes):
+    """` - yes: Oporto; no: Lisbon` for a per-city site gate."""
+    yes, no = [], []
+    for city in state.get("cities") or []:
+        (yes if passes(city) else no).append(city.get("name", "?"))
+    if not yes and not no:
+        return ""
+    parts = []
+    if yes:
+        parts.append("yes: %s" % ", ".join(sorted(yes)))
+    if no:
+        parts.append("no: %s" % ", ".join(sorted(no)))
+    return " - " + "; ".join(parts)
 
 
 def view_building(rules, building_type, state, show_known, max_depth):
@@ -1616,14 +2060,29 @@ def view_building(rules, building_type, state, show_known, max_depth):
     else:
         out.append("  cost       %d hammers (base %d x game speed %d%%)"
                    % (cost, building["cost"], rules.train_pct))
-    for line in _city_build_turns(cost, state):
+    for line in _city_build_turns(cost, state, building):
         out.append("             %s" % line)
 
-    if is_world_wonder:
+    # `wonders` answers half of what this block used to disclaim entirely. The
+    # old text - "a rival may already be building this, the export cannot see
+    # rival production" - was written before increment 5 and stayed true only
+    # for a wonder nobody has finished. Once it is in wonders.built it is not a
+    # race, it is over, and quoting a build time above is actively misleading.
+    wonders = state.get("wonders") or {}
+    if is_world_wonder and class_key in set(wonders.get("built") or []):
         out.append("")
-        out.append("  A rival may already be building this. The export cannot see")
-        out.append("  rival production, so it is a race you cannot check from here.")
-        out.append("  Losing it converts your hammers to gold.")
+        out.append("  ALREADY BUILT somewhere in the world - this is no longer")
+        out.append("  available to you, and the turn estimates above are moot.")
+        out.append("  The export does not say who built it or where.")
+    elif is_national and class_key in set(wonders.get("national") or []):
+        out.append("")
+        out.append("  YOU ALREADY HAVE ONE - a national wonder is one per player,")
+        out.append("  so the turn estimates above are moot.")
+    elif is_world_wonder:
+        out.append("")
+        out.append("  Not built anywhere yet, but a rival may be building it now.")
+        out.append("  The export cannot see rival production, so this is a race")
+        out.append("  you cannot check. Losing it converts your hammers to gold.")
 
     out.append("")
     out.append("REQUIRES")
@@ -1644,10 +2103,14 @@ def view_building(rules, building_type, state, show_known, max_depth):
         for name in resources:
             out.extend("             " + line
                        for line in _resource_status(rules, name, state, known))
+    # The gates that vary per city report which of yours pass, since "must be
+    # coastal" is a rule and "Lisbon is not" is the answer.
     if building["water"]:
-        out.append("  city       must be coastal")
+        out.append("  city       must be coastal%s"
+                   % _gate_summary(state, lambda c: bool(c.get("coastal"))))
     if building["river"]:
-        out.append("  city       must be on a river")
+        out.append("  city       must be on a river%s"
+                   % _gate_summary(state, lambda c: _city_on_river(c, state)))
 
     if tech and tech != "NONE" and tech not in known:
         _closure_block(rules, tech, known, show_known, max_depth, out, state)
@@ -1706,6 +2169,234 @@ def view_building(rules, building_type, state, show_known, max_depth):
     out.append("  that is per-city and depends on what each already has.")
     out.append("  Hammer costs scale with game speed only, not difficulty. Turn")
     out.append("  figures extrapolate current output and are not a schedule.")
+    out.append("  " + MOD_WARNING)
+    return "\n".join(out)
+
+
+def _availability_rows(entries, blockers_of, cost_of, rate_of, distance_of=None,
+                       horizon=NEAR_TECH_HORIZON):
+    """Rows as (type, cost, turns, blockers, folded), alphabetical, plus a far
+    count.
+
+    `rate_of(key)` returns (hammers_per_turn, folded) so a row can be priced at
+    its own rate: a bFood unit is built partly from the city's food surplus, so
+    a Settler and a Barracks in the same city do not progress at the same
+    speed.
+
+    Alphabetical is deliberate and is the no-ranking guarantee in code: cost
+    order or available-first would both be an opinion about what to build, and
+    this tool's line is that the list is derived, not selected.
+
+    Blocked rows are kept only while they are near enough to act on. Listing
+    every blocked entry was the first implementation and it was unusable: 453
+    lines at t43, in which UNIT_CHARIOT sat between an Airship and an Artillery
+    piece. The cut is on tech distance rather than on a count, because "one
+    tech away" is a fact about the game rather than a page size - and it is
+    exactly the set that answers "what am I about to unlock", which is the
+    question behind switching production. The far ones are counted, never
+    silently dropped.
+    """
+    rows = []
+    far = 0
+    for key in sorted(entries):
+        blockers = blockers_of(key)
+        if blockers and any(b.startswith(OUT_OF_SCOPE) for b in blockers):
+            # Corporation and religion gates are tech-open, so the tech horizon
+            # never reaches them: at t43 they were 14 of 24 surviving rows, all
+            # of them eras away. Counted with the far ones rather than given a
+            # third category, since the reader's question is the same - "not
+            # now, and not something I am about to unlock".
+            far += 1
+            continue
+        if blockers and distance_of is not None:
+            distance = distance_of(key)
+            if distance is not None and distance > horizon:
+                far += 1
+                continue
+        cost = cost_of(key)
+        row_rate, folded = rate_of(key)
+        turns = turns_estimate(cost, row_rate) if not blockers else None
+        rows.append((key, cost, turns, blockers, folded))
+    return rows, far
+
+
+def _render_rows(out, rows):
+    if not rows:
+        out.append("  (none)")
+        return
+    for key, cost, turns, blockers, folded in rows:
+        # `+food` marks an estimate that assumes the city stops growing: a
+        # bFood build eats the whole surplus. The trade is the reader's, so it
+        # is labelled rather than footnoted away. "optimistic" is the reverse
+        # case - the rate currently carries food this build would not get.
+        # The "optimistic" case applies to every ordinary row at once, so it is
+        # stated once in the section header rather than repeated on 30 lines.
+        suffix = " (+food, growth stops)" if folded is True else ""
+        if blockers:
+            out.append("  %-32s %4d  BLOCKED" % (key, cost))
+            for blocker in blockers:
+                out.append("  %-32s       %s" % ("", blocker))
+        elif turns is None:
+            out.append("  %-32s %4d  available (0 hpt - cannot progress)" % (key, cost))
+        else:
+            out.append("  %-32s %4d  available, ~%d turns%s"
+                       % (key, cost, turns, suffix))
+
+
+def view_city(rules, city_name, state):
+    """What this city can build now, and what is blocking the rest.
+
+    The list is derived, not selected: given tech, connected resources,
+    coastal, buildings and the wonder state there is exactly one correct
+    answer, and no parameter to tune. That is what separates it from the query
+    language this folder refuses - there is nothing to filter toward. Blocked
+    entries stay in the list with the blocker named, because a buildable-only
+    list reads as a shortlist and cannot answer "what am I about to unlock",
+    which is the question behind switching production.
+    """
+    if not city_name:
+        raise RulesError("`city` needs a city name, e.g. Lisbon")
+    city = find_city(state, city_name)
+    if city is None:
+        names = [c.get("name") or "?" for c in (state.get("cities") or [])]
+        if not names:
+            raise RulesError(
+                "you have no cities in this state file - `city` needs one.")
+        raise RulesError(
+            "no city called %r in this state file.\nYour cities: %s"
+            % (city_name, ", ".join(sorted(names))))
+
+    # `city` is the one view that must NOT use effective_known. That set folds
+    # in the tech being researched, which is right when costing a route - you
+    # will have it before anything downstream matters - and wrong here, where
+    # the question is what the city can start building THIS turn. At t43
+    # Masonry sits at 4/124 with 7 turns left, and folding it in reported the
+    # Pyramids, the Great Wall and Walls as available now.
+    known = set((state.get("player") or {}).get("knownTechs") or [])
+    in_progress = researching(state)
+    # Horizon distance still uses the softer set: a tech already being paid for
+    # is not "one tech away" on top of what is in the bank.
+    horizon_known = effective_known(state)
+    connected = city_connected_bonuses(city)
+    other_units, other_buildings = _unique_sets(rules, state)
+    wonders = state.get("wonders") or {}
+    rate = city.get("productionPerTurn") or 0
+
+    out = []
+    out.append("%s (%d,%d) - what it can build, against %s"
+               % (city.get("name"), city.get("x", -1), city.get("y", -1),
+                  state_summary(state)))
+    out.append("")
+    out.append("CITY")
+    out.append("  population %s" % city.get("population", "?"))
+    out.append("  production %d hammers/turn" % rate)
+    out.append("  coastal    %s" % ("yes" if city.get("coastal") else "no"))
+    out.append("  on river   %s" % ("yes" if _city_on_river(city, state) else "no"))
+    built_here = city.get("buildings") or []
+    out.append("  buildings  %s" % (", ".join(sorted(built_here))
+                                    if built_here else "(none)"))
+    out.append("  resources  %s" % (", ".join(sorted(connected))
+                                    if connected else "(none connected)"))
+    producing = city.get("producing")
+    if producing:
+        out.append("  building   %s now" % producing)
+
+    # How many techs away a thing is, for the horizon cut. Cached because the
+    # closure walk runs once per blocked row and the same techs recur.
+    distance_cache = {}
+
+    def tech_distance(tech):
+        if not tech or tech == "NONE" or tech in horizon_known:
+            return 0
+        if tech not in distance_cache:
+            distance_cache[tech] = len(
+                closure(rules, tech, horizon_known)) + 1
+        return distance_cache[tech]
+
+    # Trainable-shaped only: iCost <= 0 is animals and great people, which are
+    # in the same file and are not things a city trains.
+    unit_keys = [k for k, v in (rules.units or {}).items()
+                 if v.get("cost", 0) > 0 and k not in other_units]
+    unit_rows, far_units = _availability_rows(
+        unit_keys,
+        lambda k: unit_availability(rules, k, rules.units[k], city, state,
+                                    known, connected, other_units,
+                                    in_progress),
+        lambda k: rules.units[k]["cost"] * rules.train_pct // 100,
+        lambda k: food_build_rate(city, rules.units[k]),
+        lambda k: tech_distance(rules.units[k].get("prereq_tech")),
+    )
+    # iCost -1 means a city never produces it: Academies, shrines and the like
+    # are placed by a great person. Listing them as "available, ~0 turns" was
+    # the first version and it invited building something uncommandable.
+    building_keys = [k for k, v in (rules.buildings or {}).items()
+                     if v.get("cost", 0) > 0 and k not in other_buildings]
+    building_rows, far_buildings = _availability_rows(
+        building_keys,
+        lambda k: building_availability(rules, k, rules.buildings[k], city,
+                                        state, known, connected,
+                                        other_buildings, wonders,
+                                        in_progress),
+        lambda k: rules.buildings[k]["cost"] * rules.train_pct // 100,
+        # A building is never a food build, but it hits the same trap in
+        # reverse when the city is currently making a settler or worker.
+        lambda k: food_build_rate(city, {}),
+        lambda k: tech_distance(rules.buildings[k].get("tech")),
+    )
+
+    open_units = [r for r in unit_rows if not r[3]]
+    open_buildings = [r for r in building_rows if not r[3]]
+
+    # One line, not a suffix on every ordinary row: while a settler or worker
+    # is in the queue the city's food is inside productionPerTurn, so every
+    # non-food estimate below is a little fast and the split is not recoverable
+    # from one file.
+    optimistic = any(row[4] == "optimistic"
+                     for row in unit_rows + building_rows)
+
+    out.append("")
+    out.append("UNITS - %d available now, %d one tech away"
+               % (len(open_units), len(unit_rows) - len(open_units)))
+    if optimistic:
+        out.append("  %s is a food build, so this city's %d hpt currently"
+                   % (city.get("producing"), rate))
+        out.append("  includes its food surplus. Estimates for anything else")
+        out.append("  below are therefore a little optimistic.")
+    _render_rows(out, unit_rows)
+    if far_units:
+        out.append("  ... and %d further off, not listed (more than %d tech away)"
+                   % (far_units, NEAR_TECH_HORIZON))
+
+    out.append("")
+    out.append("BUILDINGS - %d available now, %d one tech away"
+               % (len(open_buildings), len(building_rows) - len(open_buildings)))
+    _render_rows(out, building_rows)
+    if far_buildings:
+        out.append("  ... and %d further off, not listed (more than %d tech away)"
+                   % (far_buildings, NEAR_TECH_HORIZON))
+
+    out.append("")
+    out.append("HOW TO READ THIS")
+    out.append("  Cost is hammers, scaled for game speed. Turns extrapolate this")
+    out.append("  city's CURRENT %d hpt, which moves as it grows - not a schedule." % rate)
+    out.append("  Rows are alphabetical and NOT ranked: which of these to build is")
+    out.append("  the judgement this tool does not make.")
+    out.append("  Blocked rows stay listed with the reason, so a blocker you are")
+    out.append("  about to clear is visible before you clear it. Only things")
+    out.append("  within %d tech are listed; the rest are counted, not shown."
+               % NEAR_TECH_HORIZON)
+    out.append("  For the full picture on any row - effects, prerequisites, the")
+    out.append("  game's own summary - run `rules.py unit|building TYPE <state>`.")
+
+    out.append("")
+    out.append("THIS OMITS")
+    out.append("  Whether a rival is already building a world wonder - the export")
+    out.append("  cannot see rival production, so an unbuilt wonder is still a race.")
+    out.append("  Corporations, espionage and promotions, all out of scope for now.")
+    out.append("  Anything the engine gates in C++ with no data field behind it.")
+    if not rules.civilizations:
+        out.append("  CIV4CivilizationInfos.xml did not load, so other civs' unique")
+        out.append("  units and buildings are NOT filtered out of these lists.")
     out.append("  " + MOD_WARNING)
     return "\n".join(out)
 
@@ -1773,7 +2464,7 @@ def build_parser():
         description="Reverse and transitive rules lookups against the Civ IV XML.",
     )
     parser.add_argument(
-        "subject", choices=("unit", "tech", "building", "handicap"),
+        "subject", choices=("unit", "tech", "building", "city", "handicap"),
         help="what to look up",
     )
     # `state` is the only required positional and always comes last, so
@@ -1784,7 +2475,8 @@ def build_parser():
     # naming the wrong argument entirely.
     parser.add_argument(
         "type_key", metavar="TYPE", nargs="?", default=None,
-        help="e.g. UNIT_AXEMAN, TECH_MONARCHY. Required for `unit` and `tech`; "
+        help="e.g. UNIT_AXEMAN, TECH_MONARCHY, or a city name for `city`. "
+             "Required for `unit`, `tech`, `building` and `city`; "
              "`handicap` defaults to the state file's own.",
     )
     parser.add_argument(
@@ -1815,14 +2507,24 @@ def main(argv=None):
     # `state`. For `unit`/`tech` that means a forgotten state file shows up as a
     # type-shaped value in `state`, so catch it here and name the real problem
     # rather than reporting "state file not found: UNIT_AXEMAN".
-    if args.subject in ("unit", "tech", "building") and type_key is None:
-        looks_like_a_type = state_path.upper().startswith(
-            ("UNIT_", "TECH_", "BUILDING_"))
+    if args.subject in ("unit", "tech", "building", "city") and type_key is None:
+        # `city` takes a plain name rather than a TYPE key, so the "did they
+        # forget the state file" test cannot key off a prefix - a bare word is
+        # exactly what a city argument looks like. Anything not ending .json is
+        # taken as the missing-state case.
+        if args.subject == "city":
+            looks_like_a_type = not state_path.lower().endswith(".json")
+            example = state_path if looks_like_a_type else "Lisbon"
+        else:
+            looks_like_a_type = state_path.upper().startswith(
+                ("UNIT_", "TECH_", "BUILDING_"))
+            example = (state_path if looks_like_a_type
+                       else args.subject.upper() + "_...")
         sys.stderr.write(
-            "`%s` needs both a TYPE and a state file:\n"
+            "`%s` needs both a %s and a state file:\n"
             "    python harness/rules.py %s %s <state.json>\n"
-            % (args.subject, args.subject,
-               state_path if looks_like_a_type else args.subject.upper() + "_...")
+            % (args.subject, "city name" if args.subject == "city" else "TYPE",
+               args.subject, example)
         )
         return 2
 
@@ -1843,6 +2545,10 @@ def main(argv=None):
                 raise RulesError("`building` needs a type, e.g. BUILDING_BARRACKS")
             text = view_building(rules, type_key, state, args.show_known,
                                  args.depth)
+        elif args.subject == "city":
+            # No --show-known/--depth: `city` prints no tech tree, so neither
+            # flag has anything to act on. Same shape as view_handicap.
+            text = view_city(rules, type_key, state)
         else:
             text = view_handicap(rules, type_key, state)
     except RulesError as exc:

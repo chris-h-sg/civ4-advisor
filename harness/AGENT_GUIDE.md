@@ -93,7 +93,7 @@ The tool **exits non-zero on a run that isn't one continuous game**. That's a re
 ### `rules.py` — anything about the game's rules
 
 ```
-python harness/rules.py unit|tech|building|handicap [TYPE] <state.json> [--show-known] [--depth N]
+python harness/rules.py unit|tech|building|city|handicap [TYPE] <state.json> [--show-known] [--depth N]
 ```
 
 **The state file is required, and not a formality:** game speed, world size and difficulty multiply tech costs, so a raw XML cost is 1.0–4.5× wrong. Pass the turn you're advising on and every number is priced for the real game.
@@ -103,7 +103,16 @@ python harness/rules.py unit|tech|building|handicap [TYPE] <state.json> [--show-
 | `unit UNIT_AXEMAN` | What does this unit need — tech, resources — and what does *that* tech need? Plus combat stats and everything else the same tech unlocks. |
 | `tech TECH_MONARCHY` | What does this tech need, transitively, and **everything** it unlocks — units, buildings, civics, worker actions, resources revealed, and abilities like bridge-building. |
 | `building BUILDING_PYRAMID` | Buildings and wonders: cost in hammers and turns *per city*, prerequisites, effects, and whether it's an ordinary building, a national wonder or one-per-world. |
+| `city Lisbon` | What this city can build **right now**, and what is blocking the rest. Takes a city name, not a TYPE. |
 | `handicap` | The barbarian and animal rules for this game's difficulty. Type defaults to the state file's own. |
+
+**Reach for `city` before advising on production** — what to build next, or whether to switch. It is the only call that answers *what the options are*; the others answer questions about an option you have already named. Guessing type names to find out what exists is the failure it replaces.
+
+It lists what is available now **and** what is one tech away, each blocked row carrying its reason — a resource needing a road, a city that is not coastal, a prerequisite building. Things further off are counted, not listed. **Rows are alphabetical and deliberately unranked**; which to build is your judgement.
+
+**`available` means available *this turn*.** A tech you are researching is not one you have, so a row blocked on it says `RESEARCHING NOW, ~N turns left` — that is a wait, not a plan, and it is usually the most useful line in the block.
+
+**Settlers and workers eat the city's food surplus**, so their estimates are marked `(+food, growth stops)`: the build lands sooner *and* the city stops growing while it does. That trade is yours to weigh. When one is already in the queue, every other estimate in that city is slightly optimistic, and the header says so.
 
 **Reach for it whenever you're about to state a rule.** Especially after `intel` shows you a rival unit: `rules.py unit UNIT_ARCHER <state>` turns a sighting into a dated tech conclusion, which is the join `intel` deliberately refuses to make for you.
 
@@ -111,7 +120,7 @@ python harness/rules.py unit|tech|building|handicap [TYPE] <state.json> [--show-
 
 **Routes to a tech are printed all-in and never ranked**, in XML order rather than cost order. The cheaper one is not automatically the right one; that judgement is yours.
 
-**A building's `EFFECTS` list is never the whole story**, so read `THE GAME'S OWN SUMMARY` beside it — many effects, especially wonders' signature abilities, live in the game's C++ with no data field, and that prose is the only place they are written down. Neither source subsumes the other: for the Pyramids the fields have the culture and team-sharing, the summary has the any-civic unlock. **Absence from both is still not proof**; say so rather than concluding from silence. World wonders are also a race the export cannot see — nothing tells you whether a rival is already building one.
+**A building's `EFFECTS` list is never the whole story**, so read `THE GAME'S OWN SUMMARY` beside it — many effects, especially wonders' signature abilities, live in the game's C++ with no data field, and that prose is the only place they are written down. Neither source subsumes the other: for the Pyramids the fields have the culture and team-sharing, the summary has the any-civic unlock. **Absence from both is still not proof**; say so rather than concluding from silence. A world wonder **already finished anywhere in the world** is reported as gone — but one that is merely unbuilt is still a race, because nothing shows you rival *production*. "Not built yet" and "available to you" are different claims.
 
 **Resource prerequisites are resolved against your trade network**, not just the map — `CONNECTED` means you can build the thing today, and where a resource is visible but unusable the tool names which of borders / improvement / road is missing. A resource you cannot see yet is a different answer again: `NOT YET REVEALED` means zero visible is evidence of nothing either way.
 
