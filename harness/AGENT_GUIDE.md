@@ -22,7 +22,9 @@ Files are numbered for the turn **about to be played**, so a run starts at `turn
 
 **4. Rival cities are live through fog; rival units are not.** A revealed city keeps reporting its real current `name`, `population` and `capital` even while fogged — the engine paints the nameplate through fog. A population reading is current however long ago you looked. Its *insides* are never exported. Units are the opposite: forgotten the moment the tile fogs.
 
-**5. Check the XML; never recall a rule from memory.** Unit prerequisites, tech costs, building requirements, civics and difficulty modifiers live in the game's XML — `config.local.json` has the install path. Grep, don't read; the files are large. A previous session asserted from memory that a Roman Archer implies Bronze Working; it implies **Archery** (Bronze Working is the Axeman). Confident, plausible, wrong. Use the **Beyond the Sword** copy — `.../Beyond the Sword/Assets/XML/...` — not the vanilla path a naive `find` hits first.
+**5. Check the XML; never recall a rule from memory.** Unit prerequisites, tech costs, building requirements, civics and difficulty modifiers live in the game's XML. **Use `rules.py` rather than grepping** — it resolves the right file, walks prerequisites transitively, and prices techs for this game's actual setup. A previous session asserted from memory that a Roman Archer implies Bronze Working; it implies **Archery** (Bronze Working is the Axeman). Confident, plausible, wrong.
+
+If you must grep by hand, the install holds ~18 copies of each file. Take `<install>/Beyond the Sword/Assets/XML/...`, falling back to `<install>/Assets/XML/...` — an expansion only ships the files it *changes*, so resources (`CIV4BonusInfos.xml`) live only in the base tree. Install path is in `config.local.json`; don't `find`, it is slow and hits the mod copies. Use large context windows: `PrereqTech` sits ~90 lines into a unit block.
 
 ## Map orientation
 
@@ -76,7 +78,7 @@ Takes the **run folder**, not one turn.
 
 **`[NON-COMBAT]`** on a city's occupants means combat strength 0 (settlers, workers, work boats). A city holding only those is undefended however occupied it looks.
 
-`intel`'s two per-rival sections differ in how fast they go stale. **Recent sightings** are perishable — read them before moving anything vulnerable. **Ever fielded** is permanent: a type seen once is one they can build, forever. That's how you read their tech level — look each type up in `CIV4UnitInfos.xml`.
+`intel`'s two per-rival sections differ in how fast they go stale. **Recent sightings** are perishable — read them before moving anything vulnerable. **Ever fielded** is permanent: a type seen once is one they can build, forever. That's how you read their tech level — run each type through `rules.py unit`.
 
 **Barbarians are listed apart from civs** (they imply nothing about anyone's tech) but with full positions, since early on they're the main threat.
 
@@ -87,6 +89,33 @@ Positions carry **distance and bearing from your nearest city**. When the walk d
 **`--as-of N` makes turn N the present**, discarding later files entirely. Only needed when replaying a finished run; live, the newest file already is now. It affects every view, unlike `--from`/`--to`, which scope `timeline` only. `intel` ignores them on purpose — truncating a dossier drops the earliest sighting of a type, which is the fact that proves the capability.
 
 The tool **exits non-zero on a run that isn't one continuous game**. That's a real problem with the files, not something to work around.
+
+### `rules.py` — anything about the game's rules
+
+```
+python harness/rules.py unit|tech|building|handicap [TYPE] <state.json> [--show-known] [--depth N]
+```
+
+**The state file is required, and not a formality:** game speed, world size and difficulty multiply tech costs, so a raw XML cost is 1.0–4.5× wrong. Pass the turn you're advising on and every number is priced for the real game.
+
+| subcommand | what it answers |
+|---|---|
+| `unit UNIT_AXEMAN` | What does this unit need — tech, resources — and what does *that* tech need? Plus combat stats and everything else the same tech unlocks. |
+| `tech TECH_MONARCHY` | What does this tech need, transitively, and **everything** it unlocks — units, buildings, civics, worker actions, resources revealed, and abilities like bridge-building. |
+| `building BUILDING_PYRAMID` | Buildings and wonders: cost in hammers and turns *per city*, prerequisites, effects, and whether it's an ordinary building, a national wonder or one-per-world. |
+| `handicap` | The barbarian and animal rules for this game's difficulty. Type defaults to the state file's own. |
+
+**Reach for it whenever you're about to state a rule.** Especially after `intel` shows you a rival unit: `rules.py unit UNIT_ARCHER <state>` turns a sighting into a dated tech conclusion, which is the join `intel` deliberately refuses to make for you.
+
+**Guessed a type name and got an error? Read the suggestions, don't fall back to grep.** Unique units are civ-prefixed and inconsistently so — the Praetorian is `UNIT_ROME_PRAETORIAN`, not `UNIT_PRAETORIAN`.
+
+**Routes to a tech are printed all-in and never ranked**, in XML order rather than cost order. The cheaper one is not automatically the right one; that judgement is yours.
+
+**A building's `EFFECTS` list is never the whole story**, so read `THE GAME'S OWN SUMMARY` beside it — many effects, especially wonders' signature abilities, live in the game's C++ with no data field, and that prose is the only place they are written down. Neither source subsumes the other: for the Pyramids the fields have the culture and team-sharing, the summary has the any-civic unlock. **Absence from both is still not proof**; say so rather than concluding from silence. World wonders are also a race the export cannot see — nothing tells you whether a rival is already building one.
+
+**Resource prerequisites are resolved against your trade network**, not just the map — `CONNECTED` means you can build the thing today, and where a resource is visible but unusable the tool names which of borders / improvement / road is missing. A resource you cannot see yet is a different answer again: `NOT YET REVEALED` means zero visible is evidence of nothing either way.
+
+Prerequisites you already have are hidden — `--show-known` restores them. Every block prints its source as `file:line`, states what it omits, and attaches its own caveats to the numbers. Read those in place; they are not repeated here.
 
 ### What needs no tool
 
@@ -100,9 +129,9 @@ Reading the JSON directly. Filtering units, comparing city yields, checking rese
 
 **Never manufacture a cause for something you can't see.** If a unit died with no hostile in sight, say something killed it off-screen and you can't tell what. In testing an agent built a mechanism out of two unrelated timeline lines that happened to sit near each other.
 
-**Reachability before alarm.** `intel` counts what's standing in each city; that's a count, not a verdict. An empty city isn't automatically in danger — what matters is what can actually reach it. `intel` gives you the land distance where it differs from the straight line, and says outright when there's **no land route over revealed tiles**. A threat across water is a different kind of threat, not a nearer one; a city on an open land approach may be exposed even with a defender in it. Barbarians also need unowned, unwatched land to spawn in. Say which case it is. Equally, don't call the player safe because a count looks fine.
+**Reachability before alarm.** `intel` counts what's standing in each city — a count, not a verdict. What matters is what can actually *reach* it: a threat across water is a different kind of threat, not a nearer one, and a city on an open land approach may be exposed even with a defender in it. Barbarians also need unowned, unwatched land to spawn in. Say which case it is, and don't call the player safe just because a count looks fine.
 
-**Fog limits what land distance can tell you.** Land figures are computed over *revealed* tiles only — never routed through fog, because that would be inventing a path. So a printed land distance is the best known route, and an unrevealed shortcut could make it shorter. It is never longer.
+**Land distances are the best *known* route.** Computed over revealed tiles only, never routed through fog — so an unrevealed shortcut could make one shorter, never longer.
 
 **One strong tile usually decides an early city site, not a total** — a city works `pop + 1` tiles. Yields shown are *displayed* yields, so an improved tile reports its improved number, flattering sites that overlap land you've already developed.
 

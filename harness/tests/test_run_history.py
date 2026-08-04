@@ -22,6 +22,17 @@ import run_history
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 SAMPLE_DIR = os.path.join(REPO_ROOT, "samples", "baseline-early-game")
 
+# Derived, not quoted. The sample was extended from 41 turns to 44 and five
+# hardcoded `range(0, 41)` literals broke - the exact failure this file's
+# docstring says landmarks are derived to prevent. Counting the files instead
+# means the next extension needs no edit here.
+SAMPLE_TURNS = sorted(
+    int(name[len("turn_"):-len(".json")])
+    for name in os.listdir(SAMPLE_DIR)
+    if name.startswith("turn_") and name.endswith(".json")
+)
+LAST_TURN = SAMPLE_TURNS[-1]
+
 
 @pytest.fixture(scope="module")
 def run():
@@ -54,22 +65,22 @@ def render(run_obj, view, first=None, last=None):
 
 def first_turn_with(predicate):
     """The earliest sample turn satisfying `predicate`, or None."""
-    for turn in range(0, 41):
+    for turn in SAMPLE_TURNS:
         if predicate(load(turn)):
             return turn
     return None
 
 
 def test_sample_run_loads_and_is_continuous(run):
-    assert len(run.states) == 41
-    assert run.turns == list(range(0, 41))
+    assert len(run.states) == len(SAMPLE_TURNS)
+    assert run.turns == SAMPLE_TURNS
     assert run.gaps == []
 
 
 def test_sample_has_one_setup_signature():
     """The guard's whole premise: one game means one unchanging setup."""
     signatures = set(
-        run_history.setup_signature(load(turn)) for turn in range(0, 41)
+        run_history.setup_signature(load(turn)) for turn in SAMPLE_TURNS
     )
     assert len(signatures) == 1
 
@@ -339,7 +350,7 @@ def test_move_hint_ignores_a_different_owner(run):
 def test_intel_lists_every_unit_type_ever_seen_per_owner(run):
     """Derived: build the expected set straight from the files."""
     expected = {}
-    for turn in range(0, 41):
+    for turn in SAMPLE_TURNS:
         for unit in load(turn)["foreignUnits"]:
             expected.setdefault(unit["owner"], set()).add(unit["type"])
     sightings = run_history.collect_sightings(run)
@@ -398,11 +409,22 @@ def test_intel_states_every_fact_with_its_turn(run):
 
 
 def test_intel_reports_rival_city_with_observation_turn(run):
+    """Derived from the last turn Rome is actually reported, not a fixed turn.
+
+    This pinned t40 and broke when the sample was extended to t43 - Rome is
+    still observed there, so the dossier correctly moved on while the test
+    stayed behind. The reported turn is the provenance of the population
+    figure, so it has to track the newest observation.
+    """
     text = render(run, "intel")
-    latest = load(40)
-    rome = [c for c in latest["foreignCities"] if c["name"] == "Rome"][0]
+    seen = [(turn, city)
+            for turn in SAMPLE_TURNS
+            for city in load(turn).get("foreignCities", [])
+            if city["name"] == "Rome"]
+    assert seen, "sample should contain observations of Rome"
+    last_turn, rome = seen[-1]
     assert "Rome" in text
-    assert "pop %d as of t40" % rome["population"] in text
+    assert "pop %d as of t%d" % (rome["population"], last_turn) in text
 
 
 def test_intel_ignores_turn_range(run, capsys):
@@ -519,7 +541,7 @@ def test_barbarian_sightings_carry_positions(run):
     text = render(run, "intel")
     barb = text.split("BARBARIANS AND ANIMALS")[1]
     expected = set()
-    for turn in range(0, 41):
+    for turn in SAMPLE_TURNS:
         for unit in load(turn)["foreignUnits"]:
             if unit["owner"] == 18:
                 expected.add((unit["x"], unit["y"]))
