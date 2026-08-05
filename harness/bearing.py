@@ -2,11 +2,9 @@
 
 `render_map.py --view military` and `run_history.py --view intel` already print
 a bearing beside every rival sighting, but only relative to a city (intel) or
-the nearest rival in sight (military's own-unit line). Tracking anything else -
-a scout against a moving rival, a settle candidate against a rival city seen
-turns ago - meant working out north/south by hand, which is exactly the step
-that has failed in every prior trial (see AGENT_GUIDE.md). This removes that
-arithmetic for any two coordinates, not just the cases the other views cover.
+the nearest rival in sight (military's own-unit line). This covers any other
+pair of coordinates - a scout against a moving rival, a settle candidate
+against a rival city seen turns ago - rather than working it out by hand.
 
 Takes a state file so distance and wrap can be computed correctly for this
 game's actual map (mapWidth, wrapX) instead of assumed.

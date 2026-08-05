@@ -121,6 +121,28 @@ OWN_UNIT_GLYPH = (
 )
 
 
+STATE_SCHEMA_VERSION = 2
+
+
+def check_schema_version(raw, path):
+    """Refuse anything but the current schema version.
+
+    A v1 file (pre y-axis inversion) would parse fine and render a silently
+    MIRRORED map, so a version mismatch has to fail loudly here rather than
+    downstream as a plausible-looking wrong picture. See CLAUDE.md and
+    AdvisorStateWriter._invertY.
+    """
+    version = raw.get("meta", {}).get("schemaVersion")
+    if version != STATE_SCHEMA_VERSION:
+        raise SystemExit(
+            "%s: schemaVersion %r, expected %d - this file predates the "
+            "y-axis inversion (0,0 is now northwest, y increases south) and "
+            "will render a mirrored map if read as-is. Re-export it, or "
+            "migrate it the way samples/baseline-early-game/ was migrated."
+            % (path, version, STATE_SCHEMA_VERSION)
+        )
+
+
 class State(object):
     """A loaded state file plus the lookups every view needs."""
 
@@ -128,6 +150,7 @@ class State(object):
         self.path = path
         with open(path, "r", encoding="utf-8") as handle:
             self.raw = json.load(handle)
+        check_schema_version(self.raw, path)
 
         game = self.raw["game"]
         self.width = game["mapWidth"]
@@ -188,11 +211,8 @@ class State(object):
     def bearing(self, origin, pos):
         """Compass bearing from `origin` to `pos`, e.g. 'NNW'. '' when identical.
 
-        Same convention and same reason as run_history.bearing(): narrating a
-        direction by eye is the step that has failed every time it was tried
-        (see AGENT_GUIDE.md), so callers should read this rather than derive it
-        from dx/dy themselves. Kept in sync with run_history.py's copy rather than
-        imported, since the two tools are deliberately standalone scripts.
+        Kept in sync with run_history.py's copy rather than imported, since the
+        two tools are deliberately standalone scripts.
         """
         dx = pos[0] - origin[0]
         if self.wrap_x:
@@ -204,7 +224,7 @@ class State(object):
         if not dx and not dy:
             return ""
 
-        ns = "N" if dy > 0 else ("S" if dy < 0 else "")
+        ns = "S" if dy > 0 else ("N" if dy < 0 else "")
         ew = "E" if dx > 0 else ("W" if dx < 0 else "")
         if not ns:
             return ew
@@ -1878,12 +1898,7 @@ def format_year(year):
 
 
 def _preamble(state, view, region_desc, brief):
-    """Header echoing the invocation, plus how to read the grid.
-
-    The grid-reading note exists because agent trials kept describing a tile as its
-    left neighbour; a reader who does not know the anchors gets none of their
-    benefit, so the rules are stated rather than left to be inferred.
-    """
+    """Header echoing the invocation, plus how to read the grid."""
     visible = sum(1 for t in state.tiles.values() if t.get("visibleNow"))
     lines = [
         "civ4-advisor map render",
@@ -1897,8 +1912,7 @@ def _preamble(state, view, region_desc, brief):
             str(state.wrap_x).lower(), str(state.wrap_y).lower(),
             len(state.tiles), visible,
         ),
-        "  NORTH IS UP: rows run high y -> low y. Lossy by design - confirm any tile"
-        " you act on against map.tiles.",
+        "  Lossy by design - confirm any tile you act on against map.tiles.",
         "",
     ]
     if brief:
@@ -1978,8 +1992,11 @@ def render(state, view, around=None, radius=5, brief=False):
     # map rows and not emitted lines matters: the header is itself a line, so
     # counting output would push each successive header one further down.
     # Any short group lands at the bottom, where the closing header bounds it.
+    # ys is already ascending (select_region/axis_window), and y now increases
+    # SOUTH (schemaVersion 2 - see AdvisorStateWriter._invertY), so printing
+    # ascending y top-to-bottom puts north at the top with no reversal needed.
     body = []
-    for row_index, y in enumerate(reversed(ys)):
+    for row_index, y in enumerate(ys):
         if row_index and row_index % HEADER_EVERY == 0:
             body.append(header)
         body.append(
@@ -1987,19 +2004,15 @@ def render(state, view, around=None, radius=5, brief=False):
             + compose([renderer.cell((x, y)).ljust(cell) for x in xs])
             + "%3d" % y
         )
-    # Compass rules bounding the grid. Ten agent trials across two rounds read
-    # coordinates correctly and then narrated north and south INVERTED - every
-    # single one, including five that had the orientation stated in bold in their
-    # instructions. East/west was never wrong. So prose does not fix this, and the
-    # fix has to be something you cannot read the grid without seeing: the letter
-    # sits on the edge it names, in the same place the reader is already looking to
-    # find a row's y label.
+    # Compass rules bounding the grid, rather than a legend entry to look up:
+    # the letter sits on the edge it names, in the same place the reader is
+    # already looking to find a row's y label.
     width = len(header)
-    lines.append(("  N ^ NORTH (higher y)").ljust(width))
+    lines.append(("  N ^ NORTH").ljust(width))
     lines.append(header)
     lines.extend(body)
     lines.append(header)
-    lines.append(("  S v SOUTH (lower y)").ljust(width))
+    lines.append(("  S v SOUTH").ljust(width))
     lines.append("")
 
     if not brief:

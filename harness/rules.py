@@ -1202,14 +1202,31 @@ def _turns_line(cost, state, indent="  "):
     return "%s~%d turns at %d bpt%s" % (indent, turns, rate, suffix)
 
 
+STATE_SCHEMA_VERSION = 2
+
+
 def load_state(path):
     if not os.path.isfile(path):
         raise RulesError("state file not found: %s" % path)
     try:
         with open(path, "rb") as handle:
-            return json.loads(handle.read().decode("utf-8"))
+            state = json.loads(handle.read().decode("utf-8"))
     except ValueError as exc:
         raise RulesError("state file is not valid JSON: %s" % exc)
+    # This tool never reads a coordinate, but a stale file should fail the
+    # same way every other harness entry point does rather than silently
+    # succeeding against the wrong schema version. Kept in sync with
+    # render_map.py's and run_history.py's copies rather than imported, since
+    # these are deliberately standalone scripts. See CLAUDE.md and
+    # AdvisorStateWriter._invertY for what changed 1 -> 2.
+    version = (state.get("meta") or {}).get("schemaVersion")
+    if version != STATE_SCHEMA_VERSION:
+        raise RulesError(
+            "%s: schemaVersion %r, expected %d - re-export it, or migrate it"
+            " the way samples/baseline-early-game/ was migrated."
+            % (path, version, STATE_SCHEMA_VERSION)
+        )
+    return state
 
 
 def state_summary(state):

@@ -16,7 +16,7 @@ import time
 from CvPythonExtensions import *
 
 ## Bumped only on breaking changes to the state format - see schema/state.schema.json.
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 ## Spaces per indent level in the output file. Pretty-printed rather than compact so
 ## a turn's export can be eyeballed against what the game UI actually shows.
@@ -223,7 +223,45 @@ def buildState(gameTurn, playerId, trigger):
 	mapStarted = _clock()
 	state['map'] = _buildMap(ctx)
 	_reportTimings(mapStarted - started, _clock() - mapStarted, len(state['map']['tiles']))
+	_invertY(state, state['game']['mapHeight'])
 	return state
+
+
+def _invertY(state, mapHeight):
+	'''Flip every exported y so 0 is the NORTH edge and y increases southward.
+
+	The engine's own coordinate space is y-up (0,0 southwest), and every prior
+	attempt to correct for that in the harness - documented convention, printed
+	compass bearings - reduced but did not eliminate agents narrating north and
+	south backwards while reading x correctly every time. That asymmetry (x
+	never wrong, y always wrong) is the tell: y-up is not the convention a model
+	brings from screen/image/matrix coordinates, and the mismatch gets silently
+	normalised away below the level where the agent notices. This fixes the data
+	to match the universal prior instead of asking every future reader to hold
+	the correction in mind. See CLAUDE.md for the full reasoning, including why
+	the field is still named `y` (not renamed to avoid re-teaching "standard x,y
+	coordinates") and why SCHEMA_VERSION bumped to 2 as the substitute signal - a
+	stale v1 file must fail loudly rather than render mirrored.
+
+	Applied once, here, after every section is built, rather than inverting each
+	`getY()` call at its many source call sites - every _build* function keeps
+	reading and writing raw engine coordinates exactly as before; only the
+	assembled document changes.'''
+	def flip(y):
+		return mapHeight - 1 - y
+
+	for unit in state['units']:
+		unit['y'] = flip(unit['y'])
+	for city in state['cities']:
+		city['y'] = flip(city['y'])
+		for tile in city['workedTiles']:
+			tile[1] = flip(tile[1])
+	for tile in state['map']['tiles']:
+		tile['y'] = flip(tile['y'])
+	for unit in state['foreignUnits']:
+		unit['y'] = flip(unit['y'])
+	for city in state['foreignCities']:
+		city['y'] = flip(city['y'])
 
 
 def _reportTimings(otherSeconds, mapSeconds, tileCount):

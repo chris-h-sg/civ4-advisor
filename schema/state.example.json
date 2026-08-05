@@ -1,5 +1,5 @@
 {
-    "meta": {"schemaVersion": 1, "trigger": "onEndGameTurn"},
+    "meta": {"schemaVersion": 2, "trigger": "onEndGameTurn"},
     "game": {
         "gameTurn": 5,
         "year": -3800,

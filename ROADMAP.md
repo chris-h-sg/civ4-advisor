@@ -74,8 +74,6 @@ Two obvious halves: a `producing` change line in `timeline`, and current build p
 
 Found in the first Claude Code trial. `timeline` catches tech completions, unit gains/losses, contacts, sightings, tile/feature changes and territory — but never gold. A 60-gold goody-hut pop went unreported; the agent only found it by manually diffing `player.gold` turn-by-turn after the player mentioned it out loud. A `gold`/`goldPerTurn` line, alongside the existing per-turn categories, closes this — same shape as item 5's `producing` line, and cheap for the same reason.
 
-**Compass note, same trial.** The session confused north/south a few times, but only in quick loosely-worded statements, never in coordinate-checked ones — correct math, wrong narration. No output change is implicated; the fix belongs in item 13.
-
 ### 7. Cheap presentation fixes with high recurrence
 
 Grouped because each is small, none is a design question, and the trial counts are the highest in the repo. These are layout changes, not features.
@@ -142,13 +140,12 @@ Record there too, from the same trial: in a **split-mount setup** (harness, run 
 
 **The pattern across both trials: almost nothing failed because a tool was missing. Things failed because a tool wasn't called.** `rules.py tech` prints `resources revealed BONUS_COPPER` plainly and the agent asserted the inverse from memory (item 10). The beakers-per-turn "mystery" was answered by reading two turn files side by side, and was instead reported as a possible schema gap. The scout's `iAnimalCombat` is absent from `rules.py` (item 9) but the install was mounted and greppable, and it never looked.
 
-These changes must **displace text, not accumulate**: ten of ten agents got the compass backwards despite a bold warning with a worked example, and the conclusion recorded then — *"when a caveat doesn't stick, move the layout instead of adding words"* — applies to this item too.
+These changes must **displace text, not accumulate**: a caveat that doesn't stick needs a layout fix, not more words piled on top of it.
 
 To `AGENT_GUIDE.md`:
 
 - **Convert rule 5 from a prohibition into a trigger list.** "Never state a rule from memory" requires the agent to notice it is recalling from memory — the same invisible-from-inside failure as the compass. A short table keyed to *output shapes* is checkable where an internal state is not: about to say "tech X reveals resource Y" → run `rules.py tech X`; "unit A beats unit B" → `rules.py unit A`; "this city can build Z" → `rules.py city NAME`.
 - **Fix the anti-grep line.** "Use `rules.py` rather than grepping" is reasoned from the 18 duplicate file copies but reads as *don't grep*, and probably suppressed the fallback that would have found `iAnimalCombat`. It should say: `rules.py` first because it resolves the right tree; when it doesn't cover something, grep BTS-then-vanilla directly and report having had to.
-- **Promote the Cowork agent's own compass diagnosis**, sharper than anything currently in the guide: *"a narration-time slip, not a computation-time one — recomputing deltas doesn't catch it because I wasn't computing anything when it happened."* Its derived rule — never write a bare "north of"/"south of" without a coordinate delta beside it — covers what the printed-bearings fix misses, since that only helps when the agent is deriving at all. The one place a new prose rule is clearly warranted; no output change can catch loose narration.
 - **One line: confirm a gap before reporting it.** The beakers non-gap would have cost nothing to check against the file it was already reading.
 - **Move the permanent data traps here** from the session brief — stale `damage`, missing promotions. Those are properties of the export, not of a trial, and a session file is rewritten each run.
 
@@ -159,7 +156,7 @@ To the session template:
 
 **Do not split into a third file.** The guide/session-brief cut is the right one and matches the existing "usage in the guide, reasons in the README" discipline; a third document is a third thing to keep in sync for something read once.
 
-**One asymmetry worth carrying into item 12.** The Claude Code trial reported no compass problems and said `bearing.py` "was right every time I cross-verified it"; the player observed several slips. The guide's "tell us what's missing" instruction only catches failures the agent *notices*, which structurally excludes the entire wrong-but-plausible class. Not fixable in the agent's instructions — it is the argument for the player-side protocol being more load-bearing than it looks.
+**One asymmetry worth carrying into item 12.** A trial can report itself confident and correct while the player observes real slips. The guide's "tell us what's missing" instruction only catches failures the agent *notices*, which structurally excludes the entire wrong-but-plausible class. Not fixable in the agent's instructions — it is the argument for the player-side protocol being more load-bearing than it looks.
 
 ---
 
@@ -178,11 +175,9 @@ Also worth recording: across two live trials (Cowork and Claude Code, 25 turns e
 
 ---
 
-## Open question: does `meta.schemaVersion` finally bump?
+## Resolved: `meta.schemaVersion` has bumped, to 2
 
-By the stated rule it stays at 1 — increment ⑦ is additive, no existing field changes meaning. But the other half of that rule was "nothing consumes it yet", and that is now less true: an agent reading old captures alongside new ones is exactly the consumer the version was reserved for, and in an old capture a field added later is indistinguishable from one that defaulted. Item 1 sharpens it further, since a corrected `damage` would be the first **non**-additive change — a field whose meaning changed.
-
-Settle it when item 1 lands, since whether `damage` is corrected or merely documented is what decides the answer.
+Not for increment ⑦ or item 1's `damage` fix as anticipated — for a change not on this page when it was written: inverting every exported y coordinate so `(0,0)` is northwest (see `CLAUDE.md`). Item 1's `damage` question is still open on its own terms; if it lands, it's the next thing to bump the version, to 3.
 
 ---
 

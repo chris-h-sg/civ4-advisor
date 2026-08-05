@@ -458,6 +458,7 @@ def make_state(tmp_path, known=(), handicap="HANDICAP_HARD",
                rate=13, tiles=(), research=None, cities=None, wonders=None,
                civilization=None):
     state = {
+        "meta": {"schemaVersion": 2},
         "game": {"gameTurn": turn, "handicap": handicap, "worldSize": world,
                  "gameSpeed": speed},
         "player": {"leader": "LEADER_TEST", "knownTechs": list(known),

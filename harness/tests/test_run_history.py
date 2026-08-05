@@ -230,15 +230,16 @@ def test_timeline_reports_first_contact(run):
 
 
 def test_timeline_reports_rival_territory_first_seen(run):
-    """Greek borders at (66,17-19) were the first evidence of a Greek city.
+    """Greek borders at (66,32-34) were the first evidence of a Greek city.
 
+    (mapHeight 52, so new y = 51 - old y - was (66,17-19).)
     They arrive ALREADY OWNED on the turn the tiles are first revealed, so an
     owner-change diff never fires - which is why this needed its own branch.
     """
     text = render(run, "timeline", 35, 36)
     assert "TERRITORY FIRST SEEN" in text
     assert "LEADER_ALEXANDER" in text
-    assert "(66,19)" in text
+    assert "(66,32)" in text
 
 
 def test_rival_territory_hints_at_a_city(run):
@@ -257,7 +258,8 @@ def test_own_territory_is_not_reported_as_rival(run):
 def test_small_reveals_list_their_coordinates(run):
     """The five tiles revealed at t38 are the evidence for where a unit died."""
     text = render(run, "timeline", 38, 38)
-    for pos in ("(69,15)", "(69,16)", "(70,15)", "(70,16)", "(71,19)"):
+    # mapHeight 52, so new y = 51 - old y (were (69,15),(69,16),(70,15),(70,16),(71,19)).
+    for pos in ("(69,36)", "(69,35)", "(70,36)", "(70,35)", "(71,32)"):
         assert pos in text
 
 
@@ -307,16 +309,17 @@ def test_departure_under_fog_is_not_reported_as_a_kill(run):
 
 def test_departure_on_a_still_visible_tile_reads_as_real(run):
     """The opposite case, from the same turn - both must be distinguishable."""
+    # mapHeight 52, so new y = 51 - old y (was (71,17)).
     before, after = load(26), load(27)
     lion = [
         u for u in before["foreignUnits"]
-        if u["type"] == "UNIT_LION" and (u["x"], u["y"]) == (71, 17)
+        if u["type"] == "UNIT_LION" and (u["x"], u["y"]) == (71, 34)
     ][0]
     still_visible = any(
-        t["x"] == 71 and t["y"] == 17 and t.get("visibleNow")
+        t["x"] == 71 and t["y"] == 34 and t.get("visibleNow")
         for t in after["map"]["tiles"]
     )
-    assert still_visible, "premise: (71,17) is still visible at t27"
+    assert still_visible, "premise: (71,34) is still visible at t27"
     assert run_history.classify_departure(before, after, lion) == "left or died"
 
 
@@ -576,27 +579,33 @@ def test_sightings_carry_distance_from_your_nearest_city(run):
 def test_sightings_carry_a_compass_bearing(run):
     """Ten trials narrated north/south backwards; the tool states it now."""
     text = render(run, "intel")
-    # Rome is at (69,31), Lisbon at (75,15): higher y is NORTH, lower x is WEST.
+    # Rome and Lisbon's y both flipped with the schemaVersion 2 migration
+    # (higher y is now SOUTH), and so did the bearing sign, so the physical
+    # NNW relationship between them is unchanged.
     assert "NNW of Lisbon" in text
 
 
 def test_bearing_matches_the_axis_convention():
+    # Pure geometry - these are arbitrary points, not tied to sample tiles, so
+    # only the N/S sign changes (higher y is now SOUTH, schemaVersion 2 - see
+    # AdvisorStateWriter._invertY); the points themselves are unchanged.
     state = load(40)
     lisbon = (75, 15)
-    assert run_history.bearing(state, lisbon, (75, 31)) == "N"
-    assert run_history.bearing(state, lisbon, (75, 5)) == "S"
+    assert run_history.bearing(state, lisbon, (75, 31)) == "S"
+    assert run_history.bearing(state, lisbon, (75, 5)) == "N"
     assert run_history.bearing(state, lisbon, (79, 15)) == "E"
     assert run_history.bearing(state, lisbon, (69, 15)) == "W"
-    assert run_history.bearing(state, lisbon, (69, 31)) == "NNW"
-    assert run_history.bearing(state, lisbon, (76, 16)) == "NE"
+    assert run_history.bearing(state, lisbon, (69, 31)) == "SSW"
+    assert run_history.bearing(state, lisbon, (76, 16)) == "SE"
     assert run_history.bearing(state, lisbon, lisbon) == ""
 
 
 def test_bearing_dominant_axis_leads():
-    """WNW, not NWW - the major axis comes first, as on a real compass."""
+    """WSW, not SWW - the major axis comes first, as on a real compass."""
+    # Pure geometry - only the N/S sign changes (see above).
     state = load(40)
-    assert run_history.bearing(state, (75, 15), (69, 17)) == "WNW"
-    assert run_history.bearing(state, (75, 15), (69, 13)) == "WSW"
+    assert run_history.bearing(state, (75, 15), (69, 17)) == "WSW"
+    assert run_history.bearing(state, (75, 15), (69, 13)) == "WNW"
 
 
 def test_bearing_is_wrap_aware():
@@ -613,9 +622,10 @@ def test_land_path_reports_the_detour_chebyshev_hides(run):
     Two trials found this independently and both called the bare Chebyshev
     figure the most misleading number they were given.
     """
+    # mapHeight 52, so new y = 51 - old y (were (75,15), (69,21)).
     state = load(34)
-    lisbon = (75, 15)
-    lion = (69, 21)
+    lisbon = (75, 36)
+    lion = (69, 30)
     assert run_history.chebyshev(state, lion, lisbon) == 6
     steps, _ = run_history.land_path(state, lion, lisbon)
     assert steps == 14
@@ -643,8 +653,9 @@ def test_every_distance_line_states_the_unit_of_measurement():
 
 def test_land_path_refuses_to_route_through_fog():
     """Unrevealed tiles are never walked; they are counted as unknowns."""
+    # mapHeight 52, so new y = 51 - old y (were (75,15), (69,21)).
     state = load(34)
-    steps, gaps = run_history.land_path(state, (75, 15), (69, 21))
+    steps, gaps = run_history.land_path(state, (75, 36), (69, 30))
     assert steps == 14
     assert gaps > 0, "the revealed region should border unrevealed tiles"
 
@@ -699,7 +710,8 @@ def test_garrison_section_finds_a_unit_inside_a_city():
 def test_loss_line_says_last_exported_not_last_position(run):
     """'last at' read as the death tile to two trials. It is not."""
     text = render(run, "timeline", 38, 38)
-    assert "last exported at (69,18) on t37" in text
+    # mapHeight 52, so new y = 51 - old y (was (69,18)).
+    assert "last exported at (69,33) on t37" in text
     assert "may have moved before dying" in text
 
 
@@ -721,8 +733,9 @@ def test_lost_view_reports_the_warrior(run):
 def test_lost_view_gives_the_track(run):
     """The path leading up to a loss is what makes it interpretable."""
     text = render(run, "lost")
-    assert "t37 (69,18)" in text
-    assert "t34 (68,21)" in text
+    # mapHeight 52, so new y = 51 - old y (were (69,18), (68,21)).
+    assert "t37 (69,33)" in text
+    assert "t34 (68,30)" in text
 
 
 def test_lost_view_reports_damage_history(run):
@@ -734,7 +747,8 @@ def test_lost_view_reports_damage_history(run):
 def test_lost_view_gives_the_final_turn_reveals(run):
     """The evidence a trial used to locate the real death tile."""
     text = render(run, "lost")
-    for pos in ("(69,15)", "(70,16)", "(71,19)"):
+    # mapHeight 52, so new y = 51 - old y (were (69,15), (70,16), (71,19)).
+    for pos in ("(69,36)", "(70,35)", "(71,32)"):
         assert pos in text
 
 

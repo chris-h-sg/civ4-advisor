@@ -31,6 +31,30 @@ import sys
 
 VIEWS = ("timeline", "intel", "lost")
 
+STATE_SCHEMA_VERSION = 2
+
+
+def _check_schema_version(state, path):
+    """Refuse anything but the current schema version.
+
+    A v1 file (pre y-axis inversion) would parse fine and print a silently
+    MIRRORED bearing for every sighting, so a version mismatch has to fail
+    loudly here rather than downstream as a plausible-looking wrong direction.
+    Kept in sync with render_map.py's copy rather than imported, since the two
+    tools are deliberately standalone scripts. See CLAUDE.md and
+    AdvisorStateWriter._invertY.
+    """
+    version = (state.get("meta") or {}).get("schemaVersion")
+    if version != STATE_SCHEMA_VERSION:
+        raise SystemExit(
+            "%s: schemaVersion %r, expected %d - this file predates the "
+            "y-axis inversion (0,0 is now northwest, y increases south) and "
+            "will report mirrored bearings if read as-is. Re-export it, or "
+            "migrate it the way samples/baseline-early-game/ was migrated."
+            % (path, version, STATE_SCHEMA_VERSION)
+        )
+
+
 # Fields on a map tile whose turn-to-turn change is worth reporting. Terrain is
 # deliberately absent: it never changes, so a change would mean the run is broken,
 # and the continuity check owns that. `visibleNow` is absent because it flips
@@ -155,6 +179,7 @@ class Run(object):
         for filename in turn_files(path):
             with open(filename, "r", encoding="utf-8") as handle:
                 state = json.load(handle)
+            _check_schema_version(state, filename)
             self.states.append((filename, state))
 
         # --as-of clamps the WHOLE run, not one view's output. Live play never needs
@@ -454,16 +479,11 @@ def distance_note(state, origin, target):
 def bearing(state, origin, pos):
     """Compass bearing from `origin` to `pos`, e.g. 'NNW'. '' when identical.
 
-    THIS EXISTS BECAUSE PROSE DID NOT FIX IT. Across ten agent trials, every
-    single one read coordinates correctly and then narrated north and south
-    backwards - including five whose instructions stated "higher y is north" in
-    bold with a worked example and an explicit warning about this exact failure.
-    East/west was never once wrong. The asymmetry is the tell: x behaves the way
-    a reader expects and y does not, so the y sign gets normalised away silently.
-
     Computing it here makes the direction a thing the agent READS rather than a
-    convention it has to hold and apply. Wrap-aware on x for the same reason
-    chebyshev() is: the short way east may be across the seam.
+    convention it has to hold and apply. Kept in sync with render_map.py's copy
+    rather than imported, since the two tools are deliberately standalone
+    scripts. Wrap-aware on x for the same reason chebyshev() is: the short way
+    east may be across the seam.
     """
     dx = pos[0] - origin[0]
     if state["game"]["wrapX"]:
@@ -479,7 +499,7 @@ def bearing(state, origin, pos):
     # Two letters when one axis clearly dominates, one when it is close to pure,
     # three ('NNW') when the minor axis is present but much smaller. Anything
     # finer would imply a precision the grid does not have.
-    ns = "N" if dy > 0 else ("S" if dy < 0 else "")
+    ns = "S" if dy > 0 else ("N" if dy < 0 else "")
     ew = "E" if dx > 0 else ("W" if dx < 0 else "")
     if not ns:
         return ew

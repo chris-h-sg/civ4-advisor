@@ -26,9 +26,10 @@ def test_same_tile():
 
 
 def test_reports_compass_and_straight_distance():
+    # Higher y is now SOUTH (schemaVersion 2 - see AdvisorStateWriter._invertY).
     result = run("10,10", "10,15", SAMPLE)
     assert result.returncode == 0
-    assert "N, 5 tiles straight" in result.stdout
+    assert "S, 5 tiles straight" in result.stdout
 
 
 def test_singular_tile_wording():

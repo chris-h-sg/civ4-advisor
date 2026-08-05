@@ -1291,7 +1291,7 @@ class BuildStateTests(unittest.TestCase):
                           "game", "map", "meta", "player", "units", "wonders"])
 
     def test_meta(self):
-        self.assertEqual(self.parsed["meta"], {"schemaVersion": 1, "trigger": "onEndGameTurn"})
+        self.assertEqual(self.parsed["meta"], {"schemaVersion": 2, "trigger": "onEndGameTurn"})
 
     def test_year_follows_the_passed_turn_not_the_live_one(self):
         # onEndGameTurn labels state for the upcoming turn, so the year has to
@@ -1450,9 +1450,12 @@ def buildTile(**kwargs):
 
 class UnitTests(unittest.TestCase):
     def test_fields(self):
+        # Map defaults to height 52 (Map.__init__), so exported y is
+        # 52 - 1 - 9 = 42: the writer inverts y once, at the end of buildState,
+        # so 0 is now the north edge - see AdvisorStateWriter._invertY.
         _, parsed = buildWith(units=[Unit(4, unitType=2, x=7, y=9, damage=35)])
         self.assertEqual(parsed["units"], [
-            {"id": 4, "type": "UNIT_WORKER", "x": 7, "y": 9,
+            {"id": 4, "type": "UNIT_WORKER", "x": 7, "y": 42,
              "moves": 1, "damage": 35},
         ])
 
@@ -1492,15 +1495,18 @@ class UnitTests(unittest.TestCase):
 
 class CityTests(unittest.TestCase):
     def test_fields(self):
+        # Map defaults to height 52, so exported y is 52 - 1 - 40 = 11 - see
+        # AdvisorStateWriter._invertY, which flips this once at the end of
+        # buildState rather than at each raw getY() call site.
         _, parsed = buildWith(cities=[City(6, name=u"Thebes", x=32, y=40)])
         self.assertEqual(parsed["cities"], [{
-            "id": 6, "name": "Thebes", "x": 32, "y": 40,
+            "id": 6, "name": "Thebes", "x": 32, "y": 11,
             "population": 2, "food": 14, "foodPerTurn": 3, "growthThreshold": 24,
             "producing": "UNIT_WORKER", "production": 10, "productionNeeded": 60,
             "productionPerTurn": 4, "productionFromHammers": 4,
             "productionFromFood": 0, "culture": 12, "cultureThreshold": 100,
             "happy": 4, "unhappy": 1, "healthy": 5, "unhealthy": 2,
-            "workedTiles": [[31, 40], [32, 40], [33, 40]],
+            "workedTiles": [[31, 11], [32, 11], [33, 11]],
             "buildings": ["BUILDING_PALACE"],
             "bonuses": {"strategic": ["BONUS_COPPER"], "happiness": [],
                         "health": ["BONUS_CORN"]},
@@ -1603,13 +1609,15 @@ class CityProductionTests(unittest.TestCase):
 
 class WorkedTilesTests(unittest.TestCase):
     def test_sorted_coordinates_including_the_city_centre(self):
+        # Sorted on raw [x, y] before _invertY runs; height=52, so exported
+        # y = 51 - rawY = 11 for these tiles.
         _, parsed = buildWith(cities=[City(0, worked={5: (33, 40), 0: (32, 40), 9: (31, 40)})])
         self.assertEqual(parsed["cities"][0]["workedTiles"],
-                         [[31, 40], [32, 40], [33, 40]])
+                         [[31, 11], [32, 11], [33, 11]])
 
     def test_unworked_plots_are_skipped(self):
         _, parsed = buildWith(cities=[City(0, worked={0: (32, 40)})])
-        self.assertEqual(parsed["cities"][0]["workedTiles"], [[32, 40]])
+        self.assertEqual(parsed["cities"][0]["workedTiles"], [[32, 11]])
 
     def test_every_city_plot_index_is_examined(self):
         # All 21, from gc.getNUM_CITY_PLOTS() rather than a hardcoded 21.
@@ -1624,7 +1632,7 @@ class WorkedTilesTests(unittest.TestCase):
         # the engine hands back an invalid plot (or nothing at all) for those.
         _, parsed = buildWith(cities=[City(0, worked={0: (32, 40), 3: None,
                                                       7: Plot(none=True)})])
-        self.assertEqual(parsed["cities"][0]["workedTiles"], [[32, 40]])
+        self.assertEqual(parsed["cities"][0]["workedTiles"], [[32, 11]])
 
     def test_no_worked_tiles_is_an_empty_list(self):
         _, parsed = buildWith(cities=[City(0, worked={})])
@@ -1914,13 +1922,15 @@ class WonderTests(unittest.TestCase):
 
 class MapScanTests(unittest.TestCase):
     def test_only_revealed_tiles_are_exported(self):
+        # height=2, so exported y is 2 - 1 - rawY: raw (0,0) and (2,1) come out
+        # (0,1) and (2,0) - see AdvisorStateWriter._invertY.
         cyMap = Map(plots=[Plot(x=0, y=0, revealed=True),
                            Plot(x=1, y=0, revealed=False),
                            Plot(x=2, y=1, revealed=True)],
                     width=3, height=2)
         _, parsed = buildWith(cyMap=cyMap)
         self.assertEqual([(t["x"], t["y"]) for t in parsed["map"]["tiles"]],
-                         [(0, 0), (2, 1)])
+                         [(0, 1), (2, 0)])
 
     def test_whole_grid_is_scanned_in_row_major_order(self):
         cyMap = Map(plots=[], width=3, height=2)
@@ -1931,11 +1941,14 @@ class MapScanTests(unittest.TestCase):
     def test_tiles_come_out_row_major(self):
         # Sorted output is what makes turn-to-turn diffs meaningful; row-major
         # also matches the engine's own plot indexing and reads like the map.
+        # The sort happens on the RAW y before _invertY runs, so order is
+        # unaffected by the flip - only the emitted y values change (height=2,
+        # so exported y = 1 - rawY).
         cyMap = Map(plots=[Plot(x=2, y=1), Plot(x=0, y=1), Plot(x=1, y=0)],
                     width=3, height=2)
         _, parsed = buildWith(cyMap=cyMap)
         self.assertEqual([(t["x"], t["y"]) for t in parsed["map"]["tiles"]],
-                         [(1, 0), (0, 1), (2, 1)])
+                         [(1, 1), (0, 0), (2, 0)])
 
     def test_revealed_check_uses_the_players_team_and_never_debug(self):
         # bDebug=True would bypass to full map truth whenever the game is in
@@ -1965,10 +1978,61 @@ class MapScanTests(unittest.TestCase):
         self.assertRaises(AssertionError, mod["buildState"], 5, PLAYER_ID, "x")
 
 
+class YInversionTests(unittest.TestCase):
+    """buildState flips every exported y once, at the very end, so 0 is the
+    NORTH edge and y increases southward - matching the screen/matrix
+    convention every prior agent trial silently assumed, rather than the
+    engine's native y-up (see AdvisorStateWriter._invertY and CLAUDE.md).
+
+    Every _build* function still reads and writes raw engine y - these tests
+    exist to pin the ONE place the flip happens, across every field-shape it
+    touches: a plain field (units, cities, tiles, foreignUnits, foreignCities)
+    and a nested [x, y] pair (workedTiles). height=10 throughout, so flipped
+    y = 9 - rawY is easy to check by eye.
+    """
+
+    def test_unit_city_and_tile_y_are_flipped(self):
+        cyMap = Map(plots=[Plot(x=0, y=3, terrain=1, yields=(1, 1, 1))],
+                    width=10, height=10)
+        _, parsed = buildWith(units=[Unit(0, x=1, y=2)],
+                              cities=[City(0, x=4, y=6, worked={})],
+                              cyMap=cyMap)
+        self.assertEqual(parsed["units"][0]["y"], 7)
+        self.assertEqual(parsed["cities"][0]["y"], 3)
+        self.assertEqual(parsed["map"]["tiles"][0]["y"], 6)
+
+    def test_worked_tiles_y_is_flipped(self):
+        _, parsed = buildWith(
+            cities=[City(0, x=4, y=6, worked={0: (4, 6), 1: (5, 6)})],
+            cyMap=Map(plots=[], width=10, height=10))
+        self.assertEqual(sorted(parsed["cities"][0]["workedTiles"]),
+                         [[4, 3], [5, 3]])
+
+    def test_foreign_unit_and_city_y_are_flipped(self):
+        _, parsed = exportState(
+            rivals=absentPlayers(Rival(1, teamId=1,
+                                       units=[Unit(0, owner=1, x=1, y=2)],
+                                       cities=[ForeignCity(0, owner=1, x=4, y=6)])),
+            team=Team(met=()), cyMap=Map(plots=[], width=10, height=10))
+        self.assertEqual(parsed["foreignUnits"][0]["y"], 7)
+        self.assertEqual(parsed["foreignCities"][0]["y"], 3)
+
+    def test_zero_stays_in_bounds_at_the_far_edge(self):
+        # y=0 (south edge, post-flip) and y=height-1 (north edge) are the two
+        # values most likely to go negative or off-by-one if the formula is
+        # wrong - check both ends, not just an interior value.
+        _, parsed = buildWith(units=[Unit(0, x=0, y=0), Unit(1, x=0, y=9)],
+                              cyMap=Map(plots=[], width=10, height=10))
+        byId = dict((u["id"], u["y"]) for u in parsed["units"])
+        self.assertEqual(byId[0], 9)
+        self.assertEqual(byId[1], 0)
+
+
 class TileTests(unittest.TestCase):
     def test_always_present_fields(self):
+        # buildTile's Map is height=3, so exported y is 3 - 1 - 2 = 0.
         tile = buildTile(terrain=1, yields=(2, 3, 4))
-        self.assertEqual(tile, {"x": 1, "y": 2, "terrain": "TERRAIN_PLAINS",
+        self.assertEqual(tile, {"x": 1, "y": 0, "terrain": "TERRAIN_PLAINS",
                                 "yields": [2, 3, 4]})
 
     def test_plain_flat_land_omits_plot_type(self):
@@ -2105,11 +2169,12 @@ class TileRenderingTests(unittest.TestCase):
         self.assertEqual(mod["toJson"](record, 2), '{"x": 1, "y": 2}')
 
     def test_tiles_lead_with_their_coordinates(self):
+        # height=8, so exported y is 8 - 1 - 7 = 0.
         cyMap = Map(plots=[Plot(x=4, y=7, terrain=1, bonus=0, visible=True)],
                     width=8, height=8)
         text = renderState(cyMap=cyMap)[1]
         tileLine = [ln for ln in text.split("\n") if '"terrain"' in ln][0]
-        self.assertTrue(tileLine.strip().startswith('{"x": 4, "y": 7, '), tileLine)
+        self.assertTrue(tileLine.strip().startswith('{"x": 4, "y": 0, '), tileLine)
 
     def test_key_order_is_still_deterministic(self):
         # Diffability needs a FIXED key order, not an alphabetical one - the point
@@ -2226,10 +2291,12 @@ class ForeignUnitTests(unittest.TestCase):
         return Rival(1, teamId=1, units=list(units))
 
     def test_visible_unit(self):
+        # buildDiplomacy's Map defaults to height 52, so exported y is
+        # 52 - 1 - 9 = 42.
         _, parsed = buildDiplomacy(
             rivals=[self.rival(Unit(0, unitType=1, x=7, y=9, owner=1))])
         self.assertEqual(parsed["foreignUnits"],
-                         [{"owner": 1, "type": "UNIT_WARRIOR", "x": 7, "y": 9}])
+                         [{"owner": 1, "type": "UNIT_WARRIOR", "x": 7, "y": 42}])
 
     def test_fogged_units_are_not_remembered(self):
         # Unlike cities. The engine keeps no record of where enemy units were, so
@@ -2278,6 +2345,10 @@ class ForeignUnitTests(unittest.TestCase):
         self.assertNotIn("damage", parsed["foreignUnits"][0])
 
     def test_sorted_by_owner_then_position(self):
+        # Sorting happens on RAW y inside _buildForeignUnits, before _invertY
+        # runs at the end of buildState - so order is unaffected by the flip
+        # and only the emitted y values change (height=52, so exported
+        # y = 51 - rawY).
         _, parsed = buildDiplomacy(rivals=[
             Rival(2, teamId=2, units=[Unit(0, owner=2, x=1, y=1)]),
             Rival(1, teamId=1, units=[Unit(0, owner=1, x=5, y=9),
@@ -2285,7 +2356,7 @@ class ForeignUnitTests(unittest.TestCase):
                                       Unit(2, owner=1, x=8, y=3)]),
         ])
         self.assertEqual([(u["owner"], u["x"], u["y"]) for u in parsed["foreignUnits"]],
-                         [(1, 8, 3), (1, 2, 9), (1, 5, 9), (2, 1, 1)])
+                         [(1, 8, 48), (1, 2, 42), (1, 5, 42), (2, 1, 50)])
 
     def test_identical_stacked_units_do_not_break_the_sort(self):
         # Two rows with equal sort keys must not make the sort compare the dicts.
@@ -2304,11 +2375,12 @@ class ForeignCityTests(unittest.TestCase):
         return Rival(1, teamId=1, cities=list(cities))
 
     def test_revealed_city(self):
+        # height=52, so exported y is 52 - 1 - 46 = 5.
         _, parsed = buildDiplomacy(
             rivals=[self.rival(ForeignCity(0, name=u"Delhi", x=38, y=46, owner=1,
                                            population=3))])
         self.assertEqual(parsed["foreignCities"],
-                         [{"owner": 1, "name": "Delhi", "x": 38, "y": 46,
+                         [{"owner": 1, "name": "Delhi", "x": 38, "y": 5,
                            "population": 3}])
 
     def test_unrevealed_cities_are_absent(self):
@@ -2366,13 +2438,15 @@ class ForeignCityTests(unittest.TestCase):
         self.assertEqual(parsed["foreignCities"][0]["owner"], BARBARIAN_PLAYER)
 
     def test_sorted_by_owner_then_position(self):
+        # Sorted on raw y before _invertY runs, so order is unaffected by the
+        # flip (height=52, so exported y = 51 - rawY).
         _, parsed = buildDiplomacy(rivals=[
             Rival(2, teamId=2, cities=[ForeignCity(0, owner=2, x=1, y=1)]),
             Rival(1, teamId=1, cities=[ForeignCity(0, owner=1, x=5, y=9),
                                        ForeignCity(1, owner=1, x=8, y=3)]),
         ])
         self.assertEqual([(c["owner"], c["x"], c["y"]) for c in parsed["foreignCities"]],
-                         [(1, 8, 3), (1, 5, 9), (2, 1, 1)])
+                         [(1, 8, 48), (1, 5, 42), (2, 1, 50)])
 
     def test_unicode_city_name_round_trips(self):
         _, parsed = buildDiplomacy(
@@ -2403,6 +2477,7 @@ class DiplomacyRenderingTests(unittest.TestCase):
         json.loads(text)
 
     def test_foreign_rows_lead_with_their_coordinates(self):
+        # height=52, so exported y is 51 - rawY: 9 -> 42, 4 -> 47.
         text = self.render(rivals=[Rival(1, teamId=1,
                                          units=[Unit(0, owner=1, x=7, y=9)],
                                          cities=[ForeignCity(0, owner=1, x=3, y=4)])])
@@ -2417,8 +2492,8 @@ class DiplomacyRenderingTests(unittest.TestCase):
         # Containment rather than startswith: a section short enough to fit inline
         # keeps its rows on the same line as the section key, which is fine - the
         # claim being tested is the key order inside a row.
-        self.assertIn('{"x": 7, "y": 9, ', unitLine)
-        self.assertIn('{"x": 3, "y": 4, ', cityLine)
+        self.assertIn('{"x": 7, "y": 42, ', unitLine)
+        self.assertIn('{"x": 3, "y": 47, ', cityLine)
 
 
 class NoResearchSelectedTests(unittest.TestCase):
@@ -2482,11 +2557,17 @@ class SchemaConformanceTests(unittest.TestCase):
         # The default fixture leans heavily on omitted defaults. This one carries
         # every optional field there is: a tile with all of them set, a damaged
         # unit, met rivals, visible foreign units and a revealed capital.
+        #
+        # width/height sized to fit every default unit/city position used below
+        # (up to y=50) rather than the map's own single tile: _invertY uses
+        # mapHeight to flip every y, so a map smaller than the fixture's own
+        # coordinates would flip them negative - a real out-of-bounds state the
+        # schema is right to reject, not something to paper over here.
         cyMap = Map(plots=[Plot(x=0, y=0, terrain=3, visible=True, hills=True,
                                 lake=True, freshWater=True, river=True,
                                 feature=1, bonus=0, improvement=0, route=1,
                                 owner=2, yields=(3, 2, 1))],
-                    width=1, height=1)
+                    width=51, height=51)
         parsed = self.export(
             player=Player(units=[Unit(0, damage=55)]),
             cyMap=cyMap,

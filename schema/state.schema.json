@@ -1,7 +1,7 @@
 {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "title": "civ4-advisor per-turn state",
-    "description": "Specification for the JSON state file the mod writes each turn (one file per turn under a per-game folder in state/, e.g. state/LEADER_HATSHEPSUT_1738531200000/turn_0005.json) and for curated captures in samples/. The mod's Python 2.4 cannot validate against this; it exists as the contract reference and for harness-side validation later. All enum-like values are the game XML's Type keys (e.g. TERRAIN_GRASS, UNIT_SCOUT), so state joins directly against XML-derived rules data. Everything in this file is restricted to what the human player could legitimately see - never unrevealed map, other civs' internals, or anything else fog-of-war hides.",
+    "description": "Specification for the JSON state file the mod writes each turn (one file per turn under a per-game folder in state/, e.g. state/LEADER_HATSHEPSUT_1738531200000/turn_0005.json) and for curated captures in samples/. The mod's Python 2.4 cannot validate against this; it exists as the contract reference and for harness-side validation later. All enum-like values are the game XML's Type keys (e.g. TERRAIN_GRASS, UNIT_SCOUT), so state joins directly against XML-derived rules data. Everything in this file is restricted to what the human player could legitimately see - never unrevealed map, other civs' internals, or anything else fog-of-war hides. COORDINATES: every x/y pair in this document uses screen/matrix convention, NOT the game engine's native one - (0,0) is the NORTHWEST corner, x increases east, y increases SOUTH. This is a deliberate inversion of the engine's own y-up coordinate space, applied once at export time (see game.mapHeight and the `map` section below); it exists because every prior attempt to teach the engine's native convention through documentation and printed compass bearings still produced agents narrating north and south backwards. Do not assume higher y is north.",
     "type": "object",
     "properties": {
         "meta": {
@@ -9,8 +9,8 @@
             "description": "Export bookkeeping, not game state.",
             "properties": {
                 "schemaVersion": {
-                    "const": 1,
-                    "description": "Bumped on breaking schema changes so the harness can reject stale samples."
+                    "const": 2,
+                    "description": "Bumped on breaking schema changes so the harness can reject stale samples. Bumped 1 -> 2 when every exported y coordinate was inverted (see the `map` section description): a v1 file read as v2 would render a silently mirrored map, so the harness refuses to load anything but schemaVersion 2."
                 },
                 "trigger": {
                     "enum": ["onGameStart", "onLoadGame", "onEndGameTurn"],
@@ -339,7 +339,7 @@
         },
         "map": {
             "type": "object",
-            "description": "Every tile the player's team has ever revealed, in row-major (y, then x) order. Full snapshot each turn, no diffs. Tiles without visibleNow are revealed but fogged - remembered, possibly stale info, exactly what the player's own map shows. FIELD OMISSION IS MEANINGFUL HERE: only x, y, terrain and yields are always written; every other field is omitted when it equals the `default` recorded below. This is a different sense of omission from a missing top-level SECTION, which means the mod does not build it yet. STALENESS: on a fogged tile, improvement, route and owner are what the player last saw and may be out of date, because those three are the only things the engine remembers per team. Terrain, feature, bonus, river and the rest have no remembered variant and are always current - which is also what the game's own tile mouseover shows, so this matches the UI rather than being more or less informed than it.",
+            "description": "Every tile the player's team has ever revealed, in row-major (y, then x) order - array order only, unaffected by which direction y increases (see the top-level description's COORDINATES note: y increases SOUTH here, opposite the game engine's own y-up). Full snapshot each turn, no diffs. Tiles without visibleNow are revealed but fogged - remembered, possibly stale info, exactly what the player's own map shows. FIELD OMISSION IS MEANINGFUL HERE: only x, y, terrain and yields are always written; every other field is omitted when it equals the `default` recorded below. This is a different sense of omission from a missing top-level SECTION, which means the mod does not build it yet. STALENESS: on a fogged tile, improvement, route and owner are what the player last saw and may be out of date, because those three are the only things the engine remembers per team. Terrain, feature, bonus, river and the rest have no remembered variant and are always current - which is also what the game's own tile mouseover shows, so this matches the UI rather than being more or less informed than it.",
             "properties": {
                 "tiles": {
                     "type": "array",

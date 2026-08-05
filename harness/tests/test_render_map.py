@@ -135,11 +135,13 @@ LANDMARKS = landmarks()
 
 
 @pytest.mark.parametrize("view", render_map.VIEWS)
-def test_rows_run_from_high_y_down(view):
-    """North is up. Getting this backwards mirrors every directional judgement."""
+def test_rows_run_from_low_y_up(view):
+    """North is up. y now increases SOUTH (schemaVersion 2), so ascending y
+    prints north-to-south top-to-bottom. Getting this backwards mirrors every
+    directional judgement."""
     g = grid(40, view)
-    assert g.ys == sorted(g.ys, reverse=True)
-    assert g.ys[0] > g.ys[-1]
+    assert g.ys == sorted(g.ys)
+    assert g.ys[0] < g.ys[-1]
 
 
 @pytest.mark.parametrize("view", render_map.VIEWS)
@@ -165,15 +167,17 @@ def test_compass_rules_survive_brief(run=None):
 def test_north_is_up_matches_the_terrain_banding():
     """Independent check: the sample's own terrain says which way is north.
 
-    y=0 is the south pole edge and y rises toward the equator, so tundra must
-    render ABOVE nothing and jungle must render below it in row order - i.e.
-    the tundra row appears later in the output than the jungle rows.
+    y=0 is now the NORTH pole edge and y rises toward the equator then on
+    toward the south pole (schemaVersion 2 - see AdvisorStateWriter._invertY),
+    so tundra (near the pole) must have HIGHER y than jungle (near the
+    equator) - i.e. the tundra row appears later in the output than the
+    jungle rows.
     """
     tiles = LANDMARKS["t40_tiles"]
     tundra_ys = set(t["y"] for t in tiles if t["terrain"] == "TERRAIN_TUNDRA")
     jungle_ys = set(t["y"] for t in tiles if t.get("feature") == "FEATURE_JUNGLE")
     assert tundra_ys and jungle_ys
-    assert max(tundra_ys) < min(jungle_ys), "sample banding changed; recheck the axis"
+    assert max(tundra_ys) > min(jungle_ys), "sample banding changed; recheck the axis"
 
     text = render_map.render(state(40), "settle")
     lines = text.split("\n")
@@ -563,19 +567,21 @@ def test_is_coastal_matches_an_independent_computation():
 
 def test_coastal_separates_two_adjacent_near_identical_sites():
     """The whole second-city call turned on this one-tile difference."""
+    # (78,37)/(78,38): mapHeight 52, so new y = 51 - old y (were (78,14)/(78,13)).
     s = state(34)
-    assert s.is_coastal((78, 14))[0] is True
-    assert s.is_coastal((78, 13))[0] is False
-    text = render_map.render(s, "settle", (78, 14), 1)
+    assert s.is_coastal((78, 37))[0] is True
+    assert s.is_coastal((78, 38))[0] is False
+    text = render_map.render(s, "settle", (78, 37), 1)
     assert "coastal    yes" in text
-    assert "coastal    no" in render_map.render(s, "settle", (78, 13), 1)
+    assert "coastal    no" in render_map.render(s, "settle", (78, 38), 1)
 
 
 def test_overlap_with_existing_cities_is_counted_for_you():
+    # mapHeight 52, so new y = 51 - old y (were (78,14), (78,13), (75,18)).
     s = state(34)
     lisbon = [c for c in s.cities if c["name"] == "Lisbon"][0]
     owned = set(s.city_cross(lisbon["x"], lisbon["y"]))
-    for site in [(78, 14), (78, 13), (75, 18)]:
+    for site in [(78, 37), (78, 38), (75, 33)]:
         expected = len([p for p in s.city_cross(*site) if p in owned])
         text = render_map.render(s, "settle", site, 1)
         if expected:
@@ -588,7 +594,7 @@ def test_cross_reports_settler_distance():
     s = state(34)
     settler = [u for u in s.units if u["type"] == "UNIT_SETTLER"][0]
     start = (settler["x"], settler["y"])
-    site = (78, 14)
+    site = (78, 37)  # mapHeight 52, so new y = 51 - old y (was (78,14)).
     assert s.distance(start, site) == s.land_distance(start, site)
     text = render_map.render(s, "settle", site, 1)
     assert "%d tiles to walk" % s.land_distance(start, site) in text
@@ -605,7 +611,7 @@ def test_cross_leads_with_the_walk_when_it_differs():
     s = state(34)
     settler = [u for u in s.units if u["type"] == "UNIT_SETTLER"][0]
     start = (settler["x"], settler["y"])
-    site = (71, 18)
+    site = (71, 33)  # mapHeight 52, so new y = 51 - old y (was (71,18)).
     assert s.distance(start, site) == 4
     assert s.land_distance(start, site) == 16
     text = render_map.render(s, "settle", site, 1)
@@ -617,7 +623,7 @@ def test_land_distance_is_none_across_water():
     s = state(34)
     water = [p for p, t in s.tiles.items() if t.get("plotType") == "PLOT_OCEAN"]
     assert water
-    assert s.land_distance((75, 15), water[0]) is None
+    assert s.land_distance((75, 36), water[0]) is None  # was (75,15)
 
 
 def test_land_distance_matches_run_history():
@@ -625,15 +631,17 @@ def test_land_distance_matches_run_history():
     import run_history
     s = state(34)
     raw = json.load(open(sample(34), encoding="utf-8"))
-    for target in [(71, 18), (69, 21), (78, 14)]:
-        mine = s.land_distance((75, 15), target)
-        theirs, _ = run_history.land_path(raw, (75, 15), target)
+    # mapHeight 52, so new y = 51 - old y (were (71,18), (69,21), (78,14),
+    # origin (75,15)).
+    for target in [(71, 33), (69, 30), (78, 37)]:
+        mine = s.land_distance((75, 36), target)
+        theirs, _ = run_history.land_path(raw, (75, 36), target)
         assert mine == theirs, target
 
 
 def test_settler_distance_still_says_it_is_not_turns():
     """Whichever figure leads, neither is turns - terrain costs more."""
-    text = render_map.render(state(34), "settle", (78, 14), 1)
+    text = render_map.render(state(34), "settle", (78, 37), 1)  # was (78,14)
     assert "LOWER BOUND" in text, "Chebyshev is not turns; say so"
 
 
@@ -648,14 +656,15 @@ def test_empty_build_queue_reads_as_a_fact_not_a_formatting_bug():
 def test_around_crops_the_resource_list_to_what_the_grid_shows():
     """A cropped grid beside a whole-map resource list invites a false join."""
     s = state(34)
-    text = render_map.render(s, "settle", (78, 14), 2)
+    site = (78, 37)  # mapHeight 52, so new y = 51 - old y (was (78,14)).
+    text = render_map.render(s, "settle", site, 2)
     listed = set()
     for line in text.split("\n"):
         if line.startswith("  (") and "BONUS_" in line:
             coords = line.strip()[1:].split(")")[0]
             listed.add(tuple(int(v) for v in coords.split(",")))
     assert listed, "expected some resources in this crop"
-    xs, ys, _ = render_map.select_region(s, (78, 14), 2)
+    xs, ys, _ = render_map.select_region(s, site, 2)
     for pos in listed:
         assert pos[0] in set(xs) and pos[1] in set(ys), pos
     far = [t for t in LANDMARKS["t34_tiles"]
@@ -905,41 +914,44 @@ def test_settle_reports_legality_of_the_tile_each_settler_stands_on():
 def test_improved_yields_are_marked_wherever_yields_are_shown():
     """Displayed yields include improvements, which flatters overlapping sites.
 
-    WHEAT (76,16) reads 2/1/1 at turn 0 and 5/1/1 at turn 34 once Lisbon farms it.
+    WHEAT (76,35) reads 2/1/1 at turn 0 and 5/1/1 at turn 34 once Lisbon farms it.
+    (mapHeight 52, so new y = 51 - old y - was (76,16).)
     Comparing two candidate sites then compares improved tiles inside your borders
     against raw tiles outside them - so the site that costs you the most overlap
     looks the strongest. Base yield is not recoverable from the export, so the
     honest fix is to mark the affected tiles, not to pretend we can undo them.
     """
     s = state(34)
-    assert s.tiles[(76, 16)]["yields"] == [5, 1, 1]
-    assert state(0).tiles[(76, 16)]["yields"] == [2, 1, 1]
+    assert s.tiles[(76, 35)]["yields"] == [5, 1, 1]
+    assert state(0).tiles[(76, 35)]["yields"] == [2, 1, 1]
 
-    text = render_map.render(s, "settle", (78, 15), 1)
-    row = [l for l in text.split("\n") if l.startswith("  (76,16)")][0]
+    text = render_map.render(s, "settle", (78, 36), 1)  # was (78,15)
+    row = [l for l in text.split("\n") if l.startswith("  (76,35)")][0]
     assert row.rstrip().endswith("+"), row
     assert "ALREADY INCLUDES an improvement" in text
 
     # A site with no developed tiles in its cross gets neither mark nor note.
-    clean = render_map.render(s, "settle", (79, 13), 1)
+    clean = render_map.render(s, "settle", (79, 38), 1)  # was (79,13)
     assert "ALREADY INCLUDES an improvement" not in clean
 
 
 def test_goody_huts_are_not_counted_as_improved_yield():
     """A goody hut lives in the `improvement` field but is not development.
 
-    Turn 0 has one at (75,13) inside the settler's own cross. Marking it would fire
-    the whole advisory on a turn when nothing has been developed at all.
+    Turn 0 has one at (75,38) inside the settler's own cross (mapHeight 52, so
+    new y = 51 - old y - was (75,13), settler cross was (75,15)). Marking it
+    would fire the whole advisory on a turn when nothing has been developed at
+    all.
     """
     s = state(0)
-    hut = s.tiles[(75, 13)]
+    hut = s.tiles[(75, 38)]
     assert hut["improvement"] == "IMPROVEMENT_GOODY_HUT"
     assert not render_map.yield_is_improved(hut)
     assert not any(
         render_map.yield_is_improved(s.tiles[p])
-        for p in s.city_cross(75, 15) if p in s.tiles
+        for p in s.city_cross(75, 36) if p in s.tiles
     )
-    assert "ALREADY INCLUDES" not in render_map.render(s, "settle", (75, 15), 1)
+    assert "ALREADY INCLUDES" not in render_map.render(s, "settle", (75, 36), 1)
 
 
 def test_roads_do_not_count_as_improved_yield():
@@ -960,7 +972,7 @@ def test_roads_do_not_count_as_improved_yield():
 def test_yields_view_warns_that_its_numbers_include_improvements():
     text = render_map.render(state(34), "yields")
     assert "DISPLAYED yields" in text
-    rows = [l for l in text.split("\n") if l.startswith("  (76,16)")]
+    rows = [l for l in text.split("\n") if l.startswith("  (76,35)")]  # was (76,16)
     assert rows and rows[0].rstrip().endswith("+"), rows
 
 
@@ -1036,16 +1048,17 @@ def test_yields_with_no_cities_still_presents_the_grid_as_the_point():
 def test_counts_separate_new_land_from_land_you_already_own():
     """Raw counts credit a site with tiles inside your existing cities' radii.
 
-    At turn 34 (78,15) and (79,13) read 13 vs 12 workable land - near-identical -
+    At turn 34 (78,36) and (79,38) read 13 vs 12 workable land - near-identical -
     while the land actually NEW to the empire is 7 vs 11. The raw count inflates
     exactly the sites that overlap most, i.e. the ones that gain you least.
+    (mapHeight 52, so new y = 51 - old y - were (78,15), (79,13), (74,18).)
     """
     s = state(34)
     already = set()
     for city in s.cities:
         already.update(s.city_cross(city["x"], city["y"]))
 
-    for site in [(78, 15), (79, 13), (74, 18)]:
+    for site in [(78, 36), (79, 38), (74, 33)]:
         cross = s.city_cross(*site)
         new_land = len([
             p for p in cross
@@ -1066,7 +1079,7 @@ def test_counts_separate_new_land_from_land_you_already_own():
 def test_new_to_empire_block_is_absent_when_nothing_overlaps():
     """With no overlap the raw counts are already the new counts - saying it twice
     would be noise, and at turn 0 there are no cities at all."""
-    assert "NEW to your empire" not in render_map.render(state(0), "settle", (75, 15), 1)
+    assert "NEW to your empire" not in render_map.render(state(0), "settle", (75, 36), 1)
 
 
 def test_fog_key_survives_brief_in_the_views_that_draw_fog():
@@ -1085,14 +1098,15 @@ def test_fog_key_survives_brief_in_the_views_that_draw_fog():
 def test_landlocked_note_appears_only_when_it_changes_how_counts_read():
     """The counterweight has to sit beside the numbers it counterweights.
 
-    An agent trial compared "17 workable land" at (78,13) against "15" at (78,14)
-    and took the landlocked site. Coastal-ness was prose above the table while the
+    An agent trial compared "17 workable land" at (78,38) against "15" at
+    (78,37) and took the landlocked site (mapHeight 52, so new y = 51 - old
+    y - were (78,13)/(78,14)). Coastal-ness was prose above the table while the
     land/water split was numbers inside it, which invites weighing the wrong thing.
     """
     s = state(34)
-    landlocked = render_map.render(s, "settle", (78, 13), 1)
-    coastal = render_map.render(s, "settle", (78, 14), 1)
-    assert not s.is_coastal((78, 13))[0] and s.is_coastal((78, 14))[0]
+    landlocked = render_map.render(s, "settle", (78, 38), 1)
+    coastal = render_map.render(s, "settle", (78, 37), 1)
+    assert not s.is_coastal((78, 38))[0] and s.is_coastal((78, 37))[0]
     assert "NOT COASTAL - how to read the" in landlocked
     assert "NOT COASTAL - how to read the" not in coastal
 
@@ -1102,7 +1116,7 @@ def test_landlocked_note_does_not_claim_water_tiles_are_unworkable():
     sets for the WHOLE TEAM - not on the city being coastal. So a landlocked city
     does work its water tiles; what it loses is Harbour/Lighthouse/work boats.
     Saying otherwise would teach the reader a false rule."""
-    text = render_map.render(state(34), "settle", (78, 13), 1)
+    text = render_map.render(state(34), "settle", (78, 38), 1)  # was (78,13)
     assert "they ARE workable" in text
     assert "Fishing" in text
     for false_claim in ("wasted", "unworkable", "cannot be worked", "useless"):
@@ -1110,7 +1124,7 @@ def test_landlocked_note_does_not_claim_water_tiles_are_unworkable():
 
 
 def test_landlocked_note_names_the_strategic_cost_and_leaves_the_call_open():
-    text = render_map.render(state(34), "settle", (78, 13), 1)
+    text = render_map.render(state(34), "settle", (78, 38), 1)  # was (78,13)
     assert "naval unit production" in text
     assert "overseas" in text
     # Presents the trade-off; must not resolve it.
@@ -1118,7 +1132,7 @@ def test_landlocked_note_names_the_strategic_cost_and_leaves_the_call_open():
 
 
 def test_coastal_line_names_what_coastal_actually_buys():
-    text = render_map.render(state(34), "settle", (78, 14), 1)
+    text = render_map.render(state(34), "settle", (78, 37), 1)  # was (78,14)
     assert "work boats" in text and "naval units" in text
 
 
@@ -1131,11 +1145,12 @@ def test_river_centre_caveat_appears_only_on_a_river_site():
     the strength of the unqualified wording, so the bound is stated where the claim
     is made.
     """
+    # mapHeight 52, so new y = 51 - old y (were (76,16), (75,15)).
     s = state(0)
-    river = render_map.render(s, "settle", (76, 16), 1)
-    lake = render_map.render(s, "settle", (75, 15), 1)
-    assert s.tiles[(76, 16)].get("river")
-    assert s.tiles[(75, 15)].get("freshWater") and not s.tiles[(75, 15)].get("river")
+    river = render_map.render(s, "settle", (76, 35), 1)
+    lake = render_map.render(s, "settle", (75, 36), 1)
+    assert s.tiles[(76, 35)].get("river")
+    assert s.tiles[(75, 36)].get("freshWater") and not s.tiles[(75, 36)].get("river")
 
     assert "on a river - fresh water" in river
     assert "worth no more than a lake" in river
@@ -1180,13 +1195,14 @@ def test_one_tile_off_the_coast_is_flagged_only_when_a_step_fixes_it():
     the wording states the fact and hands the trade back to the reader.
     """
     s = state(34)
-    # (78,13) is landlocked with coastal legal neighbours; (79,14) is coastal.
-    assert not s.is_coastal((78, 13))[0]
-    assert s.is_coastal((79, 14))[0]
+    # (78,38) is landlocked with coastal legal neighbours; (79,37) is coastal.
+    # (was (78,13)/(79,14) pre-migration - mapHeight 52, so new y = 51 - old y.)
+    assert not s.is_coastal((78, 38))[0]
+    assert s.is_coastal((79, 37))[0]
 
-    text = render_map.render(s, "settle", (78, 13), 1)
+    text = render_map.render(s, "settle", (78, 38), 1)
     assert "ONE TILE OFF THE COAST" in text
-    for pos in s.coastal_one_step_away((78, 13))[:1]:
+    for pos in s.coastal_one_step_away((78, 38))[:1]:
         assert "(%d,%d)" % pos in text
 
     assert "ONE TILE OFF THE COAST" not in render_map.render(s, "settle", (79, 14), 1)
@@ -1522,15 +1538,16 @@ def test_military_own_unit_line_reports_bearing_to_nearest_rival():
 
 def test_bearing_matches_run_history_convention():
     """Same axis convention as run_history.bearing() - dominant axis leads,
-    higher y is north. Kept as a copy rather than a shared import (both tools
-    are standalone scripts), so this guards the two from drifting apart.
+    higher y is SOUTH (schemaVersion 2 - see AdvisorStateWriter._invertY).
+    Kept as a copy rather than a shared import (both tools are standalone
+    scripts), so this guards the two from drifting apart.
     """
     s = state(0)
-    assert s.bearing((10, 10), (10, 15)) == "N"
-    assert s.bearing((10, 10), (10, 5)) == "S"
+    assert s.bearing((10, 10), (10, 15)) == "S"
+    assert s.bearing((10, 10), (10, 5)) == "N"
     assert s.bearing((10, 10), (15, 10)) == "E"
     assert s.bearing((10, 10), (5, 10)) == "W"
-    assert s.bearing((10, 10), (9, 15)) == "NNW"
+    assert s.bearing((10, 10), (9, 15)) == "SSW"
     assert s.bearing((10, 10), (10, 10)) == ""
 
 
@@ -1617,9 +1634,13 @@ def test_city_cross_is_21_tiles_minus_corners():
 def test_min_city_range_blocks_a_square_not_a_circle():
     s = state(36)
     lisbon = LANDMARKS["t36_cities"]["Lisbon"]
-    corner = (lisbon[0] + 2, lisbon[1] + 2)
+    # -2,-2 (southwest) rather than +2,+2: Oporto sits northeast of Lisbon, so
+    # the +2,+2 corner now lands inside ITS range too (post-migration
+    # coordinates), which would make this test about Oporto's range, not
+    # Lisbon's. Southwest is clear of every other known city on this turn.
+    corner = (lisbon[0] - 2, lisbon[1] - 2)
     assert any("Chebyshev" in r for r in s.found_blockers(corner))
-    outside = (lisbon[0] + 3, lisbon[1] + 2)
+    outside = (lisbon[0] - 3, lisbon[1] - 2)
     assert not any("Chebyshev" in r for r in s.found_blockers(outside))
 
 
@@ -1644,7 +1665,7 @@ def test_every_view_renders_every_sample_turn(path, view):
     assert text.endswith("\n")
     assert "LEGEND" in text
     assert "THIS VIEW OMITS" in text
-    assert "NORTH IS UP" in text
+    assert "N ^ NORTH" in text and "S v SOUTH" in text
 
 
 @pytest.mark.parametrize("view", render_map.VIEWS)

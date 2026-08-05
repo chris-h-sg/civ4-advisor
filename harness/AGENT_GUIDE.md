@@ -28,13 +28,9 @@ If you must grep by hand, the install holds ~18 copies of each file. Take `<inst
 
 ## Map orientation
 
-**North is up. Higher `y` is north, higher `x` is east. (0,0) is the southwest corner.**
+North is up, `(0,0)` is the northwest corner — ordinary screen coordinates. The map usually wraps in `x` (`game.wrapX`) and never in `y`, so the short way east may be around the seam.
 
-In testing, **ten out of ten agents got this backwards** while reading coordinates correctly — calling a northern neighbour "south". East/west was never wrong; only the `y` axis. Coordinates stayed right, so nothing looked wrong and the whole strategic picture came out mirrored.
-
-**All three tools now state direction so you don't have to derive it.** The map grid is bracketed by `N ^ NORTH` above and `S v SOUTH` below; `run_history` prints a bearing beside every position (`16 NNW of Lisbon`); `render_map.py --view military` prints one beside every rival-unit sighting and every own-unit row. **Use those words rather than working it out from the numbers** — that derivation is the step that has failed every time. For any other pair of coordinates, use `bearing.py` rather than doing the arithmetic by hand.
-
-The map usually wraps in `x` (`game.wrapX`) and never in `y`, so the short way east may be around the seam. The printed bearings and distances already account for it.
+**Use the tools' printed direction rather than reading dx/dy by hand.** The grid is bracketed by `N ^ NORTH` / `S v SOUTH`; `run_history` and `render_map.py --view military` print a bearing (`16 NNW of Lisbon`) beside every position. For any other pair of coordinates, use `bearing.py` — the wrap handling above is already built into all three.
 
 ## The tools
 
