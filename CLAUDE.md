@@ -19,9 +19,11 @@ The only contract between the two parts is **the JSON file on disk**. Neither pa
 
 ## Current phase — what's actually being built right now
 
-The **mod is complete** for the current scope: it exports the full schema and keeps a per-game turn history. What's being built now is **`harness/` tooling** — first the map renderer, since raw `map.tiles` is the one part of the export an agent cannot reason over spatially.
+The **mod is complete** for the current scope: it exports the full schema and keeps a per-game turn history. **`harness/`'s three planned tools are also built** — `render_map.py`, `run_history.py` and `rules.py` — and the whole setup has now been exercised end to end in two live advisor trials.
 
-One curated sample exists — `samples/baseline-early-game/`, turns 0–43 on default settings, covering first- and second-city placement, fog staleness, rival observation and resource connection. Note its provenance caveat (see that folder's README): five increment-⑤ fields are backfilled on every turn except 40 and 43. Still outstanding: runs that vary the setup (barbarian options, climate, sea level), since that one sits in the most default corner of the space.
+One curated sample exists — `samples/baseline-early-game/`, turns 0–43 on default settings, covering first- and second-city placement, fog staleness, rival observation and resource connection. Note its provenance caveat (see that folder's README): five increment-⑤ fields are backfilled on every turn except 40 and 43.
+
+**Everything unbuilt — mod, harness and samples — is queued in `ROADMAP.md`**, with the agent-trial evidence behind each item. That is the single roadmap; this file and the per-folder READMEs describe what exists and why it is shaped the way it is.
 
 Do not implement action execution until explicitly asked — that is a future phase, not current scope.
 
