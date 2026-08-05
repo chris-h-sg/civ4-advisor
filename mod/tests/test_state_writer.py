@@ -552,7 +552,14 @@ class City(object):
     def __init__(self, cityId, name=u"Thebes", x=32, y=40, owner=PLAYER_ID,
                  unit=2, building=None, project=None, process=None,
                  production=10, productionNeeded=60, none=False, worked=None,
-                 bonuses=(0, 1), coastal=False, buildings=(0,)):
+                 bonuses=(0, 1), coastal=False, buildings=(0,),
+                 hammers=4, foodProduction=0):
+        # The two halves of the city screen's production figure, modelled the way
+        # the engine computes them: `hammers` is what a (bIgnoreFood=True) call
+        # returns, and `foodProduction` is the extra additive term a food build
+        # gets on top. Defaults are an ordinary build, where the two calls agree.
+        self._hammers = hammers
+        self._foodProduction = foodProduction
         # Building indices standing in this city. The Palace by default, which is
         # what a real capital carries from turn 0.
         self._buildings = buildings
@@ -649,8 +656,14 @@ class City(object):
         return self._productionNeeded
 
     def getCurrentProductionDifference(self, bIgnoreFood, bOverflow):
+        # Mirrors CvCity::getProductionDifference: bIgnoreFood suppresses one
+        # ADDITIVE term and leaves the hammer expression untouched, which is what
+        # makes the two calls subtract cleanly. A mock returning one constant
+        # regardless of its arguments cannot tell the two halves apart.
         self.productionDifferenceArgs.append((bIgnoreFood, bOverflow))
-        return 4
+        if bIgnoreFood:
+            return self._hammers
+        return self._hammers + self._foodProduction
 
     def getCulture(self, playerId):
         self.cultureArgs.append(playerId)
@@ -1484,7 +1497,8 @@ class CityTests(unittest.TestCase):
             "id": 6, "name": "Thebes", "x": 32, "y": 40,
             "population": 2, "food": 14, "foodPerTurn": 3, "growthThreshold": 24,
             "producing": "UNIT_WORKER", "production": 10, "productionNeeded": 60,
-            "productionPerTurn": 4, "culture": 12, "cultureThreshold": 100,
+            "productionPerTurn": 4, "productionFromHammers": 4,
+            "productionFromFood": 0, "culture": 12, "cultureThreshold": 100,
             "happy": 4, "unhappy": 1, "healthy": 5, "unhealthy": 2,
             "workedTiles": [[31, 40], [32, 40], [33, 40]],
             "buildings": ["BUILDING_PALACE"],
@@ -1512,9 +1526,37 @@ class CityTests(unittest.TestCase):
         city = City(0)
         buildWith(cities=[city])
         self.assertEqual(city.foodDifferenceArgs, [True])
-        self.assertEqual(city.productionDifferenceArgs, [(False, True)])
+        # Both halves of the production bar: the total the city screen prints and
+        # the hammers-only figure it draws underneath it. bOverflow stays True on
+        # both, so the halves carry the same one-off overflow the total does.
+        self.assertEqual(city.productionDifferenceArgs, [(False, True), (True, True)])
         self.assertEqual(city.unhappyArgs, [0])
         self.assertEqual(city.badHealthArgs, [False])
+
+    def test_food_build_splits_production_into_halves(self):
+        # A Settler or Worker converts the food surplus into hammers, so the total
+        # the city screen shows is larger than the city's own hammer rate. The
+        # split is the whole point of the two fields: while such a build is queued
+        # nothing else in the file separates them, since the food is already inside
+        # productionPerTurn and foodPerTurn reads 0.
+        _, parsed = buildWith(cities=[City(0, hammers=7, foodProduction=6)])
+        city = parsed["cities"][0]
+        self.assertEqual(city["productionPerTurn"], 13)
+        self.assertEqual(city["productionFromHammers"], 7)
+        self.assertEqual(city["productionFromFood"], 6)
+
+    def test_production_halves_always_sum_to_the_total(self):
+        # The invariant the two fields are worth having: whatever the city is
+        # doing, the halves account for the whole figure and neither is derived
+        # by the harness. Disorder is the degenerate case - the engine returns 0
+        # outright, so all three agree at zero rather than disagreeing.
+        for hammers, food in ((4, 0), (7, 6), (0, 0), (0, 5)):
+            _, parsed = buildWith(
+                cities=[City(0, hammers=hammers, foodProduction=food)])
+            city = parsed["cities"][0]
+            self.assertEqual(
+                city["productionFromHammers"] + city["productionFromFood"],
+                city["productionPerTurn"])
 
     def test_unicode_city_name_round_trips(self):
         # City names are the first game-supplied strings in the export; they come

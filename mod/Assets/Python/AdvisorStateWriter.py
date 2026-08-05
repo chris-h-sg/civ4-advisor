@@ -706,6 +706,7 @@ def _buildCities(ctx):
 
 def _buildCity(ctx, city):
 	producing = _buildProducing(ctx, city)
+	total, hammers, food = _productionRates(city)
 	return {
 		'id': city.getID(),
 		# A wstring: unicode, and the first game-supplied text in the export.
@@ -721,11 +722,11 @@ def _buildCity(ctx, city):
 		'producing': producing,
 		'production': city.getProduction(),
 		'productionNeeded': _buildProductionNeeded(city, producing),
-		# (bIgnoreFood=False, bOverflow=True) matches what the city screen shows:
-		# food converted to hammers counts, and so does carried-over overflow from
-		# the previous completed build (which makes this a one-turn figure, not a
-		# steady rate, on the turn right after something finished).
-		'productionPerTurn': city.getCurrentProductionDifference(False, True),
+		# The figure the city screen shows, and the two halves it is made of - see
+		# _productionRates for why both halves are exported rather than derived.
+		'productionPerTurn': total,
+		'productionFromHammers': hammers,
+		'productionFromFood': food,
 		# Culture is per-player within a city; the owner's share is the one that
 		# counts against cultureThreshold for the next border pop.
 		'culture': city.getCulture(ctx.playerId),
@@ -840,6 +841,39 @@ def _buildProducing(ctx, city):
 	if city.isProductionProcess():
 		return ctx.gc.getProcessInfo(city.getProductionProcess()).getType()
 	return None
+
+
+def _productionRates(city):
+	'''(total, hammers, food) hammers per turn, as the city screen's bar splits them.
+
+	(bIgnoreFood=False, bOverflow=True) is the total the city screen prints: food
+	converted to hammers counts, and so does carried-over overflow from the previous
+	completed build - which makes it a one-turn figure rather than a steady rate on
+	the turn right after something finished. Both halves inherit that.
+
+	The split is the ENGINE'S OWN, not one invented here: CvCity::getProductionBarPercentages
+	sizes its two-tone bar with exactly this subtraction, calling
+	getCurrentProductionDifference(True, True) for the hammer part and taking the food
+	part as the difference from the (False, True) total. The two calls subtract cleanly
+	in every state because bFoodProduction gates one additive term inside
+	getProductionDifference and changes nothing else - the hammer expression is
+	identical between them. Under disorder that function returns 0 outright, so all
+	three come back 0 together rather than disagreeing.
+
+	Exported rather than left to the harness because the split is NOT recoverable from
+	a single turn's file: while a food build is queued the food is already inside the
+	total and foodDifference reads 0, so nothing else in the export separates them, and
+	the previous turn's figure does not decompose this one because worked tiles change
+	between turns. It is not recoverable from the XML either - the engine's test is the
+	unit's bFood flag OR a civic with isMilitaryFoodProduction (Police State) making
+	every military unit food-fed, so the qualifying set is wider than CIV4UnitInfos.xml
+	shows. Only a unit order can qualify at all; buildings, projects and processes never
+	consume food.
+
+	Cost is one extra C++ call per city, against a map sweep of thousands of plots.'''
+	total = city.getCurrentProductionDifference(False, True)
+	hammers = city.getCurrentProductionDifference(True, True)
+	return total, hammers, total - hammers
 
 
 def _buildProductionNeeded(city, producing):

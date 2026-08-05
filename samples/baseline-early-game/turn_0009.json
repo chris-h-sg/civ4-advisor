@@ -16,6 +16,8 @@
       "population": 1,
       "producing": "UNIT_WORKER",
       "production": 6,
+      "productionFromFood": 0,
+      "productionFromHammers": 5,
       "productionNeeded": 60,
       "productionPerTurn": 5,
       "unhappy": 1,

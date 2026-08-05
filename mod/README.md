@@ -33,13 +33,7 @@ Only files that override base game behavior need to exist here — everything el
 
 ## Event hook architecture
 
-We do **not** copy and modify `CvEventManager.py` directly. The community-established pattern (see `REFERENCES.md`) instead:
-
-1. Leave `CvEventManager.py` untouched.
-2. Put mod-specific logic in a separate `CvCustomEventManager.py`, subclassing the base class.
-3. Edit only the top of `CvEventInterface.py` (the entry point the C++ engine actually calls into) to import and instantiate the custom class instead of the base one.
-
-The commonly-cited reason is compatibility with *other* mods stacking on top of yours, which doesn't really apply here (we're the only mod). It matters for us anyway: a full copy of `CvEventManager.py` is 1000+ lines with a handful changed — a lot of surface area to review and easy to drift from the original. `CvCustomEventManager.py` contains only what we actually added.
+We do **not** copy and modify `CvEventManager.py` directly. The community-established pattern (see `REFERENCES.md` and `CLAUDE.md` for the full reasoning): leave `CvEventManager.py` untouched, put mod logic in `CvCustomEventManager.py` subclassing it, and edit only the top of `CvEventInterface.py` to point at the custom class.
 
 This does **not** buy the event manager the live-editing that `AdvisorStateWriter.py` gets (see below) — the engine holds a reference to an object instantiated from the old class, so editing this file still needs a restart. That's why `_exportState` is kept deliberately thin: logic put here is logic you have to restart to iterate on.
 
@@ -53,7 +47,7 @@ The three Python files have **different** rules. The asymmetry is worth internal
 | `CvCustomEventManager.py` | **full game restart required** |
 | `LocalConfig.py` | **full game restart required** |
 
-`reload()` does **not** work in this interpreter — it returns successfully and silently leaves the old code in place, with no exception and nothing in the log. Measured in-game, not assumed; see `REFERENCES.md`. Suspect a restart-in-disguise any time hot-reload appears to work.
+`reload()` does **not** work in this interpreter — it returns successfully and silently leaves the old code in place, with no exception and nothing in the log (measured in-game; see `REFERENCES.md`). Suspect a restart-in-disguise any time hot-reload appears to work.
 
 What does work, and what `_refreshStateWriter()` in `CvCustomEventManager.py` does, is `execfile` the source into the existing module's `__dict__` — the module object stays the same, its functions are just rebound from current source text. It needs a real absolute path, which neither `__file__` nor `sys.path` can supply here, so it comes from `MOD_PYTHON_DIR` in `LocalConfig.py`. That setting is optional: omit it and everything still works, you just restart to pick up edits.
 
@@ -67,23 +61,15 @@ Local install/Mods paths are machine-specific and not committed — see `config.
 
 ## Current state
 
-State is exported from three hooks, none of which is `onBeginPlayerTurn`/`onEndPlayerTurn` — those don't bound the player's actual interactive turn despite the naming (no hook fires during actual play; both only fire back-to-back once "End Turn" is clicked, for every player including AI, followed by `onBeginGameTurn`/`onEndGameTurn` — all at turn *end*, not beginning. Confirmed via in-game instrumentation, corroborated by TGA's Python Tutorial — see `REFERENCES.md`):
+State is exported from three hooks — `onGameStart`, `onLoadGame` and `onEndGameTurn`, **not** `onBeginPlayerTurn`/`onEndPlayerTurn`, which don't bound the player's actual interactive turn despite the naming. Full reasoning for the three-hook choice, the `iGameTurn + 1` numbering, and why those two don't work is in root `CLAUDE.md`.
 
-- **`onGameStart`** — fires once, before the game's true first turn has been played. No numbering adjustment needed.
-- **`onLoadGame`** — `onGameStart` only fires for a new game, not a resumed save, so without this a loaded save would silently miss its first export.
-- **`onEndGameTurn`** — fires *last* in a round's processing, after the human player and every AI civ. Freshest available snapshot of what the player is about to see once they regain control, since nothing marks that exact moment. Uses `iGameTurn + 1`, since the round it reports just finished.
+State is written one file per turn (`turn_0001.json`, `turn_0002.json`, ...) inside a per-game folder under `state/` at the repo root, against the schema in `schema/state.schema.json`. The folder is named `{leader}_{gameId}`, `gameId` being a synthetic value the mod writes into `CvGame.scriptData` the first time it's empty (the engine exposes no readable persistent game ID) — see root `CLAUDE.md` for the full reasoning and the read-only alternative that was rejected. **Every schema section is implemented**, so the exported file validates against the full schema and an empty list means what it says (this was not always true — see `CLAUDE.md` on field vs. section omission for how a missing field still differs from a missing section).
 
-State is written one file per turn (`turn_0001.json`, `turn_0002.json`, ...) inside a per-game folder under `state/` at the repo root, against the schema in `schema/state.schema.json`. The folder is named `{leader}_{gameId}`, where `gameId` is generated once (from the wall-clock time) and written into `CvGame.scriptData` the first time it's empty — the engine exposes no readable persistent game ID (confirmed against the SDK source: no seed getter exists anywhere in the Python bindings), so the mod writes one instead. `scriptData` is serialized with the save like any other game field, so every later load of that save — including a full restart — resolves to the same folder; see root `CLAUDE.md` for the full reasoning and the read-only alternative that was rejected. **Every section is now implemented** — `meta`/`game`/`player` (increment ①), `units`/`cities` (②), `map` (③), and `contacts`/`foreignUnits`/`foreignCities` (④) of the build order in root `CLAUDE.md` — so the exported file validates against the full schema, and an empty list now means what it says.
+Output is pretty-printed (2-space indent, keys sorted) rather than compact, so a turn's export can be eyeballed against the game UI and consecutive turns diff cleanly. Map tiles are the exception: each is forced onto a single line, leading with `x`/`y`, since they're rows of one long homogeneous table.
 
-That is worth stating explicitly because the rule used to be the opposite. **While a section was unimplemented it was omitted entirely, never written as an empty list** — an empty `contacts` array would otherwise have been indistinguishable from "this player has genuinely met nobody". The omission was what kept `[]` honest, and now that nothing is omitted, `[]` is unambiguous on its own.
+The map scan touches every plot on the grid (4368 on a standard map), so it's timed on every export. A slow one warns to `PythonDbg.log` unconditionally; set `LOG_TIMINGS = True` in `LocalConfig.py` for the full per-section breakdown.
 
-**Inside a tile, a unit or a foreign city, a missing field means something different**: that the field holds its documented default. In `map.tiles` only `x`, `y`, `terrain` and `yields` are always written, which keeps that section to roughly a quarter of its written-out size; `damage` is omitted from any undamaged unit (ours or a rival's), and `capital` from any foreign city that isn't one. See root `CLAUDE.md` for why, and `schema/state.schema.json` for the per-field defaults.
-
-Output is pretty-printed (2-space indent, keys sorted) rather than compact, so a turn's export can be eyeballed against what the game UI shows, and so consecutive turns diff cleanly. Map tiles are the exception on both counts: each is forced onto a single line however wide, since they're rows of one long homogeneous table, and each leads with `x`/`y` before its sorted remaining keys, so the coordinates aren't buried at the end of the line. Key order stays fixed either way, which is what diffability actually needs.
-
-The map scan touches every plot on the grid (4368 on a standard map), so it's timed on every export. A slow one warns to `PythonDbg.log` unconditionally; set `LOG_TIMINGS = True` in `LocalConfig.py` for the full per-section breakdown. Worth turning on periodically rather than once — the cost grows with how much map the player has revealed.
-
-**Note on the state output path:** it's *not* derived from `__file__` — tried, doesn't work here. The embedded interpreter reports a mod's Python module paths relative to its own `Assets/Python` search root regardless of the module's real physical location, even through the deployment junction. The path comes from `LocalConfig.py` instead.
+**Note on the state output path:** it's *not* derived from `__file__` — tried, doesn't work here (see `CLAUDE.md`). The path comes from `LocalConfig.py` instead.
 
 ## Debugging
 

@@ -33,6 +33,21 @@ Folder names say what a run is *for*, not which game produced it — the `{leade
 
   What it does *not* cover: war, any attitude change, any non-default game option, a third city, any city beyond pop 2, or any world wonder built anywhere (`wonders.built` is `[]` throughout, so that field is only exercised empty).
 
+  **Second provenance caveat — the increment ⑥ fields are genuine on `turn_0040` and `turn_0043` and derived on every other turn.** `cities[].productionFromHammers` and `cities[].productionFromFood` were added after this run was captured; those two saves were reopened and re-exported to obtain real values, and the remaining 41 city-bearing turns were **backfilled from data already in each file**. As with the five fields below, nothing in the files records this (`meta.schemaVersion` is 1 throughout), so it is written down here.
+
+  The derivation, and why it is trustworthy where it is:
+
+  - `productionFromFood` = `max(0, Σ food yield of workedTiles − 2 × population)` when `producing` is a `bFood` unit (`UNIT_SETTLER`, `UNIT_WORKER` — confirmed against `CIV4UnitInfos.xml`), else `0`.
+  - `productionFromHammers` = `productionPerTurn − productionFromFood`, i.e. **by subtraction from the exported total**, deliberately not from tile hammers × trait modifier.
+
+  **Validated against the two genuine turns**: stripping the real fields and recomputing reproduces all four city rows exactly (t40 Lisbon `6+6`, t40 Oporto `5+0`, t43 Lisbon `7+6`, t43 Oporto `6+1`). A second, independent model — tile hammers scaled by João's Imperialist +50% Settler / Expansive +25% Worker modifiers, from `CIV4UnitInfos.xml`'s `ProductionTraits` — agrees with the subtraction on **48 of 51** rows, and the three disagreements are all turns right after a build completed, where the subtraction is the correct one because it inherits the carried-over overflow that the multiplier model cannot see. No row yields negative hammers.
+
+  **The one case this derivation would get wrong does not occur in this run**, and was checked for rather than assumed: a `bFood` build on the turn immediately after another build completed. There the overflow inflates `productionPerTurn`, and subtraction attributes all of it to the hammer half. Zero such rows exist here. A future run containing one would need a real capture.
+
+  Two further limits worth knowing before reusing the formula elsewhere: food consumption is taken as a flat `2 × population`, which is right only while no city is unhealthy (the engine's actual figure is `pop × 2 − healthRate`, `CvCity.cpp:4504`) — no city in this run ever is, and the formula matches the exported `foodPerTurn` on every turn where that value is not clamped. And the 15 turns where a `bFood` build shows a derived surplus of `0` are genuinely zero (a size-1 city working two 1-food tiles), not an unresolved ambiguity.
+
+  **Consequence for testing:** the fallback branch in `harness/rules.py`, which handles captures lacking these fields, is **no longer exercised by this sample at all** — every turn now carries them. Its coverage is the synthetic unit tests in `harness/tests/test_rules.py`. Equally, the sample-sweep assertion that the two halves sum to `productionPerTurn` is satisfied **by construction** on the 41 derived turns and is a real check only on t40 and t43. To validate the *mod* rather than the harness, re-capture rather than trusting the derived turns.
+
   **Provenance caveat — turns 0–39, 41 and 42 have five fields that were derived, not exported.** Only `turn_0040` and `turn_0043` came from a mod with `player.bonuses`, `cities[].bonuses`, `cities[].buildings`, `cities[].coastal` and `wonders`; the rest predate those fields and were backfilled from the tile improvement/route history already in each file, using the connection turns above. Nothing in the files records this (`meta.schemaVersion` is 1 throughout), so it is written down here. The derivation checks out where it can be checked: t39's values match the real t40 export exactly, and t42's match t43 except for the Horse. Everything else in these files is untouched mod output. To validate the *mod* rather than the harness, re-capture rather than trusting these five fields.
 
 ## What to capture

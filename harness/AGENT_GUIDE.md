@@ -112,7 +112,7 @@ It lists what is available now **and** what is one tech away, each blocked row c
 
 **`available` means available *this turn*.** A tech you are researching is not one you have, so a row blocked on it says `RESEARCHING NOW, ~N turns left` — that is a wait, not a plan, and it is usually the most useful line in the block.
 
-**Settlers and workers eat the city's food surplus**, so their estimates are marked `(+food, growth stops)`: the build lands sooner *and* the city stops growing while it does. That trade is yours to weigh. When one is already in the queue, every other estimate in that city is slightly optimistic, and the header says so.
+**Settlers and workers eat the city's food surplus**, so their estimates are marked `(+food, growth stops)`: the build lands sooner *and* the city stops growing while it does. That trade is yours to weigh. On a capture too old to carry the exported food/hammer split, a header line warns that the other estimates in that city run slightly fast while such a build is queued; if there is no such line, the numbers are exact.
 
 **Reach for it whenever you're about to state a rule.** Especially after `intel` shows you a rival unit: `rules.py unit UNIT_ARCHER <state>` turns a sighting into a dated tech conclusion, which is the join `intel` deliberately refuses to make for you.
 

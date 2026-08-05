@@ -1762,6 +1762,12 @@ def test_a_food_build_adds_the_food_surplus_to_its_rate():
         t43  UNIT_SETTLER   foodPerTurn 0  productionPerTurn 13   (= 6 + 7)
     Ignoring it roughly doubled the quoted time on the two builds that
     dominate turns 0-50.
+
+    THE FALLBACK PATH, as are the four tests below it: these cities omit the
+    increment-6 split deliberately. Since the baseline run was backfilled, no
+    sample turn lacks the fields any more, so these synthetic cases are the
+    ONLY coverage this branch has - it still runs for any capture predating the
+    increment. See test_the_exported_split_* for the other path.
     """
     city = {"productionPerTurn": 7, "foodPerTurn": 6, "producing": "UNIT_WARRIOR"}
     assert rules.food_build_rate(city, {"food_production": True}) == (13, True)
@@ -1803,6 +1809,135 @@ def test_the_food_note_is_stated_once_not_on_every_row(xml_root, tmp_path):
     r = build_rules(xml_root, state)
     text = rules.view_city(r, "Lisbon", state)
     assert text.count("a little optimistic") == 1
+
+
+def test_the_exported_split_prices_an_ordinary_build_at_the_hammer_half():
+    """Schema increment 6 closes the hole the "optimistic" flag papered over.
+
+    Same Lisbon t43 state as the fallback tests above, plus the split the mod
+    now exports. A Warrior's rate is the hammer half exactly - 7, not the 13
+    that includes the Settler's food - and it is a fact rather than an estimate,
+    so nothing is flagged.
+
+    These numbers were written synthetically, from the engine's own t42/t43
+    figures, before any capture carried the fields - and the re-exported
+    turn_0043 then came back with exactly this split (hammers 7, food 6),
+    confirming the reconstruction. Kept as a unit test because it pins
+    food_build_rate directly; the sample exercises the same path end to end.
+    """
+    city = {"productionPerTurn": 13, "foodPerTurn": 0,
+            "producing": "UNIT_SETTLER",
+            "productionFromHammers": 7, "productionFromFood": 6}
+    assert rules.food_build_rate(city, {"food_production": False}) == (7, False)
+    assert rules.food_build_rate(city, {"food_production": True}) == (13, True)
+
+
+def test_the_exported_split_still_adds_a_surplus_the_city_is_not_yet_eating():
+    """A food build queued in a city currently building something ordinary.
+
+    `productionFromFood` is 0 because no food build is running yet, so the
+    surplus is still in foodPerTurn and growing the city - a Settler started
+    here would take it. Same arithmetic as the fallback, reached from the
+    hammer half rather than from a total that has to be decomposed.
+    """
+    city = {"productionPerTurn": 7, "foodPerTurn": 6,
+            "producing": "UNIT_WARRIOR",
+            "productionFromHammers": 7, "productionFromFood": 0}
+    assert rules.food_build_rate(city, {"food_production": True}) == (13, True)
+    assert rules.food_build_rate(city, {"food_production": False}) == (7, False)
+
+
+def test_the_exported_split_drops_the_optimistic_caveat(xml_root, tmp_path):
+    """The flag exists only for the inference, so it must not survive the fix.
+
+    The header line is what a reader sees; asserting on food_build_rate alone
+    would leave it possible for the caveat to keep printing beside numbers that
+    no longer need it.
+    """
+    state = _city_state(tmp_path, name="Lisbon", rate=13,
+                        producing="UNIT_SETTLER")
+    city = state["cities"][0]
+    city["foodPerTurn"] = 0
+    city["productionFromHammers"] = 7
+    city["productionFromFood"] = 6
+    r = build_rules(xml_root, state)
+    text = rules.view_city(r, "Lisbon", state)
+    assert "optimistic" not in text
+
+
+def test_a_starving_city_gets_no_food_bonus_from_the_exported_split():
+    """The engine clamps the food term at 0 (std::max in getProductionDifference),
+    so a starving city exports productionFromFood 0 and the halves still sum."""
+    city = {"productionPerTurn": 4, "foodPerTurn": -2, "producing": None,
+            "productionFromHammers": 4, "productionFromFood": 0}
+    assert rules.food_build_rate(city, {"food_production": True}) == (4, False)
+
+
+def _printed_turns(text, unit_type):
+    """Pull the '~N turns' figure `view_city` printed for one unit row.
+
+    The row is `  UNIT_X   <cost>  available, ~N turns[ (+food, growth stops)]`;
+    parsed rather than re-deriving the number, since the point is to check what
+    a reader actually sees.
+    """
+    for line in text.splitlines():
+        line = line.strip()
+        if not line.startswith(unit_type + " "):
+            continue
+        assert "~" in line, "no turn estimate printed for %s: %r" % (unit_type, line)
+        return int(line.split("~", 1)[1].split()[0])
+    raise AssertionError("%s not found in:\n%s" % (unit_type, text))
+
+
+@pytest.mark.parametrize(
+    "turn, city_name, unit_type, expected_turns, food_marked", [
+        # t43 Lisbon is mid-UNIT_SETTLER: hammers=7, food=6 (already drawn),
+        # productionPerTurn=13. An ORDINARY unit must be priced at the hammer
+        # half alone, never the inflated total.
+        ("turn_0043.json", "Lisbon", "UNIT_WARRIOR", 3, False),   # 15 / 7 -> 3
+        ("turn_0043.json", "Lisbon", "UNIT_CHARIOT", 5, False),   # 30 / 7 -> 5
+        # The food build itself gets hammers + food = the full total.
+        ("turn_0043.json", "Lisbon", "UNIT_SETTLER", 8, True),    # 100 / 13 -> 8
+        # t39 Lisbon is mid-UNIT_WARRIOR (ordinary): hammers=5, food=0 drawn,
+        # but foodPerTurn=6 is a real surplus sitting UNCLAIMED. A hypothetical
+        # food build here must add that surplus on top of the hammer rate,
+        # taking it from foodPerTurn rather than the (zero) exported food half.
+        ("turn_0039.json", "Lisbon", "UNIT_SETTLER", 10, True),   # 100 / (5+6) -> 10
+        ("turn_0039.json", "Lisbon", "UNIT_WORKER", 6, True),     # 60 / (5+6) -> 6
+        ("turn_0039.json", "Lisbon", "UNIT_WARRIOR", 3, False),   # 15 / 5 -> 3
+    ])
+def test_turn_estimates_use_the_right_half_of_the_exported_split(
+        xml_root, turn, city_name, unit_type, expected_turns, food_marked):
+    """End-to-end: the printed '~N turns' figure, not just food_build_rate's
+    return value, against a real sample turn that carries the increment-6
+    split.
+
+    Closes a real gap: prior tests pinned food_build_rate() in isolation and
+    the caveat-suppression in view_city separately, but nothing chained the
+    rate all the way through turns_estimate() to the number a reader actually
+    sees, on real captured data rather than a synthetic one-city fixture.
+    Hand-computed expectations are in the parametrize table; this only checks
+    the tool reproduces them.
+    """
+    try:
+        xml_root_path = rules.resolve_xml_root()
+    except rules.RulesError as exc:
+        pytest.skip("no Civ IV install: %s" % exc)
+
+    path = os.path.join(SAMPLES, "baseline-early-game", turn)
+    if not os.path.isfile(path):
+        pytest.skip("%s is absent" % turn)
+    with open(path, encoding="utf-8") as handle:
+        state = json.load(handle)
+
+    r = rules.Rules(xml_root_path, state["game"])
+    text = rules.view_city(r, city_name, state)
+
+    assert _printed_turns(text, unit_type) == expected_turns
+    for line in text.splitlines():
+        if line.strip().startswith(unit_type + " "):
+            assert ("(+food, growth stops)" in line) == food_marked
+            break
 
 
 def test_a_settler_cost_blanked_by_bts_falls_back_to_vanilla(xml_root, tmp_path):
@@ -1864,6 +1999,104 @@ def test_the_researching_label_is_only_for_the_current_tech(xml_root, tmp_path):
     # TECH_ROOT_B gates UNIT_ELSEWHERE and is not being researched.
     elsewhere = [l for l in text.splitlines() if "TECH_ROOT_B" in l]
     assert elsewhere and all("RESEARCHING" not in l for l in elsewhere)
+
+
+@pytest.mark.parametrize("sample", sorted(
+    os.path.basename(p) for p in
+    (os.listdir(SAMPLES) if os.path.isdir(SAMPLES) else [])
+    if os.path.isdir(os.path.join(SAMPLES, p))
+))
+def test_the_production_halves_sum_on_every_sample_turn_that_has_them(sample):
+    """The increment-6 invariant, swept over the sample runs.
+
+    NOTE ON WHAT THIS PROVES. In samples/baseline-early-game only turn_0040 and
+    turn_0043 hold genuine exported values; the other 41 city-bearing turns are
+    backfilled with `hammers = productionPerTurn - food`, so the sum assertion
+    below is true BY CONSTRUCTION there and is a real check only on the two
+    genuine turns (and on any future capture). See samples/README.md's second
+    provenance caveat. The sweep is kept over everything anyway, because the
+    other two assertions - non-negativity and food-only-on-unit-builds - are
+    NOT vacuous on derived rows, and because a fresh full run should have to
+    pass all three.
+
+    On the genuine turns a sum mismatch would mean the mod's two
+    getCurrentProductionDifference calls had disagreed about the hammer half,
+    which is the one way the exported split could be wrong.
+    """
+    folder = os.path.join(SAMPLES, sample)
+    turns = sorted(f for f in os.listdir(folder) if f.startswith("turn_"))
+    if not turns:
+        pytest.skip("%s has no turn files" % sample)
+
+    checked = 0
+    for name in turns:
+        with open(os.path.join(folder, name), encoding="utf-8") as handle:
+            state = json.load(handle)
+        for city in state.get("cities") or []:
+            if "productionFromHammers" not in city:
+                continue
+            hammers = city["productionFromHammers"]
+            food = city["productionFromFood"]
+            total = city["productionPerTurn"]
+            assert hammers + food == total, (
+                "%s %s: %d + %d != %d" % (name, city["name"], hammers, food, total))
+            # Neither half is ever negative: the engine clamps the food term at
+            # std::max(0, ...) and a hammer rate cannot go below zero.
+            assert hammers >= 0 and food >= 0, "%s %s" % (name, city["name"])
+            # A building or an empty queue can never draw food.
+            producing = city.get("producing") or ""
+            if food > 0:
+                assert producing.startswith("UNIT_"), (
+                    "%s %s: food half %d on a non-unit build %r"
+                    % (name, city["name"], food, producing))
+            checked += 1
+
+    if not checked:
+        pytest.skip("%s predates schema increment 6" % sample)
+
+
+def test_the_backfill_derivation_reproduces_the_genuine_turns():
+    """The check that is NOT vacuous: derive the split, compare to real exports.
+
+    turn_0040 and turn_0043 are the only turns of the baseline run whose
+    increment-6 fields came from the mod rather than from the backfill, so they
+    are the only place the derivation can be checked against ground truth. This
+    pins the formula that produced the other 41 turns: if someone re-runs the
+    backfill with a changed rule, or edits a derived value by hand, the two
+    genuine turns stop agreeing with it and this fails.
+
+    Recomputed from workedTiles + population here rather than trusting the
+    stored numbers, which is the whole point - reading the fields back and
+    comparing them to themselves would prove nothing.
+    """
+    folder = os.path.join(SAMPLES, "baseline-early-game")
+    if not os.path.isdir(folder):
+        pytest.skip("baseline-early-game sample is absent")
+
+    # bFood units per CIV4UnitInfos.xml; food consumption is 2/pop while no
+    # city is unhealthy, which holds throughout this run.
+    bfood = {"UNIT_SETTLER", "UNIT_WORKER"}
+    checked = 0
+    for name in ("turn_0040.json", "turn_0043.json"):
+        with open(os.path.join(folder, name), encoding="utf-8") as handle:
+            state = json.load(handle)
+        tiles = {(t["x"], t["y"]): t for t in state["map"]["tiles"]}
+        for city in state["cities"]:
+            tile_food = sum(tiles[(x, y)]["yields"][0]
+                            for x, y in city["workedTiles"])
+            producing = city.get("producing") or ""
+            food = (max(0, tile_food - 2 * city["population"])
+                    if producing in bfood else 0)
+            hammers = city["productionPerTurn"] - food
+            assert food == city["productionFromFood"], (
+                "%s %s food: derived %d, exported %d"
+                % (name, city["name"], food, city["productionFromFood"]))
+            assert hammers == city["productionFromHammers"], (
+                "%s %s hammers: derived %d, exported %d"
+                % (name, city["name"], hammers, city["productionFromHammers"]))
+            checked += 1
+
+    assert checked == 4, "expected 4 genuine city rows, checked %d" % checked
 
 
 @pytest.mark.parametrize("sample", sorted(

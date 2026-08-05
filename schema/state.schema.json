@@ -248,7 +248,17 @@
                     "productionPerTurn": {
                         "type": "integer",
                         "minimum": 0,
-                        "description": "Hammers per turn as the city screen shows them (CyCity.getCurrentProductionDifference with food-to-hammer conversion and overflow included). On the turn right after a build completes this includes one-off carried-over overflow, so it is not a steady-state rate."
+                        "description": "Hammers per turn as the city screen shows them (CyCity.getCurrentProductionDifference(bIgnoreFood=False, bOverflow=True), i.e. with food-to-hammer conversion and overflow included). Always equals productionFromHammers + productionFromFood, which decompose it; see those. On the turn right after a build completes this includes one-off carried-over overflow, so it is not a steady-state rate."
+                    },
+                    "productionFromHammers": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "The hammer half of productionPerTurn: what the city produces from worked-tile production regardless of what is queued, i.e. getCurrentProductionDifference(bIgnoreFood=True, bOverflow=True). This is the rate an ORDINARY build receives. Exported rather than left to the harness because it is not recoverable from a single turn's file by any other route: while a food build is queued, productionPerTurn already contains the food and foodPerTurn reads 0, so nothing in the file separates the two halves - and last turn's figure does not decompose this one, because worked tiles change (in the baseline run Lisbon's hammers move 8 to 2 across t37-t38). Carries the same one-off overflow caveat as productionPerTurn, and reads 0 during disorder."
+                    },
+                    "productionFromFood": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "The food half of productionPerTurn: food surplus converted into hammers, 0 unless the city is currently training a unit built from food. Non-zero means the city has stopped growing and the build is landing sooner - the trade a reader needs to see. Obtained the way the game's own production bar obtains it (CvCity::getProductionBarPercentages computes exactly getCurrentProductionDifference(False, True) - getCurrentProductionDifference(True, True) to size its two-tone bar), so this is the engine's own decomposition rather than one the mod invents; bFoodProduction gates exactly one additive term inside getProductionDifference and changes nothing else, so the two calls subtract cleanly in every state. NOT derivable from CIV4UnitInfos.xml alone: the engine's test (CvCity::isFoodProduction) is the unit's bFood flag OR a civic with isMilitaryFoodProduction (Police State) making every military unit food-fed, so the qualifying set is wider than the XML flag. Only an ORDER_TRAIN can qualify at all - buildings, projects and processes never consume food. 0 during disorder, when both halves are 0."
                     },
                     "culture": {"type": "integer", "minimum": 0},
                     "cultureThreshold": {"type": "integer", "minimum": 1, "description": "Culture needed for next border expansion."},
@@ -303,7 +313,7 @@
                         "description": "Whether this city is on the coast, i.e. whether a Harbour, Lighthouse or any naval unit is possible here at all - a hard gate on a whole branch of what the city can build. CyCity.isCoastal(gc.getMIN_WATER_SIZE_FOR_OCEAN()), the engine's own test, exported rather than left to the harness because the obvious hand-rolled version is subtly wrong: it is not 'is any of the eight neighbours water' but 'is this adjacent to a water body of at least the minimum size', so a city on a two-tile pond is NOT coastal."
                     }
                 },
-                "required": ["id", "name", "x", "y", "population", "food", "foodPerTurn", "growthThreshold", "producing", "production", "productionNeeded", "productionPerTurn", "culture", "cultureThreshold", "happy", "unhappy", "healthy", "unhealthy", "workedTiles", "buildings", "bonuses", "coastal"],
+                "required": ["id", "name", "x", "y", "population", "food", "foodPerTurn", "growthThreshold", "producing", "production", "productionNeeded", "productionPerTurn", "productionFromHammers", "productionFromFood", "culture", "cultureThreshold", "happy", "unhappy", "healthy", "unhealthy", "workedTiles", "buildings", "bonuses", "coastal"],
                 "additionalProperties": false
             }
         },

@@ -16,6 +16,8 @@
       "population": 1,
       "producing": null,
       "production": 0,
+      "productionFromFood": 0,
+      "productionFromHammers": 5,
       "productionNeeded": null,
       "productionPerTurn": 5,
       "unhappy": 1,

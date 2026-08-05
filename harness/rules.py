@@ -1341,32 +1341,45 @@ def food_build_rate(city, unit):
     quote roughly double the real time on the two builds that dominate turns
     0-50.
 
-    The export already carries this, and the baseline run shows it cleanly.
-    Lisbon on consecutive turns:
+    Returns (rate, folded) so the caller can label an estimate that assumes
+    growth stops - the trade is real and belongs to the reader.
+
+    PRIMARY PATH: schema increment 6 exports `productionFromHammers` and
+    `productionFromFood` directly - the engine's own split, taken the way
+    CvCity::getProductionBarPercentages sizes the city screen's two-tone bar.
+    An ordinary build's rate is simply the hammer half, no inference from
+    what happens to be queued, and no "optimistic" flag, because the case
+    that flag existed for is exactly the one the split resolves. If the food
+    build itself is already queued, its surplus is inside `food`; if not,
+    the surplus is still growing the city and sits in `foodPerTurn` instead -
+    either way it is this hypothetical build's to have.
+
+    FALLBACK: older captures carry only `productionPerTurn`/`foodPerTurn`, and
+    the split has to be inferred. Lisbon on consecutive turns showed why it's
+    fragile both ways:
 
         t42  UNIT_WARRIOR   foodPerTurn 6   productionPerTurn 7
         t43  UNIT_SETTLER   foodPerTurn 0   productionPerTurn 13   (= 6 + 7)
 
-    So `productionPerTurn` ALREADY includes the food while such a build is in
-    progress, and `foodPerTurn` reads 0 - which is why the schema notes food
-    reading 0 during disorder and this case. That makes the correction
-    conditional on what the city is building right now: add the surplus only
-    when the city is NOT already running a food build, or it is counted twice.
-
-    The correction runs BOTH ways, which the first version got wrong. When the
-    city is already on a food build the surplus is inside `productionPerTurn`,
-    so it must be added for other food builds (it is already there) and
-    SUBTRACTED for ordinary ones. Measured on Lisbon:
-
-        t42  UNIT_WARRIOR   food 6  prod 7    <- warrior's true rate is 7
-        t43  UNIT_SETTLER   food 0  prod 13   <- and 13 is 7 + the 6 food
-
-    Reading t43's 13 as a Warrior's rate overstates it by the whole surplus,
-    which is the same double-count in the opposite direction.
-
-    Returns (rate, folded) so the caller can label an estimate that assumes
-    growth stops - the trade is real and belongs to the reader.
+    `productionPerTurn` ALREADY includes the food while a food build is in
+    progress, and `foodPerTurn` reads 0 then - so a food build's own rate is
+    the total as-is, while every OTHER build sharing that city inherits food
+    it will never get and must be flagged "optimistic" rather than corrected,
+    since the split is not recoverable from one file (Lisbon's hammers move
+    8 -> 2 across t37 -> t38 as worked tiles change).
     """
+    hammers = city.get("productionFromHammers")
+    if hammers is not None:
+        food = city.get("productionFromFood") or 0
+        if unit.get("food_production"):
+            surplus = food or (city.get("foodPerTurn") or 0)
+            if surplus > 0:
+                return hammers + surplus, True
+            return hammers, False
+        # An ordinary build never receives the food half, whatever the city is
+        # currently training. This is the whole point of the split.
+        return hammers, False
+
     rate = city.get("productionPerTurn") or 0
     surplus = city.get("foodPerTurn") or 0
     producing = city.get("producing") or ""
@@ -1384,10 +1397,8 @@ def food_build_rate(city, unit):
 
     if already_folded:
         # Ordinary build while a food build is running: part of `rate` is food
-        # this build would not get, so the estimate is optimistic. The split is
-        # NOT recoverable from one file - Lisbon's hammers move 8 -> 2 across
-        # t37 -> t38 as the worked tiles change, so last turn's figure does not
-        # decompose this one. Flagged rather than silently overstated.
+        # this build would not get, so the estimate is optimistic. Flagged
+        # rather than silently overstated.
         return rate, "optimistic"
     return rate, False
 
@@ -2347,10 +2358,14 @@ def view_city(rules, city_name, state):
     open_units = [r for r in unit_rows if not r[3]]
     open_buildings = [r for r in building_rows if not r[3]]
 
-    # One line, not a suffix on every ordinary row: while a settler or worker
-    # is in the queue the city's food is inside productionPerTurn, so every
-    # non-food estimate below is a little fast and the split is not recoverable
-    # from one file.
+    # One line, not a suffix on every ordinary row: while a settler or worker is
+    # in the queue the city's food is inside productionPerTurn, so every non-food
+    # estimate below is a little fast.
+    #
+    # This only ever fires on a capture predating schema increment 6. With
+    # `productionFromHammers` exported the split is exact, food_build_rate never
+    # returns "optimistic", and the caveat correctly vanishes rather than being
+    # printed beside numbers that no longer need it.
     optimistic = any(row[4] == "optimistic"
                      for row in unit_rows + building_rows)
 

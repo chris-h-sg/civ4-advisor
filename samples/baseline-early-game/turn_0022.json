@@ -16,6 +16,8 @@
       "population": 1,
       "producing": "UNIT_SETTLER",
       "production": 12,
+      "productionFromFood": 0,
+      "productionFromHammers": 6,
       "productionNeeded": 100,
       "productionPerTurn": 6,
       "unhappy": 1,
