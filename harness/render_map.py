@@ -185,6 +185,37 @@ class State(object):
                 if pos is not None:
                     yield pos
 
+    def bearing(self, origin, pos):
+        """Compass bearing from `origin` to `pos`, e.g. 'NNW'. '' when identical.
+
+        Same convention and same reason as run_history.bearing(): narrating a
+        direction by eye is the step that has failed every time it was tried
+        (see AGENT_GUIDE.md), so callers should read this rather than derive it
+        from dx/dy themselves. Kept in sync with run_history.py's copy rather than
+        imported, since the two tools are deliberately standalone scripts.
+        """
+        dx = pos[0] - origin[0]
+        if self.wrap_x:
+            if dx > self.width // 2:
+                dx -= self.width
+            elif dx < -(self.width // 2):
+                dx += self.width
+        dy = pos[1] - origin[1]
+        if not dx and not dy:
+            return ""
+
+        ns = "N" if dy > 0 else ("S" if dy < 0 else "")
+        ew = "E" if dx > 0 else ("W" if dx < 0 else "")
+        if not ns:
+            return ew
+        if not ew:
+            return ns
+        if abs(dy) >= 2 * abs(dx):
+            return ns + ns + ew
+        if abs(dx) >= 2 * abs(dy):
+            return ew + ns + ew
+        return ns + ew
+
     def land_distance(self, origin, target):
         """Steps over REVEALED walkable land, or None if no such route exists.
 
@@ -1419,8 +1450,10 @@ class MilitaryRenderer(Renderer):
                     key=lambda c: state.distance(pos, (c["x"], c["y"])),
                 )
                 gap = state.distance(pos, (best["x"], best["y"]))
-                nearest = "  %d %s from %s" % (
-                    gap, "tile" if gap == 1 else "tiles", best["name"],
+                compass = state.bearing((best["x"], best["y"]), pos)
+                where = "%s of %s" % (compass, best["name"]) if compass else "in %s" % best["name"]
+                nearest = "  %d %s %s" % (
+                    gap, "tile" if gap == 1 else "tiles", where,
                 )
             rows.append(
                 "  (%d,%d) %-16s owner %s%s%s"
@@ -1475,9 +1508,12 @@ class MilitaryRenderer(Renderer):
                     state.foreign_units,
                     key=lambda f: state.distance(pos, (f["x"], f["y"])),
                 )
-                gap = state.distance(pos, (closest["x"], closest["y"]))
-                nearest = "  nearest rival in sight %d %s" % (
-                    gap, "tile" if gap == 1 else "tiles",
+                closest_pos = (closest["x"], closest["y"])
+                gap = state.distance(pos, closest_pos)
+                compass = state.bearing(pos, closest_pos)
+                where = " %s" % compass if compass else ""
+                nearest = "  nearest rival in sight %d %s%s" % (
+                    gap, "tile" if gap == 1 else "tiles", where,
                 )
             rows.append(
                 "  (%d,%d) %-16s id %-6d moves %d%s%s"

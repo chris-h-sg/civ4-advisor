@@ -32,7 +32,7 @@ If you must grep by hand, the install holds ~18 copies of each file. Take `<inst
 
 In testing, **ten out of ten agents got this backwards** while reading coordinates correctly — calling a northern neighbour "south". East/west was never wrong; only the `y` axis. Coordinates stayed right, so nothing looked wrong and the whole strategic picture came out mirrored.
 
-**Both tools now state direction so you don't have to derive it.** The map grid is bracketed by `N ^ NORTH` above and `S v SOUTH` below; `run_history` prints a bearing beside every position (`16 NNW of Lisbon`). **Use those words rather than working it out from the numbers** — that derivation is the step that has failed every time.
+**All three tools now state direction so you don't have to derive it.** The map grid is bracketed by `N ^ NORTH` above and `S v SOUTH` below; `run_history` prints a bearing beside every position (`16 NNW of Lisbon`); `render_map.py --view military` prints one beside every rival-unit sighting and every own-unit row. **Use those words rather than working it out from the numbers** — that derivation is the step that has failed every time. For any other pair of coordinates, use `bearing.py` rather than doing the arithmetic by hand.
 
 The map usually wraps in `x` (`game.wrapX`) and never in `y`, so the short way east may be around the seam. The printed bearings and distances already account for it.
 
@@ -125,6 +125,14 @@ It lists what is available now **and** what is one tech away, each blocked row c
 **Resource prerequisites are resolved against your trade network**, not just the map — `CONNECTED` means you can build the thing today, and where a resource is visible but unusable the tool names which of borders / improvement / road is missing. A resource you cannot see yet is a different answer again: `NOT YET REVEALED` means zero visible is evidence of nothing either way.
 
 Prerequisites you already have are hidden — `--show-known` restores them. Every block prints its source as `file:line`, states what it omits, and attaches its own caveats to the numbers. Read those in place; they are not repeated here.
+
+### `bearing.py` — direction and distance between two arbitrary tiles
+
+```
+python harness/bearing.py X1,Y1 X2,Y2 <state.json>
+```
+
+For pairs neither other tool covers — your scout versus a moving rival, a settle candidate versus a rival city seen ten turns ago. Takes a state file for `mapWidth`/`wrapX`, same wrap handling as the other tools. Prints straight-line compass and distance, plus land-route distance when it differs (or `NO LAND ROUTE` when none exists over revealed tiles).
 
 ### What needs no tool
 

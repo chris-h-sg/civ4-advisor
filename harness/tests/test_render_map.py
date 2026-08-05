@@ -1488,7 +1488,50 @@ def test_foreign_city_and_units_are_drawn_and_listed():
 
 def test_military_reports_distance_to_the_nearest_own_city():
     text = render_map.render(state(40), "military")
-    assert "tiles from Lisbon" in text or "tiles from Oporto" in text
+    assert "of Lisbon" in text or "of Oporto" in text
+
+
+def test_military_rival_unit_line_carries_a_bearing():
+    """The line that used to be distance-only - this is the failure mode from
+    the guide's compass-confusion note: narrating a bearing by eye is where the
+    slip happens, so the tool must print it instead of leaving it to be derived.
+    """
+    s = state(40)
+    text = render_map.render(s, "military")
+    for unit in s.foreign_units:
+        pos = (unit["x"], unit["y"])
+        best = min(s.cities, key=lambda c: s.distance(pos, (c["x"], c["y"])))
+        compass = s.bearing((best["x"], best["y"]), pos)
+        if compass:
+            assert "%s of %s" % (compass, best["name"]) in text
+
+
+def test_military_own_unit_line_reports_bearing_to_nearest_rival():
+    s = state(40)
+    text = render_map.render(s, "military")
+    for unit in s.units:
+        pos = (unit["x"], unit["y"])
+        if not s.foreign_units:
+            continue
+        closest = min(s.foreign_units, key=lambda f: s.distance(pos, (f["x"], f["y"])))
+        closest_pos = (closest["x"], closest["y"])
+        compass = s.bearing(pos, closest_pos)
+        if compass:
+            assert "nearest rival in sight" in text and compass in text
+
+
+def test_bearing_matches_run_history_convention():
+    """Same axis convention as run_history.bearing() - dominant axis leads,
+    higher y is north. Kept as a copy rather than a shared import (both tools
+    are standalone scripts), so this guards the two from drifting apart.
+    """
+    s = state(0)
+    assert s.bearing((10, 10), (10, 15)) == "N"
+    assert s.bearing((10, 10), (10, 5)) == "S"
+    assert s.bearing((10, 10), (15, 10)) == "E"
+    assert s.bearing((10, 10), (5, 10)) == "W"
+    assert s.bearing((10, 10), (9, 15)) == "NNW"
+    assert s.bearing((10, 10), (10, 10)) == ""
 
 
 # -- yields ---------------------------------------------------------------
