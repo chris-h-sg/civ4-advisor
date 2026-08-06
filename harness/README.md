@@ -97,7 +97,7 @@ What replaced it is a count of what is *there* — workable land, workable water
 ### `run_history.py` — the run history
 
 ```
-python harness/run_history.py <run-folder> [--view timeline|intel] [--from N] [--to M]
+python harness/run_history.py <run-folder> [--view timeline|intel|lost] [--from N] [--to M] [--as-of N]
 ```
 
 Takes a **run folder** of `turn_*.json` files — the whole game, not one turn. Three views: `timeline` (what changed, turn by turn), `intel` (per-rival dossier) and `lost` (own units that disappeared). Usage is in `AGENT_GUIDE.md`; the reasoning is below.
@@ -167,7 +167,7 @@ This also corrected something the guide had asserted. It told agents reachabilit
 ### `rules.py` — the rules lookup
 
 ```
-python harness/rules.py unit|tech|building|city|handicap [TYPE] <state.json> [--show-known] [--depth N]
+python harness/rules.py unit|tech|building|promotion|city|handicap [TYPE] <state.json> [--show-known] [--depth N]
 ```
 
 Reverse and transitive lookups against the game's XML, priced for the game in the state file. Usage is in `AGENT_GUIDE.md`; the reasoning is below.
@@ -231,7 +231,7 @@ The first draft of the closure also **stopped one level down** while printing th
 
 **Resource prerequisites resolve to three states, and the tool used to answer only two of them.** It reported whether a resource was revealed and how many tiles carried it, then disclaimed the rest: *"also needs to be inside your borders, improved, and road-connected... Not checked here."* That was written believing connectivity was unknowable from the export. It is not — `player.bonuses.counts` is the engine's own connected-resource figure, and the schema describes it as "what the trade network actually delivers", so the tool held the answer while printing that it did not. Three of four agent trials hand-joined `map.tiles` against `player.bonuses` to recover it; one named the asymmetry exactly, that the negative case ("NOT YET REVEALED, so 0 visible is not evidence") was done well and the positive case not at all. Now: **CONNECTED** (buildable today, with where), **visible but not connected** (naming which of borders / improvement / road is missing, per tile), or **not revealed** (zero is evidence of nothing either way). The distinction decides whether a unit is available this turn or in twelve.
 
-**What it deliberately does not do.** Corporations, espionage, promotions and great-person effects are out of scope for the current turn window. And it never suggests what to research.
+**What it deliberately does not do.** Corporations, espionage and great-person effects are out of scope for the current turn window. And it never suggests what to research. Promotions moved out of this list once the mod started exporting `units[].promotions` (schema increment 7, see `rules.py promotion`).
 
 **`TerrainImpassables`/`FeatureImpassables` are reported as-is, and some movement rules are simply absent.** "A chariot cannot cross jungle" is not in `CIV4UnitInfos.xml` — those fields are empty for `UNIT_CHARIOT`. Rather than infer, the output omits and says the SDK holds rules it does not report.
 
@@ -334,7 +334,9 @@ All three planned tools are done. Each departed from its original sketch in ways
 
 - **`render_map.py`** — five views, exercised across fourteen agent trials. The view set has held up: `settle` and its `--around` site report carry the city-placement decision, `military` gets opened whenever a settler has to walk, and `yields`/`worker` were worth splitting out of the original `empire` because "which tile should this citizen work" and "what should this worker build" want almost disjoint data.
 - **`run_history.py`** — `timeline`, `intel` and `lost`. Run validation became a **constructor assert that exits non-zero** rather than something reported and worked around, once branch-divergence support was ruled out of scope; and every rival-unit departure is **classified against the next turn's fog**, without which a position-keyed diff is mostly noise. A third `check` view was designed and dropped when the assert absorbed it.
-- **`rules.py`** — `unit`/`tech`/`building`/`city`/`handicap`. **Handicap was added despite being a forward lookup**, on the roadmap's own reasoning rather than its wording: "the agent greps forward lookups fine" is falsified for these fields by two trials that changed conclusions on them. **The state file became mandatory** once the cost multipliers were measured — game speed × world size × handicap put a base XML cost 1.0–4.5× off, so an unpriced lookup is not a cheaper answer but a wrong one. And **depth turned out not to need a limit**: the tree is 92 techs wide and shallow, largest full closure 14. **`city` landed as its own subcommand** rather than the sketched `--city` flag: discovery is a different question from "tell me about this thing", and hanging it off `building`/`unit` would have meant naming a specific item in order to find out what the items are. The flag was then not needed at all — `building` already reports per-city build turns, so the same gate check simply filters that list and names who it excluded.
+- **`rules.py`** — `unit`/`tech`/`building`/`promotion`/`city`/`handicap`. **Handicap was added despite being a forward lookup**, on the roadmap's own reasoning rather than its wording: "the agent greps forward lookups fine" is falsified for these fields by two trials that changed conclusions on them. **The state file became mandatory** once the cost multipliers were measured — game speed × world size × handicap put a base XML cost 1.0–4.5× off, so an unpriced lookup is not a cheaper answer but a wrong one. And **depth turned out not to need a limit**: the tree is 92 techs wide and shallow, largest full closure 14. **`city` landed as its own subcommand** rather than the sketched `--city` flag: discovery is a different question from "tell me about this thing", and hanging it off `building`/`unit` would have meant naming a specific item in order to find out what the items are. The flag was then not needed at all — `building` already reports per-city build turns, so the same gate check simply filters that list and names who it excluded.
+
+  **`promotion` took `TYPE` as a single positional, tried `nargs="*"` for several TYPEs at once, then reverted.** The multi-TYPE draft let one call total several promotions held together on a unit, but argparse's greedy matching for a variable-length positional cannot backtrack around a value-taking flag placed between it and the required `state` positional — a real limitation (reproducible with a two-line `ArgumentParser`), not a config mistake, and it broke ordering for every subcommand, not just `promotion`. **`--for-unit ID` replaced it**, reading `units[].promotions` from the state file itself rather than asking the agent to type each name — the only real use case for "several promotions at once" was seeing what one actual unit holds, which an id lookup answers directly and a hypothetical combination never came up. **`CAN TAKE NEXT`/`BLOCKED` (the `canAcquirePromotion`/`isPromotionValid` eligibility cascade) sits behind `--eligible`, off by default**: the common question is "what does this unit have", and `BLOCKED` alone lists every promotion in the file, which is real information but not something to print unread on every call.
 
 The rules tool's premise got validated three times during its own construction: a hand-grep, a remembered combat modifier and a worked example each produced a confident wrong answer that the parsed XML caught (details in the design notes).
 

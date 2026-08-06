@@ -53,6 +53,7 @@ TECHS = ["TECH_AGRICULTURE", "TECH_MINING", "TECH_THE_WHEEL", "TECH_BRONZE_WORKI
 CIVIC_OPTIONS = ["CIVICOPTION_GOVERNMENT", "CIVICOPTION_LEGAL", "CIVICOPTION_LABOR"]
 CIVICS = ["CIVIC_DESPOTISM", "CIVIC_BARBARISM", "CIVIC_TRIBALISM"]
 UNITS = ["UNIT_SCOUT", "UNIT_WARRIOR", "UNIT_WORKER", "UNIT_SETTLER"]
+PROMOTIONS = ["PROMOTION_COMBAT1", "PROMOTION_COMBAT2", "PROMOTION_WOODSMAN"]
 BUILDINGS = ["BUILDING_PALACE", "BUILDING_BARRACKS"]
 PROJECTS = ["PROJECT_APOLLO_PROGRAM"]
 PROCESSES = ["PROCESS_WEALTH", "PROCESS_RESEARCH"]
@@ -483,7 +484,8 @@ class Unit(object):
 
     def __init__(self, unitId, unitType=0, x=10, y=20, baseMoves=1,
                  damage=0, dead=False, owner=PLAYER_ID, visualOwner=None,
-                 visible=True, invisible=False, plot=None):
+                 visible=True, invisible=False, plot=None, experience=0,
+                 promotions=(), level=1):
         self._id = unitId
         self._type = unitType
         self._x = x
@@ -499,7 +501,12 @@ class Unit(object):
         self._plot = plot
         if self._plot is None:
             self._plot = Plot(x=x, y=y, visible=visible)
+        self._experience = experience
+        # Promotion indices this unit has, for isHasPromotion to answer against.
+        self._promotions = promotions
+        self._level = level
         self.invisibleArgs = []
+        self.hasPromotionArgs = []
 
     def plot(self):
         return self._plot
@@ -540,6 +547,16 @@ class Unit(object):
 
     def getDamage(self):
         return self._damage
+
+    def getExperience(self):
+        return self._experience
+
+    def isHasPromotion(self, i):
+        self.hasPromotionArgs.append(i)
+        return i in self._promotions
+
+    def getLevel(self):
+        return self._level
 
     def isDead(self):
         return self._dead
@@ -794,7 +811,7 @@ def _cursor(items, index):
 
 class Player(object):
     def __init__(self, research=1, units=None, cities=None, bonuses=None,
-                 nationalWonders=()):
+                 nationalWonders=(), levelExperienceModifier=0):
         # bonus index -> how many the empire has connected. Corn and Copper by
         # default, so the strategic/health split is exercised without opting in.
         self._bonuses = bonuses
@@ -802,6 +819,7 @@ class Player(object):
             self._bonuses = {0: 1, 1: 2}
         self._nationalWonders = nationalWonders
         self._research = research
+        self._levelExperienceModifier = levelExperienceModifier
         self._units = units
         if self._units is None:
             self._units = [Unit(0, unitType=0), Unit(1, unitType=1)]
@@ -872,6 +890,9 @@ class Player(object):
 
     def getBuildingClassCount(self, i):
         return i in self._nationalWonders and 1 or 0
+
+    def getLevelExperienceModifier(self):
+        return self._levelExperienceModifier
 
 
 class Team(object):
@@ -1047,6 +1068,12 @@ class Gc(object):
 
     def getNumUnitInfos(self):
         return len(UNITS)
+
+    def getNumPromotionInfos(self):
+        return len(PROMOTIONS)
+
+    def getPromotionInfo(self, i):
+        return Info(PROMOTIONS[i])
 
     def getNumBuildingInfos(self):
         return len(BUILDINGS)
@@ -1456,7 +1483,7 @@ class UnitTests(unittest.TestCase):
         _, parsed = buildWith(units=[Unit(4, unitType=2, x=7, y=9, damage=35)])
         self.assertEqual(parsed["units"], [
             {"id": 4, "type": "UNIT_WORKER", "x": 7, "y": 42,
-             "moves": 1, "damage": 35},
+             "moves": 1, "damage": 35, "experienceToNextLevel": 2},
         ])
 
     def test_sorted_by_id_regardless_of_iteration_order(self):
@@ -1491,6 +1518,75 @@ class UnitTests(unittest.TestCase):
         # if it is touched. Seen live: a warrior that had moved reported 0.
         _, parsed = buildWith(units=[Unit(0)])
         self.assertNotIn("movesLeft", parsed["units"][0])
+
+    def test_fresh_unit_omits_level_experience_and_promotions(self):
+        # Field-level omission at the documented default (level 1, 0 XP, no
+        # promotions), same rule as damage: the common case is a unit that
+        # hasn't fought yet.
+        _, parsed = buildWith(units=[Unit(0, level=1, experience=0, promotions=())])
+        unit = parsed["units"][0]
+        self.assertNotIn("level", unit)
+        self.assertNotIn("experience", unit)
+        self.assertNotIn("promotions", unit)
+
+    def test_level_experience_and_promotions_are_exported(self):
+        _, parsed = buildWith(units=[Unit(0, level=2, experience=5, promotions=(1, 0))])
+        unit = parsed["units"][0]
+        self.assertEqual(unit["level"], 2)
+        self.assertEqual(unit["experience"], 5)
+        # Sorted regardless of the index order isHasPromotion was true for.
+        self.assertEqual(unit["promotions"], ["PROMOTION_COMBAT1", "PROMOTION_COMBAT2"])
+
+    def test_no_promotions_available_omits_the_field(self):
+        # A level-1 unit needs level*level + 1 = 2 XP for its first pick.
+        _, parsed = buildWith(units=[Unit(0, level=1, experience=1)])
+        self.assertNotIn("promotionsAvailable", parsed["units"][0])
+
+    def test_promotions_available_walks_successive_level_thresholds(self):
+        # Level 1: needs 2 (1*1+1). Level 2: needs 5 (2*2+1). 6 XP funds both
+        # picks and nothing past them.
+        _, parsed = buildWith(units=[Unit(0, level=1, experience=6)])
+        self.assertEqual(parsed["units"][0]["promotionsAvailable"], 2)
+
+    def test_promotions_available_is_relative_to_current_level(self):
+        # A unit that has already spent picks up to level 3 needs a fresh 10 XP
+        # (3*3+1) for its next one, not 10 XP from zero.
+        _, parsed = buildWith(units=[Unit(0, level=3, experience=9)])
+        self.assertNotIn("promotionsAvailable", parsed["units"][0])
+        _, parsed = buildWith(units=[Unit(0, level=3, experience=10)])
+        self.assertEqual(parsed["units"][0]["promotionsAvailable"], 1)
+
+    def test_promotions_available_applies_the_player_level_experience_modifier(self):
+        # +50% raises level 1's threshold from 2 to 3 (2 + ceil(2*50/100)).
+        player = Player(units=[Unit(0, level=1, experience=2)],
+                         levelExperienceModifier=50)
+        _, parsed = exportState(player=player)
+        self.assertNotIn("promotionsAvailable", parsed["units"][0])
+
+    def test_experience_to_next_level_is_exported_when_no_pick_is_funded_yet(self):
+        # Level 1 needs 2 XP for its first pick; with none banked, 2 are owed.
+        _, parsed = buildWith(units=[Unit(0, level=1, experience=0)])
+        unit = parsed["units"][0]
+        self.assertNotIn("promotionsAvailable", unit)
+        self.assertEqual(unit["experienceToNextLevel"], 2)
+
+    def test_experience_to_next_level_is_omitted_once_a_pick_is_funded(self):
+        # Level 1 needs exactly 2 XP for its first pick - the moment that's
+        # met, experienceToNextLevel has nothing further to say and is
+        # omitted rather than reporting the distance to a LATER pick: the two
+        # fields are mutually exclusive by construction.
+        _, parsed = buildWith(units=[Unit(0, level=1, experience=2)])
+        unit = parsed["units"][0]
+        self.assertEqual(unit["promotionsAvailable"], 1)
+        self.assertNotIn("experienceToNextLevel", unit)
+
+    def test_experience_to_next_level_is_omitted_with_multiple_picks_funded(self):
+        # 12 XP at level 2 clears two thresholds (5, then 10) - still nothing
+        # for experienceToNextLevel to report, regardless of how many picks.
+        _, parsed = buildWith(units=[Unit(0, level=2, experience=12)])
+        unit = parsed["units"][0]
+        self.assertEqual(unit["promotionsAvailable"], 2)
+        self.assertNotIn("experienceToNextLevel", unit)
 
 
 class CityTests(unittest.TestCase):
@@ -2569,7 +2665,12 @@ class SchemaConformanceTests(unittest.TestCase):
                                 owner=2, yields=(3, 2, 1))],
                     width=51, height=51)
         parsed = self.export(
-            player=Player(units=[Unit(0, damage=55)]),
+            player=Player(units=[
+                Unit(0, damage=55, experience=5, promotions=(0, 1), level=2),
+                # A second unit exercises experienceToNextLevel, which the
+                # first (already past its threshold) omits by construction -
+                # see AdvisorStateWriter._promotionProgress.
+                Unit(1, unitType=1, experience=1)]),
             cyMap=cyMap,
             team=Team(met=(1, 2), atWar=(2,)),
             rivals=absentPlayers(

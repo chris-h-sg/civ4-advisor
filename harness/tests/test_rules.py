@@ -57,7 +57,10 @@ def _tech(type_key, cost, or_reqs=(), and_reqs=(), flags=(), values=()):
 def _unit(type_key, prereq, unit_class="UNITCLASS_X", strength=1, moves=1,
           cost=10, combat="UNITCOMBAT_MELEE", bonuses=(), mods=(),
           first_strikes=0, city_defense=0, filler_lines=0,
-          domain="DOMAIN_LAND", religion="NONE", corporation="NONE"):
+          domain="DOMAIN_LAND", religion="NONE", corporation="NONE",
+          only_defensive=False, ignore_terrain_cost=False, interception=0,
+          collateral_damage=0, collateral_damage_limit=0,
+          collateral_damage_max_units=0):
     # `filler_lines` pushes PrereqTech far from <Type>, reproducing the real
     # file's ~90-line gap that defeats `grep -A6`.
     filler = "\n".join("      <iFiller%d>0</iFiller%d>" % (i, i)
@@ -82,6 +85,12 @@ def _unit(type_key, prereq, unit_class="UNITCLASS_X", strength=1, moves=1,
       <iCityDefense>%d</iCityDefense>
       <iWithdrawalProb>0</iWithdrawalProb>
       <bNoDefensiveBonus>0</bNoDefensiveBonus>
+      <bOnlyDefensive>%d</bOnlyDefensive>
+      <bIgnoreTerrainCost>%d</bIgnoreTerrainCost>
+      <iInterceptionProbability>%d</iInterceptionProbability>
+      <iCollateralDamage>%d</iCollateralDamage>
+      <iCollateralDamageLimit>%d</iCollateralDamageLimit>
+      <iCollateralDamageMaxUnits>%d</iCollateralDamageMaxUnits>
       <TerrainImpassables/>
       <FeatureImpassables/>
     </UnitInfo>""" % (
@@ -94,6 +103,56 @@ def _unit(type_key, prereq, unit_class="UNITCLASS_X", strength=1, moves=1,
         prereq, religion, corporation,
         "".join("<BonusType>%s</BonusType>" % b for b in bonuses),
         cost, moves, strength, first_strikes, city_defense,
+        1 if only_defensive else 0, 1 if ignore_terrain_cost else 0,
+        interception, collateral_damage, collateral_damage_limit,
+        collateral_damage_max_units,
+    )
+
+
+def _promotion(type_key, prereq="NONE", prereq_or=(), tech="NONE",
+               combat_percent=0, unit_combats=("UNITCOMBAT_MELEE",),
+               feature_defense=(), terrain_double_move=(), is_leader=False,
+               city_attack=0, withdrawal=0, collateral_damage_change=0,
+               blitz=False, amphib=False, river=False, hills_attack=0,
+               intercept_change=0):
+    prereq_ors = list(prereq_or) + ["NONE"] * (2 - len(prereq_or))
+    return """
+    <PromotionInfo>
+      <Type>%s</Type>
+      <PromotionPrereq>%s</PromotionPrereq>
+      <PromotionPrereqOr1>%s</PromotionPrereqOr1>
+      <PromotionPrereqOr2>%s</PromotionPrereqOr2>
+      <TechPrereq>%s</TechPrereq>
+      <StateReligionPrereq>NONE</StateReligionPrereq>
+      <bLeader>%d</bLeader>
+      <bBlitz>%d</bBlitz>
+      <bAmphib>%d</bAmphib>
+      <bRiver>%d</bRiver>
+      <iCombatPercent>%d</iCombatPercent>
+      <iCityAttack>%d</iCityAttack>
+      <iHillsAttack>%d</iHillsAttack>
+      <iWithdrawalChange>%d</iWithdrawalChange>
+      <iCollateralDamageChange>%d</iCollateralDamageChange>
+      <iInterceptChange>%d</iInterceptChange>
+      <FeatureDefenses>%s</FeatureDefenses>
+      <TerrainDoubleMoves>%s</TerrainDoubleMoves>
+      <UnitCombats>%s</UnitCombats>
+    </PromotionInfo>""" % (
+        type_key, prereq, prereq_ors[0], prereq_ors[1], tech,
+        1 if is_leader else 0, 1 if blitz else 0, 1 if amphib else 0,
+        1 if river else 0, combat_percent, city_attack, hills_attack,
+        withdrawal, collateral_damage_change, intercept_change,
+        "".join(
+            "<FeatureDefense><FeatureType>%s</FeatureType>"
+            "<iFeatureDefense>%d</iFeatureDefense></FeatureDefense>" % fd
+            for fd in feature_defense
+        ),
+        "".join("<TerrainType>%s</TerrainType>" % t for t in terrain_double_move),
+        "".join(
+            "<UnitCombat><UnitCombatType>%s</UnitCombatType>"
+            "<bUnitCombat>1</bUnitCombat></UnitCombat>" % c
+            for c in unit_combats
+        ),
     )
 
 
@@ -363,6 +422,15 @@ def xml_root(tmp_path):
         # The Settler shape: BTS blanks iCost to 0, vanilla holds the real
         # cost. Both trees must be consulted or the unit vanishes from `city`.
         _unit("UNIT_FREEBIE", "NONE", unit_class="UNITCLASS_FREEBIE", cost=0),
+        # _promotable_promotions fixtures, one unit per gate it must enforce.
+        _unit("UNIT_NO_COMBAT_CLASS", "NONE", combat="NONE"),
+        _unit("UNIT_ONLY_DEFENSIVE", "NONE", only_defensive=True),
+        _unit("UNIT_ONE_MOVE", "NONE", moves=1),
+        _unit("UNIT_CANNOT_BOMBARD", "NONE", collateral_damage=0),
+        _unit("UNIT_CAN_BOMBARD", "NONE", collateral_damage=1,
+              collateral_damage_limit=50, collateral_damage_max_units=3),
+        _unit("UNIT_CANNOT_INTERCEPT", "NONE", interception=0),
+        _unit("UNIT_CAN_INTERCEPT", "NONE", interception=25),
     ])
     (root / "Units" / "CIV4UnitInfos.xml").write_text(units, encoding="latin-1")
 
@@ -376,6 +444,37 @@ def xml_root(tmp_path):
     ])
     (vanilla / "Units" / "CIV4UnitInfos.xml").write_text(
         vanilla_units, encoding="latin-1")
+
+    promotions = ("<Civ4PromotionInfos><PromotionInfos>%s</PromotionInfos>"
+                 "</Civ4PromotionInfos>" % "".join([
+        _promotion("PROMOTION_TESTER", combat_percent=10,
+                  unit_combats=("UNITCOMBAT_MELEE", "UNITCOMBAT_ARCHER")),
+        # An OR-prerequisite chain plus a tech gate, on the same promotion -
+        # exercises REQUIRES' promotion/or/tech rendering together.
+        _promotion("PROMOTION_ADVANCED", prereq_or=["PROMOTION_TESTER"],
+                  tech="TECH_SIMPLE", combat_percent=20),
+        # No numeric iCombatPercent-style effect - only the block-shaped
+        # feature/terrain fields, which parse_promotions handles separately
+        # from the flat _int_tag effects.
+        _promotion("PROMOTION_TERRAIN", combat_percent=0,
+                  feature_defense=[("FEATURE_FOREST", 25)],
+                  terrain_double_move=["TERRAIN_HILL"]),
+        # The _promotable_promotions cascade, one promotion per gate.
+        _promotion("PROMOTION_LEADER_ONLY", is_leader=True),
+        _promotion("PROMOTION_OFFENSIVE", city_attack=10),
+        _promotion("PROMOTION_BLITZER", blitz=True),
+        _promotion("PROMOTION_BOMBARDIER", collateral_damage_change=25),
+        _promotion("PROMOTION_INTERCEPTOR", intercept_change=10),
+        # The UNIT_JAPAN_SAMURAI/DRILL1/DRILL2 shape: ARCHER-only, so held
+        # only via a free promotion on a MELEE unit; ARCHER_ONLY_CHILD
+        # requires it and must inherit the same refusal rather than reading
+        # "held, so its child is fine".
+        _promotion("PROMOTION_ARCHER_ONLY", unit_combats=("UNITCOMBAT_ARCHER",)),
+        _promotion("PROMOTION_ARCHER_ONLY_CHILD", prereq="PROMOTION_ARCHER_ONLY",
+                  unit_combats=("UNITCOMBAT_MELEE", "UNITCOMBAT_ARCHER")),
+    ]))
+    (root / "Units" / "CIV4PromotionInfos.xml").write_text(
+        promotions, encoding="latin-1")
 
     # Two civs: ours replaces nothing, theirs replaces UNITCLASS_X. Without
     # this file every civ's uniques read as available to everyone.
@@ -456,7 +555,7 @@ def make_city(name="Testville", x=10, y=10, rate=13, coastal=False,
 def make_state(tmp_path, known=(), handicap="HANDICAP_HARD",
                world="WORLDSIZE_STANDARD", speed="GAMESPEED_NORMAL", turn=34,
                rate=13, tiles=(), research=None, cities=None, wonders=None,
-               civilization=None):
+               civilization=None, units=None):
     state = {
         "meta": {"schemaVersion": 2},
         "game": {"gameTurn": turn, "handicap": handicap, "worldSize": world,
@@ -472,6 +571,8 @@ def make_state(tmp_path, known=(), handicap="HANDICAP_HARD",
         state["cities"] = list(cities)
     if wonders is not None:
         state["wonders"] = wonders
+    if units is not None:
+        state["units"] = list(units)
     path = tmp_path / ("turn_%04d.json" % turn)
     path.write_text(json.dumps(state), encoding="utf-8")
     return str(path), state
@@ -817,6 +918,408 @@ def test_unit_view_states_what_it_omits(xml_root, tmp_path):
     # The SDK caveat: some movement and terrain rules have no XML row at all,
     # so silence about them is not a claim that none exist.
     assert "SDK" in text
+
+
+def test_promotion_parses_flat_effects_and_unit_combats(xml_root, tmp_path):
+    _, state = make_state(tmp_path)
+    promotion = build_rules(xml_root, state).promotions["PROMOTION_TESTER"]
+    assert promotion["combat_percent"] == 10
+    assert promotion["restricted_to_unit_combats"] == [
+        "UNITCOMBAT_MELEE", "UNITCOMBAT_ARCHER"]
+    assert promotion["prereq"] is None
+    assert promotion["prereq_or"] == []
+    assert promotion["tech"] is None
+
+
+def test_promotion_parses_block_shaped_effects(xml_root, tmp_path):
+    """FeatureDefenses/TerrainDoubleMoves are (name, value) or plain-name
+    lists, not flat int tags like iCombatPercent - a different code path in
+    parse_promotions from the _int_tag effects."""
+    _, state = make_state(tmp_path)
+    promotion = build_rules(xml_root, state).promotions["PROMOTION_TERRAIN"]
+    assert promotion["feature_defense"] == [("FEATURE_FOREST", 25)]
+    assert promotion["terrain_double_move"] == ["TERRAIN_HILL"]
+    assert promotion["combat_percent"] == 0
+
+
+def test_promotion_view_prints_only_nonzero_effects(xml_root, tmp_path):
+    _, state = make_state(tmp_path)
+    r = build_rules(xml_root, state)
+    text = rules.view_promotion(r, "PROMOTION_TESTER", state, False, None)
+    assert "+10% combat" in text
+    # No hills/withdrawal/first-strike lines for a promotion that sets none.
+    assert "hills" not in text.lower()
+
+
+def test_promotion_view_lists_available_unit_combats(xml_root, tmp_path):
+    _, state = make_state(tmp_path)
+    r = build_rules(xml_root, state)
+    text = rules.view_promotion(r, "PROMOTION_TESTER", state, False, None)
+    assert "AVAILABLE TO" in text
+    assert "UNITCOMBAT_MELEE" in text
+    assert "UNITCOMBAT_ARCHER" in text
+
+
+def test_promotion_view_renders_or_prereq_and_tech(xml_root, tmp_path):
+    """REQUIRES must show both the promotion chain and the tech gate."""
+    _, state = make_state(tmp_path)
+    r = build_rules(xml_root, state)
+    text = rules.view_promotion(r, "PROMOTION_ADVANCED", state, False, None)
+    assert "PROMOTION_TESTER" in text
+    assert "TECH_SIMPLE" in text
+
+
+def test_promotion_view_renders_block_shaped_effects(xml_root, tmp_path):
+    _, state = make_state(tmp_path)
+    r = build_rules(xml_root, state)
+    text = rules.view_promotion(r, "PROMOTION_TERRAIN", state, False, None)
+    assert "+25% defence in FEATURE_FOREST" in text
+    assert "double movement on TERRAIN_HILL" in text
+
+
+def test_promotion_view_not_found_suggests_near_matches(xml_root, tmp_path):
+    _, state = make_state(tmp_path)
+    r = build_rules(xml_root, state)
+    with pytest.raises(rules.RulesError) as error:
+        rules.view_promotion(r, "PROMOTION_TEST", state, False, None)
+    assert "PROMOTION_TESTER" in str(error.value)
+
+
+def test_promotion_view_states_what_it_omits(xml_root, tmp_path):
+    _, state = make_state(tmp_path)
+    r = build_rules(xml_root, state)
+    text = rules.view_promotion(r, "PROMOTION_TESTER", state, False, None)
+    assert "OMITS" in text
+    assert "mod is loaded" in text
+
+
+# ---------------------------------------------------------------------------
+# _promotable_promotions / view_promotable - "what can this unit take next"
+# ---------------------------------------------------------------------------
+
+
+def test_promotable_excludes_already_held(xml_root, tmp_path):
+    _, state = make_state(
+        tmp_path,
+        units=[{"id": 1, "type": "UNIT_TESTER", "promotions": ["PROMOTION_TESTER"]}])
+    r = build_rules(xml_root, state)
+    available, blocked = rules._promotable_promotions(
+        r, "UNIT_TESTER", {"PROMOTION_TESTER"}, set())
+    assert "PROMOTION_TESTER" not in available
+    assert ("PROMOTION_TESTER", "already held") in blocked
+
+
+def test_promotable_excludes_leader_promotions(xml_root, tmp_path):
+    """PROMOTION_LEADER-style Great General field promotions are never
+    something a unit acquires through XP - CyUnit::canPromote's bLeader
+    argument is only true for a Great General merge, never a normal pick."""
+    _, state = make_state(tmp_path)
+    r = build_rules(xml_root, state)
+    available, blocked = rules._promotable_promotions(
+        r, "UNIT_TESTER", set(), set())
+    assert "PROMOTION_LEADER_ONLY" not in available
+    reasons = dict(blocked)
+    assert "Great General" in reasons["PROMOTION_LEADER_ONLY"]
+
+
+def test_promotable_gates_on_prereq_and_or_prereq(xml_root, tmp_path):
+    _, state = make_state(tmp_path)
+    r = build_rules(xml_root, state)
+    available, blocked = rules._promotable_promotions(
+        r, "UNIT_TESTER", set(), set())
+    assert "PROMOTION_TESTER" in available
+    assert "PROMOTION_ADVANCED" not in available  # needs TESTER first
+
+    available, _ = rules._promotable_promotions(
+        r, "UNIT_TESTER", {"PROMOTION_TESTER"}, {"TECH_SIMPLE"})
+    assert "PROMOTION_ADVANCED" in available
+
+
+def test_promotable_gates_on_tech(xml_root, tmp_path):
+    _, state = make_state(tmp_path)
+    r = build_rules(xml_root, state)
+    available, blocked = rules._promotable_promotions(
+        r, "UNIT_TESTER", {"PROMOTION_TESTER"}, set())
+    reasons = dict(blocked)
+    assert "PROMOTION_ADVANCED" not in available
+    assert "TECH_SIMPLE" in reasons["PROMOTION_ADVANCED"]
+
+
+def test_promotable_gates_on_unit_combat_class(xml_root, tmp_path):
+    """PROMOTION_TESTER is offered only to MELEE/ARCHER; UNIT_ELSEWHERE's
+    default UNITCOMBAT_MELEE is overridden to something else here."""
+    _, state = make_state(tmp_path)
+    r = build_rules(xml_root, state)
+    r.units["UNIT_ELSEWHERE"] = dict(
+        r.units["UNIT_ELSEWHERE"], combat_class="UNITCOMBAT_NAVAL")
+    available, blocked = rules._promotable_promotions(
+        r, "UNIT_ELSEWHERE", set(), set())
+    reasons = dict(blocked)
+    assert "PROMOTION_TESTER" not in available
+    assert "not offered to" in reasons["PROMOTION_TESTER"]
+
+
+def test_promotable_a_unit_with_no_combat_class_gets_nothing(xml_root, tmp_path):
+    """Combat=NONE (settlers, workers) means CyUnit.getUnitCombatType() is
+    NO_UNITCOMBAT, which isPromotionValid refuses outright - checked after
+    the prereq/tech/leader gates, so a promotion this unit was already
+    ineligible for on other grounds keeps its own more specific reason."""
+    _, state = make_state(tmp_path)
+    r = build_rules(xml_root, state)
+    available, blocked = rules._promotable_promotions(
+        r, "UNIT_NO_COMBAT_CLASS", set(), set())
+    assert available == []
+    reasons = dict(blocked)
+    # Ungated by prereq/tech/leader and offered to some combat class - the
+    # only thing standing between this unit and it is having no class at all.
+    assert reasons["PROMOTION_TESTER"] == "this unit has no combat class"
+
+
+def test_promotable_child_of_a_free_promotion_the_unit_would_not_qualify_for(
+    xml_root, tmp_path
+):
+    """The UNIT_JAPAN_SAMURAI/DRILL1/DRILL2 shape, reproduced: a MELEE unit
+    can hold an ARCHER-only promotion for free (granted at creation, bypasses
+    the class check that a normally-earned promotion could never pass), but
+    its CHILD is not exempt just because the parent is already held. An
+    earlier draft of this cascade checked only "is the prereq held", which
+    would have wrongly called PROMOTION_ARCHER_ONLY_CHILD available here."""
+    _, state = make_state(tmp_path)
+    r = build_rules(xml_root, state)
+    # UNIT_TESTER defaults to UNITCOMBAT_MELEE - never eligible for
+    # PROMOTION_ARCHER_ONLY on its own merits, only "holding" it as if free.
+    available, blocked = rules._promotable_promotions(
+        r, "UNIT_TESTER", {"PROMOTION_ARCHER_ONLY"}, set())
+    assert "PROMOTION_ARCHER_ONLY_CHILD" not in available
+    reasons = dict(blocked)
+    assert reasons["PROMOTION_ARCHER_ONLY_CHILD"] == (
+        "held via a free promotion this unit would not otherwise qualify for")
+
+
+def test_promotable_child_of_a_qualifying_prereq_is_available(xml_root, tmp_path):
+    """The non-free case still works: an ARCHER unit holding
+    PROMOTION_ARCHER_ONLY legitimately (it passes the class check on its own
+    merits) makes the child available, same as any ordinary prereq chain."""
+    _, state = make_state(tmp_path)
+    r = build_rules(xml_root, state)
+    r.units["UNIT_ELSEWHERE"] = dict(
+        r.units["UNIT_ELSEWHERE"], combat_class="UNITCOMBAT_ARCHER")
+    available, _ = rules._promotable_promotions(
+        r, "UNIT_ELSEWHERE", {"PROMOTION_ARCHER_ONLY"}, set())
+    assert "PROMOTION_ARCHER_ONLY_CHILD" in available
+
+
+def test_promotable_only_defensive_unit_is_refused_offensive_promotions(
+    xml_root, tmp_path
+):
+    """Verbatim from isPromotionValid:241-252 - ALL seven fields, not a
+    subset. An earlier draft of this cascade wrongly assumed three of the
+    seven were covered elsewhere and left them out of the check."""
+    _, state = make_state(tmp_path)
+    r = build_rules(xml_root, state)
+    available, blocked = rules._promotable_promotions(
+        r, "UNIT_ONLY_DEFENSIVE", set(), set())
+    reasons = dict(blocked)
+    for key in ("PROMOTION_OFFENSIVE", "PROMOTION_BLITZER"):
+        assert key not in available
+        assert reasons[key] == "this unit can only defend"
+
+
+def test_promotable_one_move_unit_is_refused_blitz(xml_root, tmp_path):
+    _, state = make_state(tmp_path)
+    r = build_rules(xml_root, state)
+    available, blocked = rules._promotable_promotions(
+        r, "UNIT_ONE_MOVE", set(), set())
+    reasons = dict(blocked)
+    assert "PROMOTION_BLITZER" not in available
+    assert reasons["PROMOTION_BLITZER"] == "this unit has only 1 move"
+
+
+def test_promotable_gates_collateral_damage_on_unit_capability(xml_root, tmp_path):
+    _, state = make_state(tmp_path)
+    r = build_rules(xml_root, state)
+
+    cannot, blocked = rules._promotable_promotions(
+        r, "UNIT_CANNOT_BOMBARD", set(), set())
+    assert "PROMOTION_BOMBARDIER" not in cannot
+    assert dict(blocked)["PROMOTION_BOMBARDIER"] == (
+        "this unit cannot deal collateral damage")
+
+    can, _ = rules._promotable_promotions(
+        r, "UNIT_CAN_BOMBARD", set(), set())
+    assert "PROMOTION_BOMBARDIER" in can
+
+
+def test_promotable_gates_interception_on_unit_capability(xml_root, tmp_path):
+    _, state = make_state(tmp_path)
+    r = build_rules(xml_root, state)
+
+    cannot, blocked = rules._promotable_promotions(
+        r, "UNIT_CANNOT_INTERCEPT", set(), set())
+    assert "PROMOTION_INTERCEPTOR" not in cannot
+    assert dict(blocked)["PROMOTION_INTERCEPTOR"] == "this unit cannot intercept"
+
+    can, _ = rules._promotable_promotions(
+        r, "UNIT_CAN_INTERCEPT", set(), set())
+    assert "PROMOTION_INTERCEPTOR" in can
+
+
+def test_view_promotable_reports_held_by_default_without_eligibility(
+    xml_root, tmp_path
+):
+    """CAN TAKE NEXT / BLOCKED are opt-in (--eligible) - the default answers
+    only "what does this unit have"."""
+    _, state = make_state(
+        tmp_path,
+        units=[{"id": 1, "type": "UNIT_TESTER", "promotions": ["PROMOTION_TESTER"]}])
+    r = build_rules(xml_root, state)
+    text = rules.view_promotable(r, 1, state, False, None)
+    assert "ALREADY HAS" in text
+    assert "+10% combat" in text
+    assert "CAN TAKE NEXT" not in text
+    assert "BLOCKED" not in text
+    assert "pass --eligible" in text
+
+
+def test_view_promotable_eligible_flag_adds_can_take_next_and_blocked(
+    xml_root, tmp_path
+):
+    _, state = make_state(
+        tmp_path,
+        units=[{"id": 1, "type": "UNIT_TESTER", "promotions": ["PROMOTION_TESTER"]}])
+    r = build_rules(xml_root, state)
+    text = rules.view_promotable(r, 1, state, False, None, eligible=True)
+    assert "CAN TAKE NEXT" in text
+    assert "BLOCKED" in text
+    assert "PROMOTION_LEADER_ONLY" in text  # named among the blocked, with a reason
+
+
+def test_view_promotable_held_blocks_omit_available_to_and_requires(
+    xml_root, tmp_path
+):
+    """Both are moot for something the unit already has."""
+    _, state = make_state(
+        tmp_path,
+        units=[{"id": 1, "type": "UNIT_TESTER",
+               "promotions": ["PROMOTION_ADVANCED"]}])
+    r = build_rules(xml_root, state)
+    text = rules.view_promotable(r, 1, state, False, None)
+    assert "AVAILABLE TO" not in text
+    assert "REQUIRES" not in text
+
+
+def test_view_promotable_combined_effects_leads_the_output(xml_root, tmp_path):
+    """The combined total is read before the per-promotion breakdown, not
+    after it - it answers the usual question directly."""
+    _, state = make_state(
+        tmp_path,
+        units=[{"id": 1, "type": "UNIT_TESTER",
+               "promotions": ["PROMOTION_TESTER", "PROMOTION_TERRAIN"]}])
+    r = build_rules(xml_root, state)
+    text = rules.view_promotable(r, 1, state, False, None)
+    assert text.index("COMBINED EFFECTS") < text.index("ALREADY HAS")
+    assert "+25% defence in FEATURE_FOREST" in text
+
+
+def test_view_promotable_no_combined_section_for_a_single_held_promotion(
+    xml_root, tmp_path
+):
+    _, state = make_state(
+        tmp_path,
+        units=[{"id": 1, "type": "UNIT_TESTER", "promotions": ["PROMOTION_TESTER"]}])
+    r = build_rules(xml_root, state)
+    text = rules.view_promotable(r, 1, state, False, None)
+    assert "COMBINED" not in text
+
+
+def test_view_promotable_unknown_id_names_the_problem(xml_root, tmp_path):
+    _, state = make_state(tmp_path, units=[])
+    r = build_rules(xml_root, state)
+    with pytest.raises(rules.RulesError) as error:
+        rules.view_promotable(r, 999, state, False, None)
+    assert "999" in str(error.value)
+    assert "intel" in str(error.value)
+
+
+def test_cli_promotion_for_unit_runs(xml_root, tmp_path, config, capsys):
+    state_path, _ = make_state(
+        tmp_path,
+        units=[{"id": 1, "type": "UNIT_TESTER", "promotions": []}])
+    code = rules.main(
+        ["promotion", state_path, "--for-unit", "1", "--config", config])
+    assert code == 0
+    assert "ALREADY HAS" in capsys.readouterr().out
+
+
+def test_cli_promotion_for_unit_eligible_adds_can_take_next(
+    xml_root, tmp_path, config, capsys
+):
+    state_path, _ = make_state(
+        tmp_path,
+        units=[{"id": 1, "type": "UNIT_TESTER", "promotions": []}])
+    code = rules.main(
+        ["promotion", state_path, "--for-unit", "1", "--eligible",
+         "--config", config])
+    assert code == 0
+    assert "CAN TAKE NEXT" in capsys.readouterr().out
+
+
+def test_cli_eligible_requires_for_unit(xml_root, tmp_path, config, capsys):
+    state_path, _ = make_state(tmp_path)
+    code = rules.main(
+        ["promotion", "PROMOTION_TESTER", state_path, "--eligible",
+         "--config", config])
+    assert code == 2
+    assert "only applies alongside --for-unit" in capsys.readouterr().err
+
+
+def test_cli_promotion_for_unit_fetches_held_promotions_automatically(
+    xml_root, tmp_path, config, capsys
+):
+    """The point of --for-unit over typing --promotion by hand: it reads
+    units[].promotions itself and prints their full detail unprompted."""
+    state_path, _ = make_state(
+        tmp_path,
+        units=[{"id": 1, "type": "UNIT_TESTER", "promotions": ["PROMOTION_TESTER"]}])
+    code = rules.main(
+        ["promotion", state_path, "--for-unit", "1", "--config", config])
+    assert code == 0
+    assert "+10% combat" in capsys.readouterr().out
+
+
+def test_cli_promotion_for_unit_rejects_a_type_too(
+    xml_root, tmp_path, config, capsys
+):
+    """--for-unit already answers the question - it doesn't also take a
+    positional TYPE, put AFTER `state` so argparse can resolve it."""
+    state_path, _ = make_state(tmp_path, units=[])
+    code = rules.main(
+        ["promotion", "PROMOTION_TESTER", state_path, "--for-unit", "1",
+         "--config", config])
+    assert code == 2
+    assert "does not take a TYPE" in capsys.readouterr().err
+
+
+def test_cli_for_unit_rejected_on_other_subjects(xml_root, tmp_path, config, capsys):
+    """--for-unit's value sitting between TYPE and `state` is itself the
+    ordering trap build_parser's comment documents (argparse cannot always
+    backtrack a value-taking option around a positional) - put it after
+    `state`, the same safe ordering used everywhere else in this file."""
+    state_path, _ = make_state(tmp_path)
+    code = rules.main(
+        ["unit", "UNIT_TESTER", state_path, "--for-unit", "1", "--config", config])
+    assert code == 2
+    assert "only applies to" in capsys.readouterr().err
+
+
+def test_promotion_view_single_type_has_no_combined_section(xml_root, tmp_path):
+    """view_promotion looks up exactly one PROMOTION_ - totalling several
+    held together on one unit is `promotion <state> --for-unit ID`
+    (view_promotable) instead; see that function's own tests."""
+    _, state = make_state(tmp_path)
+    r = build_rules(xml_root, state)
+    text = rules.view_promotion(r, "PROMOTION_TESTER", state, False, None)
+    assert "COMBINED" not in text
 
 
 def test_tech_view_never_ranks_the_routes(xml_root, tmp_path):
@@ -1447,6 +1950,19 @@ def test_cli_runs_a_unit_lookup(xml_root, tmp_path, config, capsys):
     assert "UNIT_TESTER" in capsys.readouterr().out
 
 
+def test_cli_runs_a_promotion_lookup(xml_root, tmp_path, config, capsys):
+    state_path, _ = make_state(tmp_path)
+    code = rules.main(["promotion", "PROMOTION_TESTER", state_path,
+                       "--config", config])
+    assert code == 0
+    assert "PROMOTION_TESTER" in capsys.readouterr().out
+
+
+def test_cli_promotion_reports_a_missing_type_rather_than_misbinding(capsys):
+    """Same right-to-left argparse trap unit/tech/building already guard."""
+    assert rules.main(["promotion", "state.json"]) == 2
+
+
 def test_cli_handicap_takes_the_type_from_state_when_omitted(
     xml_root, tmp_path, config, capsys
 ):
@@ -1467,6 +1983,7 @@ def test_cli_exits_2_on_an_unknown_type(xml_root, tmp_path, config, capsys):
     state_path, _ = make_state(tmp_path)
     assert rules.main(["unit", "UNIT_NOPE", state_path, "--config", config]) == 2
     assert "not found" in capsys.readouterr().err
+
 
 
 def test_cli_exits_2_on_a_missing_state_file(xml_root, tmp_path, config, capsys):

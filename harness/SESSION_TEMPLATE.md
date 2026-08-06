@@ -31,8 +31,8 @@ You are advising a human playing Civilization IV: Beyond the Sword. **You do not
 Use whatever path each connected folder actually presents as — the examples below assume `harness/` and the run folder are visible at those relative paths from where you're running; adjust if not.
 
 - `python harness/render_map.py <state.json> [--view NAME] [--around X,Y] [--radius N] [--brief]` — anything spatial. Views: `settle`, `explore`, `military`, `yields`, `worker`.
-- `python harness/run_history.py <path-to-your-run-folder> [--view timeline|intel|lost] [--from N] [--to M]` — anything across turns. Takes the run folder, not a single file.
-- `python harness/rules.py unit|tech|building|city|handicap [TYPE] <state.json>` — anything about game rules (costs, prerequisites, what a city can build now). Always pass the current state file, never guess a rule from memory.
+- `python harness/run_history.py <path-to-your-run-folder> [--view timeline|intel|lost] [--from N] [--to M] [--as-of N]` — anything across turns. Takes the run folder, not a single file.
+- `python harness/rules.py unit|tech|building|promotion|city|handicap [TYPE] <state.json>` — anything about game rules (costs, prerequisites, what a city can build now, what a promotion does). Always pass the current state file, never guess a rule from memory.
 
 **Don't edit `harness/` or the run folder.** Use `temp/claude-code/` (this folder) for anything you want to persist: restated objectives, scratch notes, reusable scripts. If you write a one-off script to answer a question — e.g. because a tool gap the guide or `ROADMAP.md` already documents forced you to — save it here rather than as a throwaway, and say so out loud rather than quietly running it. That's a known trial finding worth confirming or contradicting this time round.
 
@@ -48,6 +48,5 @@ Use whatever path each connected folder actually presents as — the examples be
 This is a repeat of a Cowork trial on the same game. Two known gaps from that run are recorded in this project's roadmap (not a file you have access to here) and may or may not still bite:
 
 - **`damage` on units may read one heal-tick stale** — treat it as "possibly stale" rather than authoritative until the player confirms otherwise in-game.
-- **No promotion/XP data is exported** — if a unit visibly fights and the player mentions a promotion, you have no way to see that from the JSON alone; ask rather than assume a unit is still "fresh" after combat.
 
 If you notice yourself telling the player something the JSON should have carried, or vice versa, flag it explicitly — that out-of-band signal is the main way gaps like the two above get found at all.

@@ -214,6 +214,36 @@
                         "maximum": 100,
                         "default": 0,
                         "description": "Percentage of health lost, not hit points: 100 would be dead. Omitted when the unit is undamaged, which is its default and by far the usual case."
+                    },
+                    "level": {
+                        "type": "integer",
+                        "minimum": 2,
+                        "default": 1,
+                        "description": "CyUnit.getLevel(), incremented by exactly one each time a promotion is picked (verified in CvUnit::promote(), which calls changeLevel(1) alongside granting the promotion - never incremented automatically from banked XP alone). Starts at 1 for a fresh unit. Omitted at the default, the common case for a unit that has never promoted."
+                    },
+                    "experience": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "default": 0,
+                        "description": "XP banked (CyUnit.getExperience), toward the next promotion. Omitted when zero, which is the common case for a unit that hasn't fought."
+                    },
+                    "experienceToNextLevel": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "default": 0,
+                        "description": "How much more XP this unit needs before its FIRST promotion pick is funded. Mutually exclusive with promotionsAvailable by construction - present only while promotionsAvailable is absent, never reporting the distance to a later pick once one is already funded. See promotionsAvailable for how this is computed."
+                    },
+                    "promotions": {
+                        "type": "array",
+                        "description": "Promotions this unit has, as PROMOTION_ Type keys (CyUnit.isHasPromotion, swept over every promotion in CIV4PromotionInfos.xml, the same enum-sweep pattern as player.knownTechs). Export the inputs, not the verdict: combat odds against a given enemy stay the agent's judgement, but which promotions a unit has is not derivable from anything else in the file. Omitted when empty, which is the common case for an unpromoted unit.",
+                        "items": {"type": "string", "pattern": "^PROMOTION_[A-Z0-9_]+$"},
+                        "uniqueItems": true
+                    },
+                    "promotionsAvailable": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "default": 0,
+                        "description": "How many promotion picks this unit's banked XP currently funds - what the UI's XP bar shows as multiple markers past the current level (e.g. a level-1 unit sitting on 6 XP has funded 2 more picks, since level 1->2 costs 2 and level 2->3 costs 5). This is an UPPER BOUND on picks available, not a guarantee: it answers whether the XP exists, but not whether an eligible promotion actually exists at each hypothetical level - that depends on this unit's specific promotion tree, unit-combat class and prerequisites (CyUnit.canAcquirePromotionAny), which this field does not evaluate. A unit can show promotionsAvailable > 0 while genuinely having nothing left it is eligible for. Computed from experience by walking the same level-cost formula CyUnit.experienceNeeded() uses (iLevel*iLevel + 1, then the player's getLevelExperienceModifier applied), because experienceNeeded() itself only answers for the unit's OWN current level - there is no engine call to ask about a hypothetical one. Formula sourced from CvGameUtils.py's getExperienceNeeded and cited in REFERENCES.md; this is the schema's second documented exception (after map.tiles' plotType) to 'export what the engine computes, never re-derive it' - justified the same way, because there is no engine getter to read instead. Omitted when zero, the common case."
                     }
                 },
                 "required": ["id", "type", "x", "y", "moves"],

@@ -74,6 +74,8 @@ Takes the **run folder**, not one turn.
 
 **`[NON-COMBAT]`** on a city's occupants means combat strength 0 (settlers, workers, work boats). A city holding only those is undefended however occupied it looks.
 
+**A `[WOODSMAN1, ...]` or `[N promotion(s) available]` tag next to a unit is a name, not an explanation** — see `rules.py promotion` below.
+
 `intel`'s two per-rival sections differ in how fast they go stale. **Recent sightings** are perishable — read them before moving anything vulnerable. **Ever fielded** is permanent: a type seen once is one they can build, forever. That's how you read their tech level — run each type through `rules.py unit`.
 
 **Barbarians are listed apart from civs** (they imply nothing about anyone's tech) but with full positions, since early on they're the main threat.
@@ -89,7 +91,8 @@ The tool **exits non-zero on a run that isn't one continuous game**. That's a re
 ### `rules.py` — anything about the game's rules
 
 ```
-python harness/rules.py unit|tech|building|city|handicap [TYPE] <state.json> [--show-known] [--depth N]
+python harness/rules.py unit|tech|building|promotion|city|handicap [TYPE] <state.json> [--show-known] [--depth N]
+python harness/rules.py promotion <state.json> --for-unit ID [--eligible]
 ```
 
 **The state file is required, and not a formality:** game speed, world size and difficulty multiply tech costs, so a raw XML cost is 1.0–4.5× wrong. Pass the turn you're advising on and every number is priced for the real game.
@@ -99,6 +102,8 @@ python harness/rules.py unit|tech|building|city|handicap [TYPE] <state.json> [--
 | `unit UNIT_AXEMAN` | What does this unit need — tech, resources — and what does *that* tech need? Plus combat stats and everything else the same tech unlocks. |
 | `tech TECH_MONARCHY` | What does this tech need, transitively, and **everything** it unlocks — units, buildings, civics, worker actions, resources revealed, and abilities like bridge-building. |
 | `building BUILDING_PYRAMID` | Buildings and wonders: cost in hammers and turns *per city*, prerequisites, effects, and whether it's an ordinary building, a national wonder or one-per-world. |
+| `promotion PROMOTION_COMBAT1` | What a promotion actually does — combat/terrain/movement modifiers, which unit-combat classes can take it, its own prerequisite chain. |
+| `promotion <state> --for-unit ID` | One of your own units, by engine id (as `intel` prints it, e.g. "id 16385"): their combined effect, then each promotion's own detail — no need to type each name yourself. Add `--eligible` to also list what it could take next and why not for the rest. Put `--for-unit` after the state file. |
 | `city Lisbon` | What this city can build **right now**, and what is blocking the rest. Takes a city name, not a TYPE. |
 | `handicap` | The barbarian and animal rules for this game's difficulty. Type defaults to the state file's own. |
 
@@ -110,7 +115,7 @@ It lists what is available now **and** what is one tech away, each blocked row c
 
 **Settlers and workers eat the city's food surplus**, so their estimates are marked `(+food, growth stops)`: the build lands sooner *and* the city stops growing while it does. That trade is yours to weigh. On a capture too old to carry the exported food/hammer split, a header line warns that the other estimates in that city run slightly fast while such a build is queued; if there is no such line, the numbers are exact.
 
-**Reach for it whenever you're about to state a rule.** Especially after `intel` shows you a rival unit: `rules.py unit UNIT_ARCHER <state>` turns a sighting into a dated tech conclusion, which is the join `intel` deliberately refuses to make for you.
+**Reach for it whenever you're about to state a rule.** Especially after `intel` shows you a rival unit: `rules.py unit UNIT_ARCHER <state>` turns a sighting into a dated tech conclusion, which is the join `intel` deliberately refuses to make for you. Same when `intel`'s garrison listing names a unit's promotions (e.g. `[WOODSMAN1, WOODSMAN2]`) or shows `N promotion(s) available` — that names WHICH promotions, never what they do; `rules.py promotion <state> --for-unit ID` (the id `intel` prints beside the unit) is the join, and fetches every promotion that unit holds automatically with a combined total, rather than needing each name typed by hand.
 
 **Guessed a type name and got an error? Read the suggestions, don't fall back to grep.** Unique units are civ-prefixed and inconsistently so — the Praetorian is `UNIT_ROME_PRAETORIAN`, not `UNIT_PRAETORIAN`.
 

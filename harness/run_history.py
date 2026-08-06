@@ -1382,6 +1382,28 @@ def _loss_block(run, before, after, unit):
     return lines
 
 
+def _combat_note(unit):
+    """' [PROMOTION_A, PROMOTION_B]' / ' [1 promotion available]' / '', for one
+    of the player's own units.
+
+    Roadmap item 3's motivating case: a scout took two promotions from a Lion
+    fight and the agent had no way to see it short of the player saying so out
+    loud. promotions/promotionsAvailable are on every one of our own units in
+    the export (units[], never foreignUnits[] - see schema/state.schema.json);
+    this is the one place intel already lists them by id, so the join costs
+    nothing. Presentation only - promotion effects and combat odds are what
+    `rules.py promotion` and the agent's own judgement are for, not this.
+    """
+    promotions = unit.get("promotions")
+    if promotions:
+        return "  [%s]" % ", ".join(p.replace("PROMOTION_", "") for p in promotions)
+    available = unit.get("promotionsAvailable")
+    if available:
+        return "  [%d promotion%s available]" % (
+            available, "" if available == 1 else "s")
+    return ""
+
+
 def _garrisons(run, latest, latest_turn, land=None):
     """Which of your units are standing in each city, as of the latest turn.
 
@@ -1410,9 +1432,10 @@ def _garrisons(run, latest, latest_turn, land=None):
         inside = at.get(pos, [])
         if inside:
             what = ", ".join(
-                "%s (id %d)%s" % (
+                "%s (id %d)%s%s" % (
                     u["type"].replace("UNIT_", ""), u["id"],
                     " [NON-COMBAT]" if u["type"] in NON_COMBAT_UNITS else "",
+                    _combat_note(u),
                 )
                 for u in inside
             )
@@ -1430,9 +1453,10 @@ def _garrisons(run, latest, latest_turn, land=None):
         lines.append("  in the field:")
         for unit in sorted(outside, key=lambda u: (u["y"], u["x"], u["id"])):
             lines.append(
-                "    %-16s id %-6d (%d,%d)%s"
+                "    %-16s id %-6d (%d,%d)%s%s"
                 % (
                     unit["type"], unit["id"], unit["x"], unit["y"],
+                    _combat_note(unit),
                     nearest_city_note(run, latest, (unit["x"], unit["y"]), land),
                 )
             )

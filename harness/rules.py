@@ -33,9 +33,9 @@ THE LINE IT MUST NOT CROSS: resolving what a unit requires is presentation.
 Answering "what should I research" is deciding. So this prints route costs side
 by side and never sorts them, never labels one "cheapest", and never recommends.
 
-Four subcommands - `unit`, `tech`, `building`, `handicap` - each taking a state
-file, because game speed, world size and difficulty multiply tech costs and an
-unpriced answer is 1.0-4.5x wrong.
+Subcommands - `unit`, `tech`, `building`, `promotion`, `city`, `handicap` -
+each taking a state file, because game speed, world size and difficulty
+multiply tech costs and an unpriced answer is 1.0-4.5x wrong.
 
 Run it directly with the system Python; stdlib only, no setup:
 
@@ -65,6 +65,7 @@ VANILLA_XML_ROOT = os.path.join("Assets", "XML")
 
 TECH_FILE = os.path.join("Technologies", "CIV4TechInfos.xml")
 UNIT_FILE = os.path.join("Units", "CIV4UnitInfos.xml")
+PROMOTION_FILE = os.path.join("Units", "CIV4PromotionInfos.xml")
 BUILDING_FILE = os.path.join("Buildings", "CIV4BuildingInfos.xml")
 CIVIC_FILE = os.path.join("GameInfo", "CIV4CivicInfos.xml")
 HANDICAP_FILE = os.path.join("GameInfo", "CIV4HandicapInfo.xml")
@@ -362,7 +363,12 @@ def parse_units(text):
             "religion": religion if religion and religion != "NONE" else None,
             "corporation": (corporation
                             if corporation and corporation != "NONE" else None),
-            "combat_class": _tag(block, "Combat"),
+            # "NONE" normalized to None - settlers/workers/etc. carry literal
+            # <Combat>NONE</Combat>, and CvGameCoreUtils::isPromotionValid
+            # refuses every promotion outright when getUnitCombatType() is
+            # NO_UNITCOMBAT (see _promotable_promotions).
+            "combat_class": (lambda c: c if c and c != "NONE" else None)(
+                _tag(block, "Combat")),
             "strength": _int_tag(block, "iCombat"),
             "moves": _int_tag(block, "iMoves"),
             "cost": _int_tag(block, "iCost"),
@@ -377,8 +383,115 @@ def parse_units(text):
             "no_defensive_bonus": _int_tag(block, "bNoDefensiveBonus") == 1,
             "terrain_impassable": _list_tag(block, "TerrainImpassables", "TerrainType"),
             "feature_impassable": _list_tag(block, "FeatureImpassables", "FeatureType"),
+            # The remaining fields exist only for _promotable_promotions'
+            # isPromotionValid cascade (CvGameCoreUtils.cpp) - unused by any
+            # other view, so they are not surfaced in `unit`'s own output.
+            "only_defensive": _int_tag(block, "bOnlyDefensive") == 1,
+            "ignore_terrain_cost": _int_tag(block, "bIgnoreTerrainCost") == 1,
+            "interception": _int_tag(block, "iInterceptionProbability"),
+            "collateral_damage": _int_tag(block, "iCollateralDamage"),
+            "collateral_damage_limit": _int_tag(block, "iCollateralDamageLimit"),
+            "collateral_damage_max_units": _int_tag(block, "iCollateralDamageMaxUnits"),
         }
     return units
+
+
+def _named_int_pairs(block, container, item, name_field, value_field):
+    """(name, value) pairs from a <container><item><name_field/><value_field/>
+    ...</item></container> block - the shape TerrainDefenses/FeatureAttacks/
+    UnitCombatMods and friends all share, in CIV4UnitInfos.xml and
+    CIV4PromotionInfos.xml alike."""
+    match = re.search(r"<%s>(.*?)</%s>" % (container, container), block, re.S)
+    if not match:
+        return []
+    pairs = []
+    for entry in re.finditer(r"<%s>(.*?)</%s>" % (item, item), match.group(1), re.S):
+        name = _tag(entry.group(1), name_field)
+        value = _int_tag(entry.group(1), value_field)
+        if name:
+            pairs.append((name, value))
+    return pairs
+
+
+def parse_promotions(text):
+    """PROMOTION_ entries: what CyUnit.isHasPromotion(i) means when it's true.
+
+    Mirrors parse_units' shape - a flat dict of nonzero/named effects plus the
+    prerequisite chain - because a promotion IS a small unit-modifier bundle in
+    the same XML family (CIV4PromotionInfos.xml sits in Units/, beside
+    CIV4UnitInfos.xml), not a different kind of thing needing new machinery.
+    """
+    promotions = {}
+    for key, block, line in iter_blocks(text, "PromotionInfo"):
+        prereq = _tag(block, "PromotionPrereq")
+        prereq_or = [
+            p for p in (_tag(block, "PromotionPrereqOr1"),
+                       _tag(block, "PromotionPrereqOr2"))
+            if p and p != "NONE"
+        ]
+        tech = _tag(block, "TechPrereq")
+        promotions[key] = {
+            "type": key,
+            "line": line,
+            "prereq": prereq if prereq and prereq != "NONE" else None,
+            "prereq_or": prereq_or,
+            "tech": tech if tech and tech != "NONE" else None,
+            # Great General field promotions (PROMOTION_LEADER and friends) -
+            # isPromotionValid's bLeader argument is never true for a normal
+            # unit picking a promotion via XP, so these are excluded outright
+            # by _promotable_promotions rather than evaluated against the
+            # unit-combat-class/isOnlyDefensive/etc. checks that follow.
+            "is_leader": _int_tag(block, "bLeader") == 1,
+            # Flat +N%/+N modifiers, printed only when nonzero - see view_promotion.
+            "combat_percent": _int_tag(block, "iCombatPercent"),
+            "city_attack": _int_tag(block, "iCityAttack"),
+            "city_defense": _int_tag(block, "iCityDefense"),
+            "hills_attack": _int_tag(block, "iHillsAttack"),
+            "hills_defense": _int_tag(block, "iHillsDefense"),
+            "withdrawal": _int_tag(block, "iWithdrawalChange"),
+            "first_strikes": _int_tag(block, "iFirstStrikesChange"),
+            "chance_first_strikes": _int_tag(block, "iChanceFirstStrikesChange"),
+            "moves": _int_tag(block, "iMovesChange"),
+            "visibility": _int_tag(block, "iVisibilityChange"),
+            "intercept_change": _int_tag(block, "iInterceptChange"),
+            "collateral_protection": _int_tag(block, "iCollateralDamageProtection"),
+            "collateral_damage_change": _int_tag(block, "iCollateralDamageChange"),
+            "pillage": _int_tag(block, "iPillageChange"),
+            "experience_percent": _int_tag(block, "iExperiencePercent"),
+            "same_tile_heal": _int_tag(block, "iSameTileHealChange"),
+            "adjacent_tile_heal": _int_tag(block, "iAdjacentTileHealChange"),
+            "neutral_heal": _int_tag(block, "iNeutralHealChange"),
+            "enemy_heal": _int_tag(block, "iEnemyHealChange"),
+            "always_heal": _int_tag(block, "bAlwaysHeal") == 1,
+            "hills_double_move": _int_tag(block, "bHillsDoubleMove") == 1,
+            "amphib": _int_tag(block, "bAmphib") == 1,
+            "river": _int_tag(block, "bRiver") == 1,
+            "blitz": _int_tag(block, "bBlitz") == 1,
+            "immune_to_first_strikes": _int_tag(block, "bImmuneToFirstStrikes") == 1,
+            # Terrain/feature bonuses and double-moves, and which unit-combat
+            # classes this promotion is even offered to - all (name, value)
+            # or plain-name lists, since a unit answering isHasPromotion(i)
+            # true has already passed every prerequisite; what's useful here
+            # is what the promotion DOES and where it needs a unit combat
+            # class it does not already carry.
+            "terrain_attack": _named_int_pairs(
+                block, "TerrainAttacks", "TerrainAttack", "TerrainType", "iTerrainAttack"),
+            "terrain_defense": _named_int_pairs(
+                block, "TerrainDefenses", "TerrainDefense", "TerrainType", "iTerrainDefense"),
+            "feature_attack": _named_int_pairs(
+                block, "FeatureAttacks", "FeatureAttack", "FeatureType", "iFeatureAttack"),
+            "feature_defense": _named_int_pairs(
+                block, "FeatureDefenses", "FeatureDefense", "FeatureType", "iFeatureDefense"),
+            "terrain_double_move": _list_tag(block, "TerrainDoubleMoves", "TerrainType"),
+            "feature_double_move": _list_tag(block, "FeatureDoubleMoves", "FeatureType"),
+            "unit_combat_mods": _named_int_pairs(
+                block, "UnitCombatMods", "UnitCombatMod", "UnitCombatType", "iUnitCombatMod"),
+            "domain_mods": _named_int_pairs(
+                block, "DomainMods", "DomainMod", "DomainType", "iDomainMod"),
+            "restricted_to_unit_combats": _list_tag(
+                block, "UnitCombats", "UnitCombatType"),
+        }
+    return promotions
 
 
 def parse_simple(text, tag, tech_field="PrereqTech", extra=()):
@@ -764,6 +877,8 @@ class Rules(object):
             lambda text: parse_buildings(text, self.commerce_order,
                                          self.yield_order))
         self.building_path = self.sources.get("buildings", (None, None))[0]
+        self.promotions = self._load(PROMOTION_FILE, "promotions", parse_promotions)
+        self.promotion_path = self.sources.get("promotions", (None, None))[0]
         self.strategy = self._load(STRATEGY_FILE, "strategy", parse_strategy_text)
         self.building_classes = self._load(
             BUILDING_CLASS_FILE, None, parse_building_classes)
@@ -1831,9 +1946,558 @@ def view_unit(rules, unit_type, state, show_known, max_depth):
     out.append("")
     out.append("OMITS")
     out.append("  Buildings, civics and improvements on this tech - `rules.py tech`.")
-    out.append("  Obsolescence, upgrade paths, promotions, XP and AI weighting.")
+    out.append("  Obsolescence, upgrade paths and AI weighting.")
+    out.append("  What a specific promotion does - `rules.py promotion`.")
     out.append("  Abilities defined outside CIV4UnitInfos.xml. Some movement and")
     out.append("  terrain rules live in the SDK and are NOT reported here.")
+    out.append("  " + MOD_WARNING)
+    return "\n".join(out)
+
+
+# Flat numeric fields on a parsed promotion, each an accumulator the engine
+# adds straight into a running total per unit (CvUnit::setHasPromotion,
+# verified in CvUnit.cpp: changeExtraCombatPercent, changeExtraCityAttackPercent,
+# etc. - one change*() call per field, no interaction or cap between them).
+# Shared between _promotion_effects (single promotion) and _promotion_totals
+# (several at once) so the wording can never drift between the two.
+_FLAT_EFFECT_FIELDS = (
+    ("combat_percent", "%+d%% combat"),
+    ("city_attack", "%+d%% city attack"),
+    ("city_defense", "%+d%% city defence"),
+    ("hills_attack", "%+d%% hills attack"),
+    ("hills_defense", "%+d%% hills defence"),
+    ("withdrawal", "%+d%% withdrawal"),
+    ("chance_first_strikes", "%+d%% chance of a first strike"),
+    ("visibility", "%+d visibility"),
+    ("intercept_change", "%+d%% interception"),
+    ("collateral_protection", "%+d%% collateral damage protection"),
+    ("collateral_damage_change", "%+d%% collateral damage dealt"),
+    ("pillage", "%+d%% pillage"),
+    ("experience_percent", "%+d%% experience from combat"),
+    ("same_tile_heal", "%+d%% same-tile healing"),
+    ("adjacent_tile_heal", "%+d%% adjacent-tile healing"),
+    ("neutral_heal", "%+d%% neutral-territory healing"),
+    ("enemy_heal", "%+d%% enemy-territory healing"),
+)
+
+# Boolean flags: the engine ORs these across held promotions (CvUnit tracks a
+# COUNT per flag, e.g. changeAmphibCount, so it is true if ANY held promotion
+# sets it) - never summed, unlike _FLAT_EFFECT_FIELDS.
+_FLAG_EFFECT_FIELDS = (
+    ("always_heal", "always heals, even after moving or attacking"),
+    ("hills_double_move", "double movement on hills"),
+    ("amphib", "no attack penalty from the sea"),
+    ("river", "no attack penalty across a river"),
+    ("blitz", "can attack more than once per turn"),
+    ("immune_to_first_strikes", "immune to first strikes"),
+)
+
+
+def _promotion_effects(promotion):
+    """Human-readable EFFECTS lines for one parsed promotion."""
+    effects = []
+    for key, template in _FLAT_EFFECT_FIELDS:
+        if promotion[key]:
+            effects.append(template % promotion[key])
+    if promotion["first_strikes"]:
+        n = promotion["first_strikes"]
+        effects.append("%+d first strike%s" % (n, "" if abs(n) == 1 else "s"))
+    if promotion["moves"]:
+        n = promotion["moves"]
+        effects.append("%+d move%s" % (n, "" if abs(n) == 1 else "s"))
+    for key, label in _FLAG_EFFECT_FIELDS:
+        if promotion[key]:
+            effects.append(label)
+    for label, key in (("attack", "terrain_attack"), ("defence", "terrain_defense")):
+        for terrain, value in promotion[key]:
+            effects.append("%+d%% %s on %s" % (value, label, terrain))
+    for label, key in (("attack", "feature_attack"), ("defence", "feature_defense")):
+        for feature, value in promotion[key]:
+            effects.append("%+d%% %s in %s" % (value, label, feature))
+    for terrain in promotion["terrain_double_move"]:
+        effects.append("double movement on %s" % terrain)
+    for feature in promotion["feature_double_move"]:
+        effects.append("double movement in %s" % feature)
+    for combat_type, value in promotion["unit_combat_mods"]:
+        effects.append("%+d%% vs %s" % (value, combat_type))
+    for domain, value in promotion["domain_mods"]:
+        effects.append("%+d%% vs %s units" % (value, domain))
+    return effects
+
+
+def _view_one_promotion(rules, promotion_type, state, show_known, max_depth,
+                        brief=False):
+    """One PROMOTION_'s own block: EFFECTS always, AVAILABLE TO/REQUIRES too
+    unless `brief` - which view_promotable sets for a unit's ALREADY HAS
+    section, where both are moot (the unit already has it: what it is
+    offered to and what it needed no longer matter, only what it does).
+    view_promotion's own standalone lookup keeps brief=False, since there
+    the promotion is hypothetical and both questions are exactly the point.
+    """
+    promotion = rules.promotions.get(promotion_type)
+    if promotion is None:
+        if not rules.promotions:
+            raise RulesError(
+                "CIV4PromotionInfos.xml did not load - cannot answer "
+                "promotion questions on this install.")
+        raise _not_found("promotion", promotion_type, rules.promotions,
+                         _relative(rules.promotion_path, rules.xml_root),
+                         "PROMOTION_COMBAT1")
+
+    known = effective_known(state)
+    out = []
+    if brief:
+        out.append(promotion_type)
+    else:
+        out.append("%s - Beyond the Sword XML, against %s"
+                   % (promotion_type, state_summary(state)))
+    out.append("")
+    out.append("  %s:%d" % (_relative(rules.promotion_path, rules.xml_root),
+                            promotion["line"]))
+
+    out.append("")
+    out.append("EFFECTS")
+    effects = _promotion_effects(promotion)
+    if effects:
+        out.append("  " + ("\n  ".join(effects)))
+    else:
+        out.append("  (no numeric effects parsed - see OMITS)")
+
+    if brief:
+        return out
+
+    out.append("")
+    out.append("AVAILABLE TO")
+    if promotion["restricted_to_unit_combats"]:
+        out.append("  " + ", ".join(promotion["restricted_to_unit_combats"]))
+    else:
+        # Not observed in the stock file - every real promotion's UnitCombats
+        # lists at least one class - but if it ever were empty, the
+        # eligibility path (_promotion_valid_for_unit) treats that as
+        # "offered to nobody", matching CvGameCoreUtils::isPromotionValid's
+        # getUnitCombat() membership test. This wording must agree with that,
+        # not claim the opposite.
+        out.append("  no unit combat class (not observed in the stock file)")
+
+    out.append("")
+    out.append("REQUIRES")
+    prereqs = []
+    if promotion["prereq"]:
+        prereqs.append(promotion["prereq"])
+    if promotion["prereq_or"]:
+        prereqs.append(" or ".join(promotion["prereq_or"]))
+    if prereqs:
+        for line in prereqs:
+            out.append("  promotion   %s" % line)
+    else:
+        out.append("  promotion   (none)")
+    if promotion["tech"]:
+        mark = _tech_status(promotion["tech"], known, state)
+        out.append("  tech        %-26s %s" % (promotion["tech"], mark))
+        _closure_block(rules, promotion["tech"], known, show_known, max_depth,
+                       out, state)
+    else:
+        out.append("  tech        (none)")
+    return out
+
+
+def _promotion_totals(promotions):
+    """Combined EFFECTS lines for several promotions held AT ONCE on one unit.
+
+    Verified safe to sum in CvUnit::setHasPromotion (CvUnit.cpp): every flat
+    numeric field is added into the unit's running total via its own
+    change*() call - iCombatPercent into m_iExtraCombatPercent,
+    iCityAttack into m_iExtraCityAttackPercent, and so on for every field in
+    _FLAT_EFFECT_FIELDS plus firstStrikes/moves, terrain/feature attack and
+    defence per-index, terrain/feature double-move counts, unit-combat mods
+    and domain mods - one accumulator per field, no cap and no interaction
+    term found between any two promotions' contributions. Flags in
+    _FLAG_EFFECT_FIELDS are OR'd (a per-flag COUNT > 0), never summed.
+
+    Callers currently only reach this behind a "more than one held" guard,
+    but an empty `promotions` returns [] rather than raising - a total of
+    nothing is a valid, if odd, question, and there is no reason to prefer a
+    KeyError over an empty answer if that guard is ever relaxed.
+    """
+    if not promotions:
+        return []
+    totals = {}
+    for promotion in promotions:
+        for key, _template in _FLAT_EFFECT_FIELDS:
+            totals[key] = totals.get(key, 0) + promotion[key]
+        totals["first_strikes"] = totals.get("first_strikes", 0) + promotion["first_strikes"]
+        totals["moves"] = totals.get("moves", 0) + promotion["moves"]
+        for list_key in ("terrain_attack", "terrain_defense", "feature_attack",
+                         "feature_defense", "unit_combat_mods", "domain_mods"):
+            bucket = totals.setdefault(list_key, {})
+            for name, value in promotion[list_key]:
+                bucket[name] = bucket.get(name, 0) + value
+        for list_key in ("terrain_double_move", "feature_double_move"):
+            bucket = totals.setdefault(list_key, set())
+            bucket.update(promotion[list_key])
+        for key, _label in _FLAG_EFFECT_FIELDS:
+            totals[key] = totals.get(key, False) or promotion[key]
+
+    effects = []
+    for key, template in _FLAT_EFFECT_FIELDS:
+        if totals[key]:
+            effects.append(template % totals[key])
+    if totals["first_strikes"]:
+        n = totals["first_strikes"]
+        effects.append("%+d first strike%s" % (n, "" if abs(n) == 1 else "s"))
+    if totals["moves"]:
+        n = totals["moves"]
+        effects.append("%+d move%s" % (n, "" if abs(n) == 1 else "s"))
+    for key, label in _FLAG_EFFECT_FIELDS:
+        if totals[key]:
+            effects.append(label)
+    for label, key in (("attack", "terrain_attack"), ("defence", "terrain_defense")):
+        for terrain, value in sorted(totals[key].items()):
+            if value:
+                effects.append("%+d%% %s on %s" % (value, label, terrain))
+    for label, key in (("attack", "feature_attack"), ("defence", "feature_defense")):
+        for feature, value in sorted(totals[key].items()):
+            if value:
+                effects.append("%+d%% %s in %s" % (value, label, feature))
+    for terrain in sorted(totals["terrain_double_move"]):
+        effects.append("double movement on %s" % terrain)
+    for feature in sorted(totals["feature_double_move"]):
+        effects.append("double movement in %s" % feature)
+    for combat_type, value in sorted(totals["unit_combat_mods"].items()):
+        if value:
+            effects.append("%+d%% vs %s" % (value, combat_type))
+    for domain, value in sorted(totals["domain_mods"].items()):
+        if value:
+            effects.append("%+d%% vs %s units" % (value, domain))
+    return effects
+
+
+def find_unit(state, unit_id):
+    """Match one of the player's own units by its engine id (an int)."""
+    for unit in state.get("units") or []:
+        if unit.get("id") == unit_id:
+            return unit
+    return None
+
+
+# The isOnlyDefensive exclusion set from CvGameCoreUtils::isPromotionValid
+# (:241-252) - VERBATIM, not a subset: a unit that can only defend is refused
+# any promotion setting ANY of these seven fields, independent of whether it
+# would otherwise pass the collateral/blitz/amphib/river checks elsewhere in
+# the cascade. An earlier draft of this tuple wrongly assumed three of the
+# seven were "covered by the checks below rather than duplicated" - they are
+# not; isOnlyDefensive is its own OR-condition over all seven, checked before
+# and independent of the later per-field checks.
+_ONLY_DEFENSIVE_BLOCKED_FIELDS = (
+    "city_attack", "withdrawal", "collateral_damage_change",
+    "blitz", "amphib", "river", "hills_attack",
+)
+
+
+def _promotion_valid_for_unit(rules, unit, promotion_type, _seen=None):
+    """CvGameCoreUtils::isPromotionValid, reproduced - whether `unit` could
+    EVER take `promotion_type`, given only its own fixed properties (combat
+    class, only-defensive, moves, collateral/intercept capability). This is
+    NOT eligibility (no prereq/tech/held checks - see _promotable_promotions
+    for those); it answers "is this promotion even shaped for this unit."
+
+    Recurses into the promotion's own PromotionPrereq/PrereqOr chain, because
+    the engine does: isPromotionValid re-validates a prerequisite promotion
+    against the SAME checks, not just "do you hold it" (canAcquirePromotion
+    checks holding; isPromotionValid separately re-derives validity for the
+    prereq itself, CvGameCoreUtils.cpp:287-293 for PromotionPrereq and a
+    parallel block for the OR pair). This matters for FREE promotions: a
+    UNIT_JAPAN_SAMURAI holds PROMOTION_DRILL1 for free despite being MELEE
+    and DRILL1 being ARCHER/SIEGE-only - isPromotionValid(DRILL1) is false
+    for a Samurai, so isPromotionValid(DRILL2) is false too, even though the
+    Samurai visibly HAS DRILL1. A version of this function that only checked
+    "is DRILL1 held" (an earlier draft did exactly this) would wrongly call
+    DRILL2 available. `_seen` guards the walk against a prereq cycle, which
+    the stock file has never been observed to contain (mirroring the same
+    guard pattern render_tree/_closure_block use for the tech DAG).
+    """
+    if _seen is None:
+        _seen = set()
+    if promotion_type in _seen:
+        return False
+    _seen.add(promotion_type)
+
+    promotion = rules.promotions[promotion_type]
+    if unit["combat_class"] is None:
+        return False
+    if unit["combat_class"] not in promotion["restricted_to_unit_combats"]:
+        return False
+    if unit["only_defensive"] and any(
+        promotion[field] for field in _ONLY_DEFENSIVE_BLOCKED_FIELDS
+    ):
+        return False
+    if unit["moves"] == 1 and promotion["blitz"]:
+        return False
+    cannot_deal_collateral = (
+        not unit["collateral_damage"] or not unit["collateral_damage_limit"]
+        or not unit["collateral_damage_max_units"])
+    if cannot_deal_collateral and promotion["collateral_damage_change"]:
+        return False
+    if not unit["interception"] and promotion["intercept_change"]:
+        return False
+
+    prereq = promotion["prereq"]
+    if prereq and not _promotion_valid_for_unit(rules, unit, prereq, _seen):
+        return False
+    prereq_or = promotion["prereq_or"]
+    if prereq_or and not any(
+        _promotion_valid_for_unit(rules, unit, p, _seen) for p in prereq_or
+    ):
+        return False
+    return True
+
+
+def _promotable_promotions(rules, unit_type, held, known):
+    """PROMOTION_ keys this specific unit could take next, and why not for
+    the rest - CyUnit.canAcquirePromotion(), reproduced field by field.
+
+    `unit_type` is the UNIT_ type (rules.units' key); `held` is the set of
+    PROMOTION_ keys already on the unit (units[].promotions - empty list
+    still means level 1, nothing taken). Verified against
+    CvGameCoreDLL/CvUnit.cpp:canAcquirePromotion and
+    CvGameCoreUtils.cpp:isPromotionValid, both cited in REFERENCES.md:
+
+      - Already held -> refused outright (isHasPromotion check).
+      - PromotionPrereq / PromotionPrereqOr1+2 -> must already hold the
+        required one, or at least one of the OR-alternatives.
+      - TechPrereq -> must be known.
+      - isLeader() promotions (Great General field promotions) are excluded
+        outright - this function never models bLeader=true.
+      - The candidate itself, AND every promotion in its prereq chain, must
+        pass _promotion_valid_for_unit (combat class, only-defensive,
+        blitz/collateral/intercept capability) - see that function for why
+        the chain is re-checked rather than just "is it held".
+      - bIgnoreTerrainCost blocks anything with iMoveDiscountChange, but that
+        field is not parsed on the promotion side yet (out of scope: nothing
+        in _FLAT_EFFECT_FIELDS covers it), so this ONE check is a documented
+        no-op rather than silently wrong - flagged in view_promotable's OMITS.
+
+    NOT modelled, and said explicitly rather than silently: StateReligionPrereq
+    (state religion is not in schema/state.schema.json at all).
+    getFreePromotions itself IS modelled, indirectly: a free promotion is
+    already in `held` (granted at unit creation) so the "already holds it"
+    refusal excludes it same as any held promotion, but its CHILDREN are not
+    exempt from validity just because their parent was free - see
+    _promotion_valid_for_unit's Samurai/DRILL1/DRILL2 example.
+
+    Returns (available, blocked) - available a sorted list of PROMOTION_ keys,
+    blocked a sorted list of (PROMOTION_ key, reason) for everything else in
+    the file, so a caller can show why a promotion is absent rather than just
+    that it is.
+    """
+    unit = rules.units.get(unit_type)
+
+    available = []
+    blocked = []
+    for key, promotion in sorted(rules.promotions.items()):
+        if key in held:
+            blocked.append((key, "already held"))
+            continue
+
+        if promotion["is_leader"]:
+            blocked.append((key, "Great General field promotion - not "
+                                 "acquired through XP"))
+            continue
+
+        prereq = promotion["prereq"]
+        if prereq and prereq not in held:
+            blocked.append((key, "needs %s first" % prereq))
+            continue
+        prereq_or = promotion["prereq_or"]
+        if prereq_or and not any(p in held for p in prereq_or):
+            blocked.append((key, "needs one of %s first"
+                           % " or ".join(prereq_or)))
+            continue
+
+        tech = promotion["tech"]
+        if tech and tech not in known:
+            blocked.append((key, "needs %s" % tech))
+            continue
+
+        if unit is None or unit["combat_class"] is None:
+            blocked.append((key, "this unit has no combat class"))
+            continue
+        if unit["combat_class"] not in promotion["restricted_to_unit_combats"]:
+            blocked.append((key, "not offered to %s" % unit["combat_class"]))
+            continue
+
+        if unit["only_defensive"] and any(
+            promotion[field] for field in _ONLY_DEFENSIVE_BLOCKED_FIELDS
+        ):
+            blocked.append((key, "this unit can only defend"))
+            continue
+
+        if unit["moves"] == 1 and promotion["blitz"]:
+            blocked.append((key, "this unit has only 1 move"))
+            continue
+
+        cannot_deal_collateral = (
+            not unit["collateral_damage"] or not unit["collateral_damage_limit"]
+            or not unit["collateral_damage_max_units"])
+        if cannot_deal_collateral and promotion["collateral_damage_change"]:
+            blocked.append((key, "this unit cannot deal collateral damage"))
+            continue
+
+        if not unit["interception"] and promotion["intercept_change"]:
+            blocked.append((key, "this unit cannot intercept"))
+            continue
+
+        # Everything above is the candidate's OWN checks (kept inline so the
+        # per-case reasons above stay specific: "not offered to X" reads
+        # better than "prereq chain invalid"). What's left is the part those
+        # inline checks cannot see - whether a HELD prerequisite this
+        # promotion depends on would itself still be valid for this unit.
+        # Only reachable via a free promotion (a normally-acquired prereq
+        # already passed these same checks when it was taken), but the
+        # engine does not special-case that, so neither does this.
+        chain_ok = True
+        if prereq and not _promotion_valid_for_unit(rules, unit, prereq):
+            chain_ok = False
+        elif prereq_or and not any(
+            _promotion_valid_for_unit(rules, unit, p) for p in prereq_or
+        ):
+            chain_ok = False
+        if not chain_ok:
+            blocked.append((key, "held via a free promotion this unit "
+                                 "would not otherwise qualify for"))
+            continue
+
+        available.append(key)
+    return available, blocked
+
+
+def view_promotable(rules, unit_id, state, show_known, max_depth, eligible=False):
+    """One of your units' promotions, by engine id: the combined effect of
+    everything it already holds, each one's own detail, and - with
+    eligible=True - what it could take next.
+
+    Takes an id rather than a UNIT_ type because eligibility depends on which
+    promotions THIS unit already holds (units[].promotions), not on the type
+    alone - two Scouts can be eligible for different things. `intel`'s
+    garrison/field listing prints each unit's id next to it for exactly this.
+
+    Held promotions render brief (_view_one_promotion(brief=True)): AVAILABLE
+    TO and REQUIRES are both moot for something the unit already has - what it
+    is offered to and what it needed no longer matter, only what it does.
+    COMBINED EFFECTS leads rather than trails, because the usual question is
+    "what does this unit fight like right now", which the total answers
+    directly; the per-promotion breakdown underneath is for when that total
+    needs explaining, not the first thing read.
+
+    CAN TAKE NEXT / BLOCKED is opt-in (eligible=True) rather than always
+    printed: "what does this unit have" is the common question and "what
+    could it take next" a less frequent one, and BLOCKED alone lists every
+    promotion in the file - real information (the loud majority-blocked case
+    IS itself the answer to "why can't I give it a specific one") but not
+    something to print by default when it usually will not be read.
+    """
+    unit = find_unit(state, unit_id)
+    if unit is None:
+        raise RulesError(
+            "no unit with id %d in this state file. IDs are printed by "
+            "run_history.py intel next to each unit, e.g. 'id 16385'."
+            % unit_id)
+
+    known = effective_known(state)
+    held = sorted(unit.get("promotions") or [])
+
+    out = []
+    out.append("%s id %d" % (unit["type"], unit_id))
+
+    if held:
+        if len(held) > 1:
+            out.append("")
+            out.append("COMBINED EFFECTS - " + ", ".join(held))
+            totals = _promotion_totals([rules.promotions[p] for p in held])
+            if totals:
+                out.append("  " + ("\n  ".join(totals)))
+            else:
+                out.append("  (no numeric effects parsed - see OMITS)")
+
+        out.append("")
+        out.append("ALREADY HAS")
+        for i, promotion_type in enumerate(held):
+            if i:
+                out.append("")
+            out.extend(_view_one_promotion(rules, promotion_type, state,
+                                           show_known, max_depth, brief=True))
+    else:
+        out.append("")
+        out.append("ALREADY HAS: (none)")
+
+    if eligible:
+        available, blocked = _promotable_promotions(
+            rules, unit["type"], set(held), known)
+
+        out.append("")
+        out.append("=" * 60)
+        out.append("")
+        out.append("CAN TAKE NEXT")
+        if available:
+            for key in available:
+                out.append("  %s" % key)
+        else:
+            out.append("  nothing right now")
+
+        out.append("")
+        out.append("BLOCKED")
+        if blocked:
+            for key, reason in blocked:
+                out.append("  %-28s %s" % (key, reason))
+        else:
+            out.append("  nothing - every promotion in the file is available")
+
+    out.append("")
+    out.append("OMITS")
+    if not eligible:
+        out.append("  What this unit could take next - pass --eligible.")
+    out.append("  Whether this unit's XP already funds a pick - `intel`'s garrison")
+    out.append("  listing and units[].promotionsAvailable answer that; this only")
+    out.append("  answers WHICH promotions the rules allow. Great General field")
+    out.append("  promotions (isLeader promotions) and anything gated on state")
+    out.append("  religion (not in the schema) are excluded outright rather than")
+    out.append("  guessed at. iMoveDiscountChange is not a parsed promotion field,")
+    out.append("  so a bIgnoreTerrainCost unit's gate against it is not enforced -")
+    out.append("  flagged, not silently wrong.")
+    out.append("  " + MOD_WARNING)
+    return "\n".join(out)
+
+
+def view_promotion(rules, promotion_type, state, show_known, max_depth):
+    """What a single PROMOTION_ key actually does, and what it takes.
+
+    Mirrors view_unit's shape (effects, then prerequisites) because a
+    promotion IS a unit-modifier bundle - the same reason parse_promotions
+    reuses parse_units' parsing patterns. `units[].promotions` and
+    `units[].promotionsAvailable` (schema increment 7) name WHICH promotions a
+    unit has or could take; this answers what the name actually means, the
+    join `intel`'s garrison listing deliberately does not make (see
+    run_history._combat_note) - same division of labour as `unit`/`tech`
+    already have with `intel`.
+
+    Checking several promotions held together on one real unit, and what
+    they add up to, is `promotion <state> --for-unit ID` (view_promotable) -
+    it reads units[].promotions itself rather than asking the caller to
+    type each name. An earlier draft of this function also took a list of
+    TYPEs directly for that case; dropped once --for-unit existed, since a
+    hypothetical combination not actually held by any unit was not a real
+    question anyone asked, and it let COMBINED EFFECTS (_promotion_totals)
+    live in exactly one place instead of two.
+    """
+    out = _view_one_promotion(rules, promotion_type, state, show_known, max_depth)
+    out.append("")
+    out.append("OMITS")
+    out.append("  Which units currently have this (`intel`'s garrison listing names")
+    out.append("  them) and combat odds against a specific enemy - the agent's call,")
+    out.append("  not this tool's. State-religion prerequisites and leader-only")
+    out.append("  promotions (Great General field promotions) are not resolved here.")
+    out.append("  What several promotions add up to on one unit - `promotion <state>")
+    out.append("  --for-unit ID` totals what that unit actually holds.")
     out.append("  " + MOD_WARNING)
     return "\n".join(out)
 
@@ -2424,7 +3088,8 @@ def view_city(rules, city_name, state):
     out.append("THIS OMITS")
     out.append("  Whether a rival is already building a world wonder - the export")
     out.append("  cannot see rival production, so an unbuilt wonder is still a race.")
-    out.append("  Corporations, espionage and promotions, all out of scope for now.")
+    out.append("  Corporations and espionage, out of scope for now. What a specific")
+    out.append("  unit's promotions do - `rules.py promotion`.")
     out.append("  Anything the engine gates in C++ with no data field behind it.")
     if not rules.civilizations:
         out.append("  CIV4CivilizationInfos.xml did not load, so other civs' unique")
@@ -2496,7 +3161,8 @@ def build_parser():
         description="Reverse and transitive rules lookups against the Civ IV XML.",
     )
     parser.add_argument(
-        "subject", choices=("unit", "tech", "building", "city", "handicap"),
+        "subject",
+        choices=("unit", "tech", "building", "promotion", "city", "handicap"),
         help="what to look up",
     )
     # `state` is the only required positional and always comes last, so
@@ -2507,9 +3173,10 @@ def build_parser():
     # naming the wrong argument entirely.
     parser.add_argument(
         "type_key", metavar="TYPE", nargs="?", default=None,
-        help="e.g. UNIT_AXEMAN, TECH_MONARCHY, or a city name for `city`. "
-             "Required for `unit`, `tech`, `building` and `city`; "
-             "`handicap` defaults to the state file's own.",
+        help="e.g. UNIT_AXEMAN, TECH_MONARCHY, PROMOTION_COMBAT1, or a city "
+             "name for `city`. Required for `unit`, `tech`, `building`, "
+             "`promotion` and `city`; `handicap` defaults to the state "
+             "file's own. `promotion` also accepts --for-unit ID instead.",
     )
     parser.add_argument(
         "state",
@@ -2525,6 +3192,20 @@ def build_parser():
         help="truncate the printed tree at this depth. Totals always cover the "
              "full walk - a partial total is a wrong number.",
     )
+    parser.add_argument(
+        "--for-unit", type=int, default=None, metavar="ID",
+        help="`promotion` only, in place of TYPE: look up one of your units "
+             "by engine id (as `intel` prints it). Prints their combined "
+             "effect and each one's own detail - put this AFTER the state "
+             "file, since argparse cannot always resolve a value-taking "
+             "option sitting between TYPE and a required positional.",
+    )
+    parser.add_argument(
+        "--eligible", action="store_true",
+        help="with --for-unit: also list every promotion this unit could "
+             "take next, and why not for the rest. Off by default - most "
+             "questions about a unit are answered by what it already has.",
+    )
     parser.add_argument("--config", default=None, help=argparse.SUPPRESS)
     return parser
 
@@ -2535,11 +3216,29 @@ def main(argv=None):
     type_key = args.type_key
     state_path = args.state
 
-    # With TYPE optional, argparse fills right-to-left: one positional lands in
-    # `state`. For `unit`/`tech` that means a forgotten state file shows up as a
-    # type-shaped value in `state`, so catch it here and name the real problem
-    # rather than reporting "state file not found: UNIT_AXEMAN".
-    if args.subject in ("unit", "tech", "building", "city") and type_key is None:
+    if args.for_unit is not None and args.subject != "promotion":
+        sys.stderr.write("--for-unit only applies to `promotion`\n")
+        return 2
+    if args.for_unit is not None and type_key is not None:
+        sys.stderr.write(
+            "--for-unit already looks up a unit's promotions - it does not "
+            "take a TYPE as well: %s\n" % type_key
+        )
+        return 2
+    if args.eligible and args.for_unit is None:
+        sys.stderr.write("--eligible only applies alongside --for-unit\n")
+        return 2
+
+    # With TYPE optional, argparse fills right-to-left when it is omitted:
+    # `state` alone gets no TYPE. For `unit`/`tech`/`building`/`promotion`/
+    # `city` that means a forgotten state file shows up as a type-shaped
+    # value in `state`, so catch it here and name the real problem rather
+    # than reporting "state file not found: UNIT_AXEMAN". `promotion
+    # --for-unit ID` is the one case where a missing TYPE is correct on
+    # purpose, so it skips this.
+    if (args.subject in ("unit", "tech", "building", "promotion", "city")
+            and type_key is None
+            and not (args.subject == "promotion" and args.for_unit is not None)):
         # `city` takes a plain name rather than a TYPE key, so the "did they
         # forget the state file" test cannot key off a prefix - a bare word is
         # exactly what a city argument looks like. Anything not ending .json is
@@ -2549,7 +3248,7 @@ def main(argv=None):
             example = state_path if looks_like_a_type else "Lisbon"
         else:
             looks_like_a_type = state_path.upper().startswith(
-                ("UNIT_", "TECH_", "BUILDING_"))
+                ("UNIT_", "TECH_", "BUILDING_", "PROMOTION_"))
             example = (state_path if looks_like_a_type
                        else args.subject.upper() + "_...")
         sys.stderr.write(
@@ -2577,6 +3276,18 @@ def main(argv=None):
                 raise RulesError("`building` needs a type, e.g. BUILDING_BARRACKS")
             text = view_building(rules, type_key, state, args.show_known,
                                  args.depth)
+        elif args.subject == "promotion":
+            if args.for_unit is not None:
+                text = view_promotable(rules, args.for_unit, state,
+                                       args.show_known, args.depth,
+                                       eligible=args.eligible)
+            else:
+                if not type_key:
+                    raise RulesError(
+                        "`promotion` needs a type or --for-unit ID, "
+                        "e.g. PROMOTION_COMBAT1")
+                text = view_promotion(rules, type_key, state, args.show_known,
+                                      args.depth)
         elif args.subject == "city":
             # No --show-known/--depth: `city` prints no tech tree, so neither
             # flag has anything to act on. Same shape as view_handicap.

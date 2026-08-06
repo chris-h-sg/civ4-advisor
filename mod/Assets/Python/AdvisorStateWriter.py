@@ -719,7 +719,65 @@ def _buildUnit(ctx, unit):
 	# the same field-level omission map.tiles uses, and the same rule foreign units
 	# follow, so "damage" reads identically wherever it appears in the file.
 	_setIfDamaged(row, unit)
+	# Level, XP and promotion keys are inputs to a combat-odds judgement, not the
+	# verdict itself - the agent still weighs push-versus-retreat, but only if it
+	# can see what a unit has already earned. All five fields are omitted at their
+	# default (level 1, 0 XP, no promotions, nothing available, nothing owed),
+	# same rule as damage - a fresh unit is the common case.
+	level = unit.getLevel()
+	if level > 1:
+		row['level'] = level
+	experience = unit.getExperience()
+	if experience:
+		row['experience'] = experience
+	available, toNext = _promotionProgress(ctx, unit)
+	if toNext:
+		row['experienceToNextLevel'] = toNext
+	promotions = _buildPromotions(ctx, unit)
+	if promotions:
+		row['promotions'] = promotions
+	if available:
+		row['promotionsAvailable'] = available
 	return row
+
+
+def _promotionProgress(ctx, unit):
+	'''(promotionsAvailable, experienceToNextLevel) for one unit.
+
+	Computed together because both walk the same level ladder, and the two are
+	mutually exclusive by construction: experienceToNextLevel only answers "how
+	far until the FIRST pick is funded" and reads 0 the moment promotionsAvailable
+	is at least 1 - it never reports the distance to some further-out pick once
+	one is already banked, which would force the agent to hold two numbers with
+	context-dependent meaning in its head at once.
+
+	CyUnit.experienceNeeded() only answers for the unit's OWN current level - it is
+	a C++->Python callback that reads getLevel() internally, with no way to ask
+	about a hypothetical one - so there is no single engine call for either of
+	these. Walk the same formula it uses instead (CvGameUtils.py's
+	getExperienceNeeded, verified in the local install and cited in
+	REFERENCES.md): level*level + 1, then bumped by the player's flat
+	getLevelExperienceModifier percentage, rounded up.
+
+	promotionsAvailable is an upper bound on picks available, not a guarantee: it
+	answers whether the XP exists, but not whether an eligible promotion actually
+	exists at each hypothetical level - CyUnit.canAcquirePromotionAny() depends on
+	the unit's specific promotion tree and unit-combat class, which this does not
+	evaluate. See the schema field description for the full caveat.'''
+	modifier = ctx.player.getLevelExperienceModifier()
+	level = unit.getLevel()
+	experience = unit.getExperience()
+	available = 0
+	while True:
+		needed = level * level + 1
+		if modifier:
+			needed += (needed * modifier + 99) // 100
+		if experience < needed:
+			if available:
+				return available, 0
+			return available, needed - experience
+		level += 1
+		available += 1
 
 
 def _setIfDamaged(row, unit):
@@ -727,6 +785,21 @@ def _setIfDamaged(row, unit):
 	damage = unit.getDamage()
 	if damage:
 		row['damage'] = damage
+
+
+def _buildPromotions(ctx, unit):
+	'''PROMOTION_ Type keys this unit has, sorted.
+
+	isHasPromotion swept over every promotion in CIV4PromotionInfos.xml - the same
+	enum-sweep shape as _buildKnownTechs, just per-unit instead of per-team. No fog
+	concern: a unit whose position we already export is one we can see, and this is
+	our own unit besides.'''
+	promotions = []
+	for i in range(ctx.gc.getNumPromotionInfos()):
+		if unit.isHasPromotion(i):
+			promotions.append(ctx.gc.getPromotionInfo(i).getType())
+	promotions.sort()
+	return promotions
 
 
 def _buildCities(ctx):

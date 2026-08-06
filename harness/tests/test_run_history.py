@@ -60,6 +60,13 @@ def render(run_obj, view, first=None, last=None):
     return run_history.render(run_obj, view, first, last)
 
 
+def render_single(tmp_path, state, view):
+    """Render one mutated state as a whole (single-turn) run."""
+    path = write_run(tmp_path, [state])
+    run_obj = run_history.Run(path)
+    return render(run_obj, view)
+
+
 # -- landmarks derived from the sample ------------------------------------
 
 
@@ -803,6 +810,59 @@ def test_garrison_does_not_flag_a_real_defender(run):
     """A warrior in a city must not be marked non-combat."""
     assert "UNIT_WARRIOR" not in run_history.NON_COMBAT_UNITS
     assert "UNIT_SETTLER" in run_history.NON_COMBAT_UNITS
+
+
+# -- promotion/XP visibility ------------------------------------------------
+#
+# Roadmap item 3's motivating case: a scout took two promotions from a Lion
+# fight and the agent could not see it from the export - it only knew because
+# the player mentioned it. samples/baseline-early-game predates schema
+# increment 7 (no unit ever carries promotions/experience), so these mutate a
+# loaded turn rather than reading it as-is, the same pattern the Run-validation
+# tests above use.
+
+
+def test_garrison_shows_promotions_on_a_defender(tmp_path):
+    state = copy.deepcopy(load(34))
+    warrior = next(u for u in state["units"] if u["type"] == "UNIT_WARRIOR")
+    warrior["x"], warrior["y"] = 75, 36  # Lisbon's coordinates at t34.
+    warrior["promotions"] = ["PROMOTION_COMBAT1", "PROMOTION_COMBAT2"]
+    text = render_single(tmp_path, state, "intel")
+    section = text.split("YOUR CITIES AND WHAT IS STANDING IN THEM")[1]
+    assert "[COMBAT1, COMBAT2]" in section
+
+
+def test_garrison_shows_promotions_available_without_a_pick_yet(tmp_path):
+    """promotionsAvailable, not just promotions - a unit can be one fight away
+    from its first promotion with none yet in the list."""
+    state = copy.deepcopy(load(34))
+    warrior = next(u for u in state["units"] if u["type"] == "UNIT_WARRIOR")
+    warrior["x"], warrior["y"] = 75, 36
+    warrior["promotionsAvailable"] = 1
+    text = render_single(tmp_path, state, "intel")
+    section = text.split("YOUR CITIES AND WHAT IS STANDING IN THEM")[1]
+    assert "[1 promotion available]" in section
+
+
+def test_garrison_omits_the_note_for_an_unpromoted_unit(run):
+    """Field-level omission upstream (see schema) means most units carry
+    neither key at all - the common case must add nothing to the line."""
+    clamped = run_history.Run(SAMPLE_DIR, as_of=34)
+    text = render(clamped, "intel")
+    section = text.split("YOUR CITIES AND WHAT IS STANDING IN THEM")[1]
+    lisbon_line = next(line for line in section.splitlines() if "Lisbon" in line)
+    assert "[" not in lisbon_line.replace("[NON-COMBAT]", "")
+
+
+def test_field_unit_shows_promotions_too(tmp_path):
+    """The note applies outside cities as well as inside them."""
+    state = copy.deepcopy(load(34))
+    warrior = next(u for u in state["units"] if u["type"] == "UNIT_WARRIOR"
+                   and u["x"] != 75)
+    warrior["promotions"] = ["PROMOTION_COMBAT1"]
+    text = render_single(tmp_path, state, "intel")
+    section = text.split("YOUR CITIES AND WHAT IS STANDING IN THEM")[1]
+    assert "[COMBAT1]" in section
 
 
 @pytest.mark.parametrize("view", run_history.VIEWS)

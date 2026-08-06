@@ -52,6 +52,10 @@ Folder names say what a run is *for*, not which game produced it — the `{leade
 
   **Third provenance note — every coordinate in this run was migrated when `meta.schemaVersion` bumped 1 → 2**, inverting `y` so `(0,0)` is northwest instead of southwest (see root `CLAUDE.md`). Only coordinates and `meta.schemaVersion` changed, re-serialized through the mod's own `toJson`/`_Record` for a byte-clean diff — the two provenance caveats above are otherwise untouched. Landmark coordinates in this file already reflect the migrated values.
 
+### Single-turn exceptions: `promotions-taken.json`, `promotions-available.json`
+
+Two loose single-turn captures, not runs — a deliberate exception to "a sample is a run, not a turn" above, which is a rule for curated reference material, not for a one-off capture made to validate one export against real data. Both are real mod output from the same Darius game, unrelated to `baseline-early-game/`. `promotions-taken.json` (t25) has `UNIT_SCOUT` id 16385 carrying `PROMOTION_WOODSMAN1`/`PROMOTION_WOODSMAN2`; `promotions-available.json` (t16) has the same scout with `promotionsAvailable: 1` and no promotions taken yet. Captured to confirm schema increment ⑦ (`units[].level`/`experience`/`experienceToNextLevel`/`promotions`/`promotionsAvailable`) against a real game rather than only the synthetic fixtures in `mod/tests/`, and used to verify `rules.py promotion --for-unit` and `run_history.py intel`'s promotion display end to end.
+
 ## What to capture
 
 - **From `turn_0000`**, not just a convenient mid-game stretch. Files are numbered for the turn *about to be played*, so a run starts at `turn_0000` — the state before turn 1, which is the snapshot the first-city decision is actually made from. There are no cities, no borders, and barely any revealed map, so the tooling gets its hardest test where the least data exists. Later turns then cover second-city-onward placement, which has ownership and existing cities as constraints.

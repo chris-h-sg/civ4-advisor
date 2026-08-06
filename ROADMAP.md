@@ -30,26 +30,6 @@ This is a sharper case of the same root cause already named in `run_history.py`'
 
 ---
 
-## `mod/` — schema
-
-### 3. Increment ⑦ — unit combat state (XP, promotions, fortification)
-
-`units[]` carries `id`, `moves`, `type`, `x`, `y`, `damage` and nothing about experience or promotions. In the live trial the scout took two promotions from a Lion fight and the agent could not see it — it only knew because the player mentioned it.
-
-This matters more than it sounds for current scope: turns 0–50 *are* the animal-and-barbarian window, so combat odds drive most of the tactical decisions in scope, and a promoted Scout has genuinely different odds against the next animal. Without it the agent correctly falls back to "your call" on push-versus-retreat — the exact question it exists to answer.
-
-Fits the increment-⑤ principle: **export the inputs, not the verdict.** Promotions and XP are inputs the agent cannot derive from anything else in the file; combat odds stay its judgement.
-
-Scope to settle when implementing:
-
-- Promotion **type keys** (`PROMOTION_COMBAT1`), joining against XML like every other enum-like value, **and** raw XP — the keys say what the unit has, XP says how close the next one is.
-- Probably fortify status and turns fortified, on the same "what does the player see about this unit that we don't export" reasoning.
-- No fog concern: a unit whose position we export is one we can see.
-
-Additive; same file and same deploy as item 1.
-
----
-
 ## `harness/` — tools
 
 Sequencing note: `harness/README.md`'s own "To build, in this order" list is now folded in here.
@@ -126,7 +106,7 @@ Also outstanding from the same caveat: the baseline's increment-⑤ and ⑥ fiel
 
 ### 12. A trial protocol, because out-of-band discovery is the real detector
 
-**The meta-finding, and the one with no obvious owner.** The mod-side gaps in items 1, 2 and 3 all surfaced *only* because the player narrated something the agent could not see — "it's actually healed", "it got two promotions", "here's the 60 gold". In a run where the player did not narrate, those would have silently produced worse advice with nothing in the output able to catch it.
+**The meta-finding, and the one with no obvious owner.** The mod-side gaps in item 1, item 2, and the now-built increment ⑦ all surfaced *only* because the player narrated something the agent could not see — "it's actually healed", "here's the 60 gold", "it got two promotions". In a run where the player did not narrate, those would have silently produced worse advice with nothing in the output able to catch it.
 
 That is the compass failure mode again: wrong-but-plausible, self-consistent, invisible from inside. Trials are currently the only detector for this class of problem, and they fire only when the player happens to mention the right thing.
 
@@ -147,7 +127,7 @@ To `AGENT_GUIDE.md`:
 - **Convert rule 5 from a prohibition into a trigger list.** "Never state a rule from memory" requires the agent to notice it is recalling from memory — the same invisible-from-inside failure as the compass. A short table keyed to *output shapes* is checkable where an internal state is not: about to say "tech X reveals resource Y" → run `rules.py tech X`; "unit A beats unit B" → `rules.py unit A`; "this city can build Z" → `rules.py city NAME`.
 - **Fix the anti-grep line.** "Use `rules.py` rather than grepping" is reasoned from the 18 duplicate file copies but reads as *don't grep*, and probably suppressed the fallback that would have found `iAnimalCombat`. It should say: `rules.py` first because it resolves the right tree; when it doesn't cover something, grep BTS-then-vanilla directly and report having had to.
 - **One line: confirm a gap before reporting it.** The beakers non-gap would have cost nothing to check against the file it was already reading.
-- **Move the permanent data traps here** from the session brief — stale `damage`, missing promotions. Those are properties of the export, not of a trial, and a session file is rewritten each run.
+- **Move the permanent data traps here** from the session brief — currently just stale `damage`. Those are properties of the export, not of a trial, and a session file is rewritten each run.
 
 To the session template:
 
@@ -183,4 +163,4 @@ Not for increment ⑦ or item 1's `damage` fix as anticipated — for a change n
 
 ## Sequence rationale
 
-**1 first** — a correctness defect in shipped output that everything downstream inherits. **2 is recorded, not scheduled** — the best-evidenced finding on this page, but it needs a design for what an affordable fix even looks like before it can be sequenced at all. **3 next** — same file, same deploy, best-evidenced schema gap. **12 now**, since it costs nothing and pays off on the very next trial. **4 and 5** are the two substantial harness builds, both carrying 4-of-6 trial evidence and both unblocked; **6** is a small addition to the same tool as 5 and belongs in the same pass. **7** can be picked up any time and is mostly minutes of work for the highest recurrence counts on the page. **9 and 10** are independent and belong to whenever `rules.py` is next open — the `iAnimalCombat` fix in particular is nearly free. **8** needs a small design decision first. **11** happens whenever a game is played to a wonder completion — opportunistic rather than scheduled. **13 before the next trial**, since instruction changes are only measurable against a run, and `harness/SESSION_TEMPLATE.md` is the committed baseline the next run's changes get compared to.
+**1 first** — a correctness defect in shipped output that everything downstream inherits. **2 is recorded, not scheduled** — the best-evidenced finding on this page, but it needs a design for what an affordable fix even looks like before it can be sequenced at all. **12 now**, since it costs nothing and pays off on the very next trial. **4 and 5** are the two substantial harness builds, both carrying 4-of-6 trial evidence and both unblocked; **6** is a small addition to the same tool as 5 and belongs in the same pass. **7** can be picked up any time and is mostly minutes of work for the highest recurrence counts on the page. **9 and 10** are independent and belong to whenever `rules.py` is next open — the `iAnimalCombat` fix in particular is nearly free. **8** needs a small design decision first. **11** happens whenever a game is played to a wonder completion — opportunistic rather than scheduled. **13 before the next trial**, since instruction changes are only measurable against a run, and `harness/SESSION_TEMPLATE.md` is the committed baseline the next run's changes get compared to.
