@@ -83,6 +83,15 @@ UNIT_PREREQ_OR_BONUSES = {3: [1, 2]}
 BUILDING_PREREQ_BONUS = {}
 NUM_PREREQ_OR_BONUSES = 4
 
+# Real values from GlobalDefines.xml (confirmed against the BTS install), used by
+# _territoryHealRate.
+HEAL_RATE_DEFINES = {
+    "ENEMY_HEAL_RATE": 5,
+    "NEUTRAL_HEAL_RATE": 10,
+    "FRIENDLY_HEAL_RATE": 15,
+    "CITY_HEAL_RATE": 20,
+}
+
 # Building CLASSES, which is what wonder limits are a property of and what the
 # wonders section reports - a civ's unique replacement shares its class.
 BUILDING_CLASSES = ["BUILDINGCLASS_PALACE", "BUILDINGCLASS_BARRACKS",
@@ -135,6 +144,54 @@ class Info(object):
 
     def getType(self):
         return self._t
+
+
+class PromotionInfo(Info):
+    """A promotion, plus the five heal-rate XML fields _healRate sums/compares.
+
+    All zero by default - the common case is a promotion (like Combat I) that
+    touches none of them. PROMOTION_WOODSMAN below is given nonzero terrain
+    healing and PROMOTION_COMBAT2 nonzero same/adjacent-tile healing (standing in
+    for Medic) so both code paths are exercised without inventing a promotion
+    that isn't in PROMOTIONS.
+    """
+
+    def __init__(self, t, enemyHeal=0, neutralHeal=0, friendlyHeal=0,
+                 sameTileHeal=0, adjacentTileHeal=0, alwaysHeal=False):
+        Info.__init__(self, t)
+        self._enemyHeal = enemyHeal
+        self._neutralHeal = neutralHeal
+        self._friendlyHeal = friendlyHeal
+        self._sameTileHeal = sameTileHeal
+        self._adjacentTileHeal = adjacentTileHeal
+        self._alwaysHeal = alwaysHeal
+
+    def getEnemyHealChange(self):
+        return self._enemyHeal
+
+    def getNeutralHealChange(self):
+        return self._neutralHeal
+
+    def getFriendlyHealChange(self):
+        return self._friendlyHeal
+
+    def getSameTileHealChange(self):
+        return self._sameTileHeal
+
+    def getAdjacentTileHealChange(self):
+        return self._adjacentTileHeal
+
+    def isAlwaysHeal(self):
+        return self._alwaysHeal
+
+
+# Per-promotion heal fields, indexed the same as PROMOTIONS. Only WOODSMAN and
+# COMBAT2 carry anything nonzero - see PromotionInfo's docstring for why.
+PROMOTION_HEALS = [
+    {},
+    {"sameTileHeal": 15, "adjacentTileHeal": 10},
+    {"friendlyHeal": 10, "neutralHeal": 10},
+]
 
 
 class BonusInfo(Info):
@@ -273,11 +330,18 @@ class Plot(object):
                  peak=False, hills=False, water=False, lake=False,
                  freshWater=False, river=False, feature=NO_FEATURE,
                  bonus=NO_BONUS, improvement=NO_IMPROVEMENT, route=NO_ROUTE,
-                 owner=NO_PLAYER, yields=(1, 0, 0), none=False):
+                 owner=NO_PLAYER, yields=(1, 0, 0), none=False,
+                 isCity=False, stackedUnits=()):
         self._x = x
         self._y = y
         self._terrain = terrain
         self._revealed = revealed
+        # Live truth for the tile a unit is standing on right now - see getOwner
+        # and isCity below for why that is a safe use, distinct from the fogged
+        # map-tile fields above.
+        self._isCity = isCity
+        self._stackedUnits = list(stackedUnits)
+        self.ownerArgs = []
         self._visible = visible
         self._peak = peak
         self._hills = hills
@@ -368,7 +432,12 @@ class Plot(object):
         raise AssertionError("live route leaks through fog; use getRevealedRouteType")
 
     def getOwner(self):
-        raise AssertionError("live owner leaks through fog; use getRevealedOwner")
+        # NOT a blanket tripwire (unlike improvement/route below): map.tiles must
+        # never call this (it would leak through fog - use getRevealedOwner there),
+        # but _territoryHealRate legitimately needs it, for the tile a unit is
+        # STANDING ON right now, which is never fogged to the unit's own owner.
+        self.ownerArgs.append(True)
+        return self._owner
 
     def getYield(self, eYield):
         raise AssertionError("cached yield is the bDisplay=False variant; use calculateYield")
@@ -393,7 +462,16 @@ class Plot(object):
             "under fog. Iterate each rival's city list instead")
 
     def isCity(self):
-        raise AssertionError("see getPlotCity: foreign cities are read player-side")
+        # Same live-truth exception as getOwner above: _territoryHealRate calls
+        # this only for the tile a unit stands on, never as a map/foreign-city
+        # lookup, so it does not reach through fog the way getPlotCity does.
+        return self._isCity
+
+    def getNumUnits(self):
+        return len(self._stackedUnits)
+
+    def getUnit(self, i):
+        return self._stackedUnits[i]
 
 
 def defaultPlots():
@@ -485,7 +563,8 @@ class Unit(object):
     def __init__(self, unitId, unitType=0, x=10, y=20, baseMoves=1,
                  damage=0, dead=False, owner=PLAYER_ID, visualOwner=None,
                  visible=True, invisible=False, plot=None, experience=0,
-                 promotions=(), level=1):
+                 promotions=(), level=1, hasMoved=False, hurt=None,
+                 alwaysHeal=False):
         self._id = unitId
         self._type = unitType
         self._x = x
@@ -505,6 +584,14 @@ class Unit(object):
         # Promotion indices this unit has, for isHasPromotion to answer against.
         self._promotions = promotions
         self._level = level
+        self._hasMoved = hasMoved
+        # Defaults to "damaged" so a bare Unit(damage=N) exercises the heal gate
+        # the way the engine's own isHurt() would (damage > 0), without every
+        # existing damage= caller needing to also pass hurt=True.
+        self._hurt = hurt
+        if self._hurt is None:
+            self._hurt = damage > 0
+        self._alwaysHeal = alwaysHeal
         self.invisibleArgs = []
         self.hasPromotionArgs = []
 
@@ -516,9 +603,21 @@ class Unit(object):
         return self._visualOwner
 
     def getOwner(self):
-        raise AssertionError(
-            "a unit's true owner can differ from the one the game draws; "
-            "use getVisualOwner so a hidden-nationality unit is never unmasked")
+        # NOT a blanket tripwire (unlike foreignUnits' owner field): _bestHealOnPlot
+        # legitimately needs a nearby unit's TRUE owner, to resolve its true team for
+        # the engine's own getTeam()==getTeam() check - reading getVisualOwner there
+        # would be wrong in the other direction, crediting a disguised unit's heal
+        # bonus to whichever civ it is pretending to be.
+        return self._owner
+
+    def hasMoved(self):
+        return self._hasMoved
+
+    def isHurt(self):
+        return self._hurt
+
+    def isAlwaysHeal(self):
+        return self._alwaysHeal
 
     def isInvisible(self, team, bDebug):
         self.invisibleArgs.append((team, bDebug))
@@ -1062,9 +1161,12 @@ class Gc(object):
         return len(BONUSES)
 
     def getDefineINT(self, name):
-        assert name in ("NUM_UNIT_PREREQ_OR_BONUSES",
-                        "NUM_BUILDING_PREREQ_OR_BONUSES"), name
-        return NUM_PREREQ_OR_BONUSES
+        if name in ("NUM_UNIT_PREREQ_OR_BONUSES", "NUM_BUILDING_PREREQ_OR_BONUSES"):
+            return NUM_PREREQ_OR_BONUSES
+        # Real values from GlobalDefines.xml, confirmed against the BTS install.
+        if name in HEAL_RATE_DEFINES:
+            return HEAL_RATE_DEFINES[name]
+        raise AssertionError("unexpected define: %s" % name)
 
     def getNumUnitInfos(self):
         return len(UNITS)
@@ -1073,7 +1175,7 @@ class Gc(object):
         return len(PROMOTIONS)
 
     def getPromotionInfo(self, i):
-        return Info(PROMOTIONS[i])
+        return PromotionInfo(PROMOTIONS[i], **PROMOTION_HEALS[i])
 
     def getNumBuildingInfos(self):
         return len(BUILDINGS)
@@ -1463,9 +1565,10 @@ def exportState(**kwargs):
     return mod, json.loads(text)
 
 
-def buildWith(units=None, cities=None, cyMap=None):
+def buildWith(units=None, cities=None, cyMap=None, team=None, rivals=None):
     """Export a turn for a player with the given units/cities/map, parsed back."""
-    return exportState(player=Player(units=units, cities=cities), cyMap=cyMap)
+    return exportState(player=Player(units=units, cities=cities), cyMap=cyMap,
+                        team=team, rivals=rivals)
 
 
 def buildTile(**kwargs):
@@ -1480,7 +1583,13 @@ class UnitTests(unittest.TestCase):
         # Map defaults to height 52 (Map.__init__), so exported y is
         # 52 - 1 - 9 = 42: the writer inverts y once, at the end of buildState,
         # so 0 is now the north edge - see AdvisorStateWriter._invertY.
-        _, parsed = buildWith(units=[Unit(4, unitType=2, x=7, y=9, damage=35)])
+        #
+        # hasMoved=True with no Always Heal promotion means this unit will NOT
+        # heal this turn (see _willHealThisTurn), so damage passes through
+        # unchanged - heal PREDICTION is exercised separately, in
+        # UnitHealPredictionTests, rather than mixed into this general shape test.
+        _, parsed = buildWith(units=[
+            Unit(4, unitType=2, x=7, y=9, damage=35, hasMoved=True)])
         self.assertEqual(parsed["units"], [
             {"id": 4, "type": "UNIT_WORKER", "x": 7, "y": 42,
              "moves": 1, "damage": 35, "experienceToNextLevel": 2},
@@ -1587,6 +1696,158 @@ class UnitTests(unittest.TestCase):
         unit = parsed["units"][0]
         self.assertEqual(unit["promotionsAvailable"], 2)
         self.assertNotIn("experienceToNextLevel", unit)
+
+
+class UnitHealPredictionTests(unittest.TestCase):
+    """_setIfDamaged predicts the heal CvUnit::doTurn() applies before the player
+    regains control, since raw getDamage() is one heal-tick stale (see REFERENCES.md
+    "doTurn() mutation-order audit") and CyUnit exposes no healRate() to read instead.
+
+    Default Unit()/Plot() is a damaged, unmoved unit on an unowned, non-city tile
+    with no promotions and nothing else nearby - the NEUTRAL_HEAL_RATE=10 branch,
+    used as the baseline most of these tests vary one axis away from.
+    """
+
+    def test_moved_unit_without_always_heal_does_not_heal(self):
+        # The engine's own gate (CvUnit.cpp:713-725): a unit that moved this turn
+        # only heals if it carries Always Heal. Damage passes through unchanged.
+        _, parsed = buildWith(units=[Unit(0, damage=35, hasMoved=True)])
+        self.assertEqual(parsed["units"][0]["damage"], 35)
+
+    def test_moved_unit_with_always_heal_still_heals(self):
+        _, parsed = buildWith(units=[
+            Unit(0, damage=35, hasMoved=True, alwaysHeal=True)])
+        # Neutral territory, no promotions: 35 - NEUTRAL_HEAL_RATE(10) = 25.
+        self.assertEqual(parsed["units"][0]["damage"], 25)
+
+    def test_unhurt_unit_needs_no_prediction(self):
+        # damage=0 short-circuits before _healRate is ever called - confirmed via
+        # the map never being touched (see the adjacency tests below for what a
+        # real call looks like).
+        _, parsed = buildWith(units=[Unit(0, damage=0)])
+        self.assertNotIn("damage", parsed["units"][0])
+
+    def test_neutral_territory_baseline(self):
+        _, parsed = buildWith(units=[Unit(0, damage=35)])
+        self.assertEqual(parsed["units"][0]["damage"], 25)  # 35 - 10
+
+    def test_friendly_territory_heals_faster(self):
+        plot = Plot(x=10, y=20, visible=True, owner=PLAYER_ID)
+        _, parsed = buildWith(units=[Unit(0, damage=35, plot=plot)])
+        self.assertEqual(parsed["units"][0]["damage"], 20)  # 35 - FRIENDLY(15)
+
+    def test_enemy_territory_heals_slower(self):
+        # Owned by rival player 1 (team 1), at war with our team.
+        plot = Plot(x=10, y=20, visible=True, owner=1)
+        _, parsed = buildWith(units=[Unit(0, damage=35, plot=plot)],
+                               team=Team(atWar=(1,)), rivals={1: Rival(1, teamId=1)})
+        self.assertEqual(parsed["units"][0]["damage"], 30)  # 35 - ENEMY(5)
+
+    def test_unowned_territory_is_neutral_not_enemy(self):
+        # NO_TEAM is never "at war" with anyone - an unowned plot must not fall
+        # into the enemy branch by mistake.
+        plot = Plot(x=10, y=20, visible=True, owner=NO_PLAYER)
+        _, parsed = buildWith(units=[Unit(0, damage=35, plot=plot)])
+        self.assertEqual(parsed["units"][0]["damage"], 25)  # 35 - NEUTRAL(10)
+
+    def test_rival_territory_at_peace_is_neutral_not_enemy(self):
+        # Owned by rival player 1, but our team is not at war with them.
+        plot = Plot(x=10, y=20, visible=True, owner=1)
+        _, parsed = buildWith(units=[Unit(0, damage=35, plot=plot)],
+                               rivals={1: Rival(1, teamId=1)})
+        self.assertEqual(parsed["units"][0]["damage"], 25)  # 35 - NEUTRAL(10)
+
+    def test_own_city_heals_at_the_city_rate(self):
+        plot = Plot(x=10, y=20, visible=True, owner=PLAYER_ID, isCity=True)
+        _, parsed = buildWith(units=[Unit(0, damage=35, plot=plot)])
+        self.assertEqual(parsed["units"][0]["damage"], 15)  # 35 - CITY(20)
+
+    def test_foreign_city_still_heals_at_the_city_rate_not_enemy(self):
+        # The engine's own source picks friendly-or-neutral on a city tile and
+        # never consults the enemy term at all there (CvUnit.cpp:3501) - even a
+        # city tile we do not own gets the full CITY_HEAL_RATE, just with the
+        # neutral (not friendly) promotion adjustment.
+        plot = Plot(x=10, y=20, visible=True, owner=1, isCity=True)
+        _, parsed = buildWith(units=[Unit(0, damage=35, plot=plot)],
+                               team=Team(atWar=(1,)), rivals={1: Rival(1, teamId=1)})
+        self.assertEqual(parsed["units"][0]["damage"], 15)  # 35 - CITY(20)
+
+    def test_citys_building_derived_heal_bonus_is_a_known_gap(self):
+        # CvCity.getHealRate() (e.g. an Aqueduct's bonus) has no Python binding
+        # and no XML fallback - documented in _healRate as a permanent, bounded
+        # undercount. This test exists so that gap is pinned to a concrete
+        # number rather than left as prose: a real Aqueduct-garrisoned unit
+        # would heal faster than the 15 this predicts, not less.
+        plot = Plot(x=10, y=20, visible=True, owner=PLAYER_ID, isCity=True)
+        _, parsed = buildWith(units=[Unit(0, damage=35, plot=plot)])
+        self.assertEqual(parsed["units"][0]["damage"], 15)
+
+    def test_own_promotion_bonus_stacks_on_the_territory_rate(self):
+        # PROMOTION_WOODSMAN (index 2 in PROMOTIONS/PROMOTION_HEALS) carries
+        # friendlyHeal=10, neutralHeal=10 - exercised here on the neutral branch.
+        _, parsed = buildWith(units=[Unit(0, damage=35, promotions=(2,))])
+        self.assertEqual(parsed["units"][0]["damage"], 15)  # 35 - (10 + 10)
+
+    def test_nearby_medic_bonus_is_not_summed_with_the_base_rate_but_added_once(self):
+        # PROMOTION_COMBAT2 also carries sameTileHeal - the Medic-line term this
+        # unit's OWN presence does not grant itself, but a teammate standing on
+        # the same tile does, matching CvUnit.cpp's separate iBestHeal reduction.
+        medic = Unit(1, owner=PLAYER_ID, promotions=(1,))
+        plot = Plot(x=10, y=20, visible=True, stackedUnits=[medic])
+        hurt = Unit(0, damage=35, plot=plot)
+        _, parsed = buildWith(units=[hurt, medic])
+        # 35 - (NEUTRAL(10) + sameTileHeal(15)) = 10.
+        self.assertEqual(parsed["units"][0]["damage"], 10)
+
+    def test_nearby_medic_bonus_ignores_a_rivals_teammate(self):
+        # Only OUR team's nearby units contribute - the engine's own check is
+        # getTeam() == getTeam() (CvUnit.cpp:3536), and a rival standing on the
+        # same tile (e.g. during a stack fight) must not credit us their Medic.
+        rivalMedic = Unit(9, owner=1, promotions=(1,))
+        plot = Plot(x=10, y=20, visible=True, stackedUnits=[rivalMedic])
+        hurt = Unit(0, damage=35, plot=plot)
+        _, parsed = buildWith(units=[hurt])
+        self.assertEqual(parsed["units"][0]["damage"], 25)  # 35 - NEUTRAL(10) only
+
+    def test_adjacent_medic_bonus_uses_the_map_not_the_units_own_tile(self):
+        # adjacentTileHeal only applies from one of the 8 neighbours, walked via
+        # _ADJACENT_OFFSETS since there is no plotDirection binding in Python.
+        medic = Unit(1, owner=PLAYER_ID, x=11, y=20, promotions=(1,))
+        neighborPlot = Plot(x=11, y=20, visible=True, stackedUnits=[medic])
+        cyMap = Map(plots=[neighborPlot], width=84, height=52)
+        hurt = Unit(0, damage=35, x=10, y=20)
+        _, parsed = buildWith(units=[hurt, medic], cyMap=cyMap)
+        # 35 - (NEUTRAL(10) + adjacentTileHeal(10)) = 15.
+        self.assertEqual(parsed["units"][0]["damage"], 15)
+
+    def test_off_map_neighbour_is_skipped_not_an_error(self):
+        # A unit at the map edge has neighbours that fall outside the grid -
+        # Map.plot() hands back the shared "unrevealed" stand-in for those, and
+        # the walk must tolerate it rather than crash the export.
+        _, parsed = buildWith(units=[Unit(0, damage=35, x=0, y=0)])
+        self.assertEqual(parsed["units"][0]["damage"], 25)  # 35 - NEUTRAL(10)
+
+    def test_predicted_damage_never_goes_negative(self):
+        # A heal rate that would overshoot getDamage() clamps to 0 (field
+        # omitted), matching changeDamage()'s own floor rather than exporting
+        # a negative percentage.
+        plot = Plot(x=10, y=20, visible=True, owner=PLAYER_ID, isCity=True)
+        _, parsed = buildWith(units=[Unit(0, damage=5, plot=plot)])
+        self.assertNotIn("damage", parsed["units"][0])
+
+    def test_foreign_units_are_never_heal_predicted(self):
+        # A rival's damage is live-read only - the mod has no standing to predict
+        # a heal outcome that depends on promotions and territory it does not
+        # control the truth of. A moved rival unit at 40 damage would NOT heal
+        # this turn under _willHealThisTurn, so if this were (wrongly) run
+        # through prediction the number would still happen to match; the real
+        # guard is architectural (_buildForeignUnit never calls _setIfDamaged),
+        # confirmed by reading straight off getDamage() with no plot involved.
+        _, parsed = buildDiplomacy(rivals=[
+            Rival(1, teamId=1, leader=1, civilization=1,
+                  units=[Unit(0, unitType=1, owner=1, damage=40)])],
+            met=(1,))
+        self.assertEqual(parsed["foreignUnits"][0]["damage"], 40)
 
 
 class CityTests(unittest.TestCase):
@@ -2520,12 +2781,15 @@ class ForeignCityTests(unittest.TestCase):
         # revealed: CvCity::init only reveals a new city to teams that can
         # currently SEE the plot. So a plot sweep calling getPlotCity() would
         # surface cities founded under fog that the player has never laid eyes
-        # on. Both plot accessors raise; this is what keeps the section honest
-        # if anyone tries to fold it into _buildMap for speed.
+        # on. _buildForeignCities walks each rival's own city list and never
+        # touches CyMap/CyPlot at all - getPlotCity stays a hard tripwire for
+        # that reason. isCity is NOT a tripwire any more (_territoryHealRate
+        # legitimately calls it, on a unit's own tile, for heal prediction - see
+        # Plot.isCity's docstring); that is a different call site this test was
+        # never protecting.
         mod, _ = buildDiplomacy(rivals=[self.rival(ForeignCity(0, owner=1))])
         plot = Plot()
         self.assertRaises(AssertionError, plot.getPlotCity)
-        self.assertRaises(AssertionError, plot.isCity)
 
     def test_barbarian_cities_are_included(self):
         _, parsed = buildDiplomacy(rivals=[

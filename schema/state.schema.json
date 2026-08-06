@@ -213,7 +213,7 @@
                         "minimum": 1,
                         "maximum": 100,
                         "default": 0,
-                        "description": "Percentage of health lost, not hit points: 100 would be dead. Omitted when the unit is undamaged, which is its default and by far the usual case."
+                        "description": "Percentage of health lost, not hit points: 100 would be dead. Omitted when the unit is undamaged, which is its default and by far the usual case. PREDICTS the value AFTER this turn's heal, not the raw value CyUnit.getDamage() holds at export time: CvUnit::doTurn() heals a hurt unit in the same pass that resets moves, which runs after the export hook fires and before the player regains control, so the raw value always describes the turn that just ended. CyUnit exposes no healRate() to read the post-heal figure directly, so it is reconstructed from the exposed components of the engine's own formula (territory, promotions, and a nearby Medic-line bonus). ONE KNOWN GAP: a city's building-derived heal bonus (e.g. an Aqueduct) has no Python binding and cannot be reconstructed, so a unit garrisoned in such a city will in reality heal faster than this predicts - a bounded, permanent undercount for that one case. Foreign units' damage (foreignUnits[].damage below) is NOT predicted this way and stays live-read. See AdvisorStateWriter._setIfDamaged and _healRate."
                     },
                     "level": {
                         "type": "integer",

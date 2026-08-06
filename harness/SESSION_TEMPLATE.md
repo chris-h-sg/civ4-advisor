@@ -45,8 +45,6 @@ Use whatever path each connected folder actually presents as — the examples be
 
 ## One more thing worth watching for, specific to this trial
 
-This is a repeat of a Cowork trial on the same game. Two known gaps from that run are recorded in this project's roadmap (not a file you have access to here) and may or may not still bite:
+This is a repeat of a Cowork trial on the same game. A known gap from that run is recorded in this project's roadmap (not a file you have access to here) and may or may not still bite — the `damage` staleness this note used to warn about is now fixed at the mod level and no longer applies.
 
-- **`damage` on units may read one heal-tick stale** — treat it as "possibly stale" rather than authoritative until the player confirms otherwise in-game.
-
-If you notice yourself telling the player something the JSON should have carried, or vice versa, flag it explicitly — that out-of-band signal is the main way gaps like the two above get found at all.
+If you notice yourself telling the player something the JSON should have carried, or vice versa, flag it explicitly — that out-of-band signal is the main way gaps like that one get found at all.

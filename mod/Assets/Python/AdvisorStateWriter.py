@@ -718,7 +718,7 @@ def _buildUnit(ctx, unit):
 	# unhurt, which is the documented default and the overwhelmingly common case -
 	# the same field-level omission map.tiles uses, and the same rule foreign units
 	# follow, so "damage" reads identically wherever it appears in the file.
-	_setIfDamaged(row, unit)
+	_setIfDamaged(ctx, row, unit)
 	# Level, XP and promotion keys are inputs to a combat-odds judgement, not the
 	# verdict itself - the agent still weighs push-versus-retreat, but only if it
 	# can see what a unit has already earned. All five fields are omitted at their
@@ -780,11 +780,171 @@ def _promotionProgress(ctx, unit):
 		available += 1
 
 
-def _setIfDamaged(row, unit):
-	'Record a unit\'s damage, or leave the field out entirely when it is unhurt.'
+def _setIfDamaged(ctx, row, unit):
+	'''Record a unit's damage AFTER this turn's heal, or leave the field out entirely
+	when the result is unhurt.
+
+	getDamage() alone is the same kind of stale as movesLeft(): CvUnit::doTurn() heals
+	a hurt unit in the same pass that resets moves, and that pass runs after our
+	export hook fires and before the player regains control - so the raw value here
+	always describes the turn that just ended, not the one this export is labelled
+	for. Confirmed live: a scout at 76 damage was already healed further in-game by
+	the time the file caught up (see REFERENCES.md "doTurn() mutation-order audit").
+
+	Unlike moves, there is no live equivalent to fall back to - CyUnit exposes no
+	healRate() at all (confirmed live: AttributeError). So instead of exporting the
+	stale value, the post-heal one is predicted from _healRate, whose components ARE
+	individually exposed even though the aggregate isn't. See _healRate for the one
+	acknowledged gap this prediction carries (a city's building-derived heal bonus).'''
 	damage = unit.getDamage()
+	if damage and _willHealThisTurn(unit):
+		damage -= _healRate(ctx, unit, unit.plot())
+		if damage < 0:
+			damage = 0
 	if damage:
 		row['damage'] = damage
+
+
+def _willHealThisTurn(unit):
+	'''Whether CvUnit::doTurn() will run this unit through its heal branch.
+
+	Exact match of the engine's own gate (CvUnit.cpp:713-725, verified against the BTS
+	SDK source): a unit that has moved this turn only heals if it carries the Always
+	Heal promotion (e.g. Medic III via its own tree); a unit that has not moved heals
+	whenever it is hurt. One separate, out-of-scope damage source sits just above this
+	gate in doTurn() and is NOT reconstructed here: terrain-feature turn damage (e.g.
+	Fallout), applied unconditionally before the heal check regardless of hasMoved.
+	That is a damage SOURCE, not a heal-timing question, and would need its own
+	feature-damage sweep to predict - left as a known residual staleness alongside the
+	city-heal-rate gap in _healRate.'''
+	if unit.hasMoved():
+		return unit.isAlwaysHeal()
+	return unit.isHurt()
+
+
+## dx,dy offsets for the 8 plots adjacent to a unit's own tile. There is no
+## plotDirection binding exposed to Python, so the neighbour walk is hand-rolled.
+_ADJACENT_OFFSETS = (
+	(-1, -1), (0, -1), (1, -1),
+	(-1, 0), (1, 0),
+	(-1, 1), (0, 1), (1, 1),
+)
+
+
+def _unitPromotionHealBonuses(ctx, unit):
+	'''(enemy, neutral, friendly) heal-rate percentage bonuses from this unit's own
+	promotions, summed across every promotion it carries.
+
+	Same enum-sweep shape as _buildPromotions, just accumulating three XML fields
+	(CIV4PromotionInfos.xml's HealRateChange trio) instead of collecting Type keys.
+	getSameTileHealChange/getAdjacentTileHealChange (the Medic line) are handled
+	separately in _bestNearbyHeal - those affect OTHER units nearby, not this one's
+	own base rate, and the engine takes the best nearby value rather than summing it.'''
+	enemy = 0
+	neutral = 0
+	friendly = 0
+	for i in range(ctx.gc.getNumPromotionInfos()):
+		if not unit.isHasPromotion(i):
+			continue
+		info = ctx.gc.getPromotionInfo(i)
+		enemy += info.getEnemyHealChange()
+		neutral += info.getNeutralHealChange()
+		friendly += info.getFriendlyHealChange()
+	return enemy, neutral, friendly
+
+
+def _territoryHealRate(ctx, unit, plot):
+	'''The base heal-rate percentage for the territory a unit currently stands in.
+
+	Reconstructs CvUnit::healRate()'s base-rate branch (CvUnit.cpp:3499-3524, verified
+	against the BTS SDK source): a city tile (CvPlot.isCity, true/our-team form) heals
+	at the city rate, PLUS a building-derived CvCity.getHealRate() bonus this
+	reconstruction cannot see - see _healRate for why that term is an acknowledged,
+	permanent gap. The engine's own promotion adjustment on a city tile is a
+	friendly-or-neutral choice, NEVER enemy - the source picks between
+	getExtraFriendlyHeal and getExtraNeutralHeal there even though the city might not
+	be ours, and does not consult getExtraEnemyHeal at all on a city tile.
+
+	Off a city tile, the engine picks friendly/enemy/neutral by TEAM, not by player:
+	isFriendlyTerritory(plotTeam) is friendly only for our own team or a vassal
+	relation (structurally unreachable in turns 0-50, since vassalage needs a
+	capitulation war), otherwise the tile is enemy if the plot's owning team is at war
+	with ours and neutral otherwise - which also covers an unowned plot, whose team is
+	NO_TEAM and is never "at war" with anyone. Each branch is further adjusted by this
+	unit's own promotion bonuses from _unitPromotionHealBonuses, matching the engine's
+	getExtraFriendlyHeal/getExtraEnemyHeal/getExtraNeutralHeal accumulators, which are
+	themselves built from the same per-promotion XML fields swept there.'''
+	enemyBonus, neutralBonus, friendlyBonus = _unitPromotionHealBonuses(ctx, unit)
+	if plot.isCity():
+		owner = plot.getOwner()
+		if owner == ctx.playerId:
+			return ctx.gc.getDefineINT('CITY_HEAL_RATE') + friendlyBonus
+		return ctx.gc.getDefineINT('CITY_HEAL_RATE') + neutralBonus
+	owner = plot.getOwner()
+	if owner == ctx.playerId:
+		return ctx.gc.getDefineINT('FRIENDLY_HEAL_RATE') + friendlyBonus
+	if owner != PlayerTypes.NO_PLAYER:
+		ownerTeam = ctx.gc.getPlayer(owner).getTeam()
+		if ctx.team.isAtWar(ownerTeam):
+			return ctx.gc.getDefineINT('ENEMY_HEAL_RATE') + enemyBonus
+	return ctx.gc.getDefineINT('NEUTRAL_HEAL_RATE') + neutralBonus
+
+
+def _bestNearbyHeal(ctx, unit, plot):
+	'''The largest same-tile or adjacent-tile heal bonus any friendly unit nearby
+	grants this one (the Medic line), matching the engine's iBestHeal reduction
+	(CvUnit.cpp:3526-3573, verified against the BTS SDK source) - the best available
+	bonus applies, not the sum of all of them.
+
+	Only our own team's units are asked: a rival's Medic promotions are not ours to
+	read, and the engine's own check is teammate-scoped besides. No plotDirection
+	binding exists in the Python layer, so the 8 neighbours are walked by hand via
+	_ADJACENT_OFFSETS rather than an engine-provided iterator.'''
+	best = 0
+	best = _bestHealOnPlot(ctx, plot, best, ctx.gc.getPromotionInfo, 'getSameTileHealChange')
+	x = plot.getX()
+	y = plot.getY()
+	for dx, dy in _ADJACENT_OFFSETS:
+		neighbor = ctx.cyMap.plot(x + dx, y + dy)
+		if neighbor is None or neighbor.isNone():
+			continue
+		best = _bestHealOnPlot(ctx, neighbor, best, ctx.gc.getPromotionInfo, 'getAdjacentTileHealChange')
+	return best
+
+
+def _bestHealOnPlot(ctx, plot, best, getPromotionInfo, changeMethodName):
+	'''Fold every TEAMMATE unit standing on one plot into the running best-heal value.
+
+	Teammate, not owner - the engine's own check is getTeam() == getTeam()
+	(CvUnit.cpp:3536, 3562), which a player-equality check would get wrong for a
+	teamed civ. getOwner() (not getVisualOwner()) is correct and safe here: unlike
+	foreignUnits, this never leaves the export, and a hidden-nationality unit's true
+	team is exactly what determines whether it actually contributes this bonus.'''
+	for i in range(plot.getNumUnits()):
+		other = plot.getUnit(i)
+		if ctx.gc.getPlayer(other.getOwner()).getTeam() != ctx.teamId:
+			continue
+		for p in range(ctx.gc.getNumPromotionInfos()):
+			if not other.isHasPromotion(p):
+				continue
+			change = getattr(getPromotionInfo(p), changeMethodName)()
+			if change > best:
+				best = change
+	return best
+
+
+def _healRate(ctx, unit, plot):
+	'''Predicted heal-rate percentage this unit will receive at the end of the
+	current turn, the sum of its territory-based base rate and the best nearby
+	Medic-line bonus - CvUnit::healRate()'s own two terms (CvUnit.cpp:3482-3576,
+	verified against the BTS SDK source).
+
+	ONE ACKNOWLEDGED GAP: a city's building-derived bonus (CvCity.getHealRate(), e.g.
+	from an Aqueduct) reads a raw C++ member with no Python binding and no XML
+	fallback, so it cannot be reconstructed here. A unit garrisoned in a city with a
+	heal-boosting building will heal faster than this predicts - a permanent, bounded
+	undercount of damage-after-heal for that one case, not a general staleness.'''
+	return _territoryHealRate(ctx, unit, plot) + _bestNearbyHeal(ctx, unit, plot)
 
 
 def _buildPromotions(ctx, unit):
@@ -1242,7 +1402,12 @@ def _buildForeignUnit(ctx, unit):
 	row['type'] = ctx.gc.getUnitInfo(unit.getUnitType()).getType()
 	# Legitimately visible: the engine folds every unit's damage into the stack
 	# strength printed in the tile mouseover, gated only on the plot being visible.
-	_setIfDamaged(row, unit)
+	# Live-read, deliberately NOT run through _setIfDamaged's heal prediction: that
+	# reconstruction leans on promotions and territory this unit's true owner
+	# controls, none of which the export has any standing to predict for a rival.
+	damage = unit.getDamage()
+	if damage:
+		row['damage'] = damage
 	return row
 
 

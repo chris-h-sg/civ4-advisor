@@ -10,18 +10,6 @@ Ordering rationale is at the bottom.
 
 ## Correctness
 
-### 1. Audit exported fields against engine `doTurn()` mutation order
-
-**A bug class, not a bug.** `movesLeft` was already found this way: read before `CvUnit::doTurn()` reset it, so the export always described the round that just ended — a warrior that had moved exported `0`. The schema changed to `moves` (`baseMoves()`) on the strength of a live capture.
-
-The first live advisor trial (Darius, t0–25) surfaced what is very likely the same defect in **`damage`**: turn 20's file showed the scout at 11 damage when it was already fully healed in-game, and the pattern repeated (76 damage reported, healed further before the next file caught up). Healing happens in the same `doTurn()` pass that resets moves. If confirmed, `damage` is systematically one heal-tick stale, and the agent's working assumption — "treat damage as possibly one turn stale" — is the *correct* reading of current output rather than a workaround.
-
-**The action is not "fix damage".** It is to audit every exported field against what `CvUnit::doTurn()`, `CvCity::doTurn()` and the turn-processing pass mutate, then write the ordering rule down once. Candidates: unit healing, city food and production accumulation, culture, research progress, GPP. Several documented quirks are probably instances of the same ordering (`productionPerTurn` carrying one-off overflow, `foodPerTurn` reading 0 during a food build), so expect the audit to mostly *confirm* existing entries and catch one or two new ones.
-
-Output: a corrected `damage` (or a documented, schema-stated staleness), plus a section in `REFERENCES.md` stating the rule so the next field added is checked against it rather than discovered the hard way.
-
-**Note the detection path.** This was caught only because the player said "it's actually healed". Nothing in the output could have surfaced it — see item 11.
-
 ### 2. Silent same-turn round trips: a unit's exported position can hide a real event
 
 Found in the first Claude Code trial (Darius, t0–25), and the sharpest finding either trial has produced. A goody hut at (68,31) was popped for 60 gold on turn 22, but the scout that must have popped it was logged at (67,32) in **both** `turn_0021` and `turn_0022` — unchanged. With 2 movement, the only explanation that fits is a round trip within the same turn: move onto the hut, pop it, move back, netting zero displacement. Nothing in the export shows path, only final position, so the event was completely invisible until the player mentioned the gold out loud; the agent then had to reverse-engineer what must have happened from the treasury jump alone.
@@ -106,7 +94,7 @@ Also outstanding from the same caveat: the baseline's increment-⑤ and ⑥ fiel
 
 ### 12. A trial protocol, because out-of-band discovery is the real detector
 
-**The meta-finding, and the one with no obvious owner.** The mod-side gaps in item 1, item 2, and the now-built increment ⑦ all surfaced *only* because the player narrated something the agent could not see — "it's actually healed", "here's the 60 gold", "it got two promotions". In a run where the player did not narrate, those would have silently produced worse advice with nothing in the output able to catch it.
+**The meta-finding, and the one with no obvious owner.** The mod-side gaps in the (now-resolved) `doTurn()` mutation-order audit (see `REFERENCES.md`), item 2, and the now-built increment ⑦ all surfaced *only* because the player narrated something the agent could not see — "it's actually healed", "here's the 60 gold", "it got two promotions". In a run where the player did not narrate, those would have silently produced worse advice with nothing in the output able to catch it.
 
 That is the compass failure mode again: wrong-but-plausible, self-consistent, invisible from inside. Trials are currently the only detector for this class of problem, and they fire only when the player happens to mention the right thing.
 
@@ -127,7 +115,7 @@ To `AGENT_GUIDE.md`:
 - **Convert rule 5 from a prohibition into a trigger list.** "Never state a rule from memory" requires the agent to notice it is recalling from memory — the same invisible-from-inside failure as the compass. A short table keyed to *output shapes* is checkable where an internal state is not: about to say "tech X reveals resource Y" → run `rules.py tech X`; "unit A beats unit B" → `rules.py unit A`; "this city can build Z" → `rules.py city NAME`.
 - **Fix the anti-grep line.** "Use `rules.py` rather than grepping" is reasoned from the 18 duplicate file copies but reads as *don't grep*, and probably suppressed the fallback that would have found `iAnimalCombat`. It should say: `rules.py` first because it resolves the right tree; when it doesn't cover something, grep BTS-then-vanilla directly and report having had to.
 - **One line: confirm a gap before reporting it.** The beakers non-gap would have cost nothing to check against the file it was already reading.
-- **Move the permanent data traps here** from the session brief — currently just stale `damage`. Those are properties of the export, not of a trial, and a session file is rewritten each run.
+- **Move any permanent data traps here** from the session brief, since those are properties of the export, not of a trial, and a session file is rewritten each run. The one example on file (stale `damage`) is now fixed at the mod level and has been dropped from `SESSION_TEMPLATE.md` rather than moved — this line stays as a placeholder for whenever the next one turns up.
 
 To the session template:
 
@@ -157,10 +145,10 @@ Also worth recording: across two live trials (Cowork and Claude Code, 25 turns e
 
 ## Resolved: `meta.schemaVersion` has bumped, to 2
 
-Not for increment ⑦ or item 1's `damage` fix as anticipated — for a change not on this page when it was written: inverting every exported y coordinate so `(0,0)` is northwest (see `CLAUDE.md`). Item 1's `damage` question is still open on its own terms; if it lands, it's the next thing to bump the version, to 3.
+Not for increment ⑦ or the `doTurn()` mutation-order audit's `damage` fix as anticipated — for a change not on this page when it was written: inverting every exported y coordinate so `(0,0)` is northwest (see `CLAUDE.md`). The `damage` prediction has since landed (see `REFERENCES.md` "`doTurn()` mutation-order audit") **without** bumping the version again — a deliberate call, not an oversight: unlike the y-axis flip, migrating the existing samples would mean re-deriving a predicted value per damaged unit per turn rather than a pure mechanical transform, and the field still answers the same question ("how hurt is this unit") on both sides of the change. Revisit if a future `damage` (or other field) change needs a hard floor enforced in the harness the way the y-axis one did.
 
 ---
 
 ## Sequence rationale
 
-**1 first** — a correctness defect in shipped output that everything downstream inherits. **2 is recorded, not scheduled** — the best-evidenced finding on this page, but it needs a design for what an affordable fix even looks like before it can be sequenced at all. **12 now**, since it costs nothing and pays off on the very next trial. **4 and 5** are the two substantial harness builds, both carrying 4-of-6 trial evidence and both unblocked; **6** is a small addition to the same tool as 5 and belongs in the same pass. **7** can be picked up any time and is mostly minutes of work for the highest recurrence counts on the page. **9 and 10** are independent and belong to whenever `rules.py` is next open — the `iAnimalCombat` fix in particular is nearly free. **8** needs a small design decision first. **11** happens whenever a game is played to a wonder completion — opportunistic rather than scheduled. **13 before the next trial**, since instruction changes are only measurable against a run, and `harness/SESSION_TEMPLATE.md` is the committed baseline the next run's changes get compared to.
+**2 is recorded, not scheduled** — the best-evidenced finding on this page, but it needs a design for what an affordable fix even looks like before it can be sequenced at all. **12 now**, since it costs nothing and pays off on the very next trial. **4 and 5** are the two substantial harness builds, both carrying 4-of-6 trial evidence and both unblocked; **6** is a small addition to the same tool as 5 and belongs in the same pass. **7** can be picked up any time and is mostly minutes of work for the highest recurrence counts on the page. **9 and 10** are independent and belong to whenever `rules.py` is next open — the `iAnimalCombat` fix in particular is nearly free. **8** needs a small design decision first. **11** happens whenever a game is played to a wonder completion — opportunistic rather than scheduled. **13 before the next trial**, since instruction changes are only measurable against a run, and `harness/SESSION_TEMPLATE.md` is the committed baseline the next run's changes get compared to.
