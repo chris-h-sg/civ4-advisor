@@ -38,24 +38,11 @@ One trial found Lisbon started a Warrior on t38 while both cities were empty and
 
 Two obvious halves: a `producing` change line in `timeline`, and current build plus turns-to-complete on `intel`'s garrison block.
 
-### 6. `timeline` doesn't track treasury
-
-Found in the first Claude Code trial. `timeline` catches tech completions, unit gains/losses, contacts, sightings, tile/feature changes and territory — but never gold. A 60-gold goody-hut pop went unreported; the agent only found it by manually diffing `player.gold` turn-by-turn after the player mentioned it out loud. A `gold`/`goldPerTurn` line, alongside the existing per-turn categories, closes this — same shape as item 5's `producing` line, and cheap for the same reason.
-
-### 7. Cheap presentation fixes with high recurrence
-
-Grouped because each is small, none is a design question, and the trial counts are the highest in the repo. These are layout changes, not features.
-
-- **`intel`'s empty-city line is buried — 7 of 10 trials**, one saying it nearly scrolled past the most important line in the output. Highest-recurrence finding on this page and probably a one-line move.
-- **The wrap-seam header reads as a backwards range — 5 of 10.** `x 64-4` (also seen as `x 66-2`) reads as a typo rather than as a wrap.
-- **`--no-grid` / `--site-only` for `render_map.py`.** Four separate trials independently discovered `--radius 1` as the workaround; one piped through `sed`.
-- **A stagnating-city flag.** A city frozen at size 1 on +0 food was one trial's most actionable finding, recovered with an ad-hoc script. `--view yields` prints the total and never says the assignment cannot grow.
-
 ### 8. Multi-site `--around` comparison
 
 Asked in both trial rounds; one trial ran `--around` ten times and diffed by eye. **Tabulating the same facts across several sites is not ranking them** — the no-ranking line survives, which is what makes this buildable rather than refused.
 
-Listed separately from item 7 because it is a real interface question (how many sites, what shape the table takes), not a layout tweak.
+Listed separately from the cheap presentation fixes (now resolved - see below) because it is a real interface question (how many sites, what shape the table takes), not a layout tweak.
 
 ### 9. `rules.py unit` doesn't read `iAnimalCombat`
 
@@ -151,4 +138,4 @@ Not for increment ⑦ or the `doTurn()` mutation-order audit's `damage` fix as a
 
 ## Sequence rationale
 
-**2 is recorded, not scheduled** — the best-evidenced finding on this page, but it needs a design for what an affordable fix even looks like before it can be sequenced at all. **12 now**, since it costs nothing and pays off on the very next trial. **4 and 5** are the two substantial harness builds, both carrying 4-of-6 trial evidence and both unblocked; **6** is a small addition to the same tool as 5 and belongs in the same pass. **7** can be picked up any time and is mostly minutes of work for the highest recurrence counts on the page. **9 and 10** are independent and belong to whenever `rules.py` is next open — the `iAnimalCombat` fix in particular is nearly free. **8** needs a small design decision first. **11** happens whenever a game is played to a wonder completion — opportunistic rather than scheduled. **13 before the next trial**, since instruction changes are only measurable against a run, and `harness/SESSION_TEMPLATE.md` is the committed baseline the next run's changes get compared to.
+**2 is recorded, not scheduled** — the best-evidenced finding on this page, but it needs a design for what an affordable fix even looks like before it can be sequenced at all. **12 now**, since it costs nothing and pays off on the very next trial. **4 and 5** are the two substantial harness builds, both carrying 4-of-6 trial evidence and both unblocked; item 5's `timeline`/`intel` additions should build on the current section order and gold-anomaly line (see `harness/README.md`) rather than the layout that predates them. **9 and 10** are independent and belong to whenever `rules.py` is next open — the `iAnimalCombat` fix in particular is nearly free. **8** needs a small design decision first. **11** happens whenever a game is played to a wonder completion — opportunistic rather than scheduled. **13 before the next trial**, since instruction changes are only measurable against a run, and `harness/SESSION_TEMPLATE.md` is the committed baseline the next run's changes get compared to.

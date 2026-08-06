@@ -92,6 +92,12 @@ What replaced it is a count of what is *there* — workable land, workable water
 
 **Legends carry decode tables and traps, not rationale.** Every legend line costs on every call, and the grid has to stay much cheaper than the JSON it saves you reading. Why a glyph is what it is belongs here and in the code comments — both read once. What belongs in a render is the decode table plus any trap that would cause a *wrong action* if missed.
 
+**A region straddling the map's x seam now says so in words, instead of printing a range that looks backwards.** `axis_window` already computed the wrapped window correctly (walking east from the crop point, past x=83, back to x=0); only the *description* string was wrong, joining the two halves with a bare `xs[0]-xs[-1]` — a crop near the seam printed `x 80-4`, indistinguishable from a typo. 5 of 10 trials misread it. The fix names the edge in words (`x 80-83 then 0-3 (wraps past the east edge)`) rather than leaving the reader to infer which edge and combine two ranges themselves. x-only: `wrapY` is always false on the standard Civ4 cylinder map, so y never takes this path.
+
+**`--site-only` (requires `--around`) skips the grid and prints just the site report.** The report was already there in `extra_sections()`; what was missing was a way to get it *alone*. Four trials found `--radius 1` as a workaround — it still draws a 3x3 grid, just a small one — and one piped output through `sed`. Implemented as an early return in `render()` once the shared preamble is built, reusing the same `extra_sections()` loop the normal path ends with rather than duplicating it.
+
+**`yields`/`worker` flag a city `NOT GROWING` on a specific, checkable condition: `foodPerTurn <= 0` and the current build is not a Settler or Worker.** The naive version checked `productionFromFood == 0` instead, reasoning that a food-fed build shows food going into it — wrong, because a Settler/Worker can show `productionFromFood == 0` on an all-hammer turn (food banked earlier in the build) and still be exactly the deliberate, not-stuck case. Checking the unit type sidesteps the turn-by-turn funding split entirely. Not the whole engine gate — a Police State civic makes military units food-fed too — but the only case that recurs in scope (turns 0–50), so `FOOD_COST_UNITS` stays a two-item constant rather than a general `bFood` lookup. States the fact and stops; it does not diagnose *why* the city is stuck (terrain, borders, happiness), matching this tool's present-don't-decide line.
+
 </details>
 
 ### `run_history.py` — the run history
@@ -160,7 +166,11 @@ This also corrected something the guide had asserted. It told agents reachabilit
 
 **What was considered and not built.** An `own` view — your own empire's trajectory across the run — was dropped: that is four numbers per turn, and an agent reading five JSON files gets it unaided. The bar is where the agent is *unreliable*, and the expensive cases are the ones that span many files. Whether it is wanted is left to the agent trials to report rather than guessed at now.
 
-**This tool makes none of the renderer's three deferred requests cheaper.** Comparing several `--around` sites, a `--no-grid` flag, and movement cost are all single-turn spatial concerns; nothing here touches them.
+**This tool makes none of the renderer's deferred requests cheaper.** Comparing several `--around` sites (still open — see `ROADMAP.md`) and movement cost are single-turn spatial concerns; nothing here touches them.
+
+**Own cities lead `intel`'s output; barbarians come next, rivals last.** All three answer "is anything about to hurt me", just at different urgency: your own empire first, the threat that needs no tech implication and is the main early danger second, per-rival capability dossiers — lower-urgency reading — last. Previously the garrison block was printed last, after every rival dossier, and 7 of 10 trials lost track of it there, one saying it nearly scrolled past the most important line in the output. Same fix shape as the compass and the walk-vs-straight-line ordering above: when a caveat or a fact does not stick, move the layout rather than add words.
+
+**`timeline` flags a gold swing that does not match the previous turn's rate, and only that.** `player.gold`/`goldPerTurn` were already exported and unused here. The motivating case: a goody hut added 60 gold with nothing else in the export accounting for it, and the agent only found it because the player mentioned it out loud. `goldPerTurn` describes *this* turn's rate, so comparing a turn's actual delta against the *previous* turn's rate is what catches a jump the ordinary rate cannot explain — comparing against the same turn's rate would compare the number to itself. It is deliberately silent on ordinary turns: `timeline` already skips turns where nothing changed, and gold changing by exactly its own rate is not a change worth a line.
 
 </details>
 

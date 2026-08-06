@@ -843,6 +843,24 @@ def timeline_block(run, names, before, after):
     )
     for tech in new_techs:
         body.append("  tech      COMPLETED %s" % tech)
+
+    # Treasury jump not explained by the ordinary per-turn rate - a goody hut
+    # pop is the case that motivated this: 60 gold appeared with nothing else
+    # in the export accounting for it, and the agent only found it because the
+    # player mentioned it out loud. goldPerTurn is the net rate BEFORE this
+    # jump (it's this turn's rate, not last turn's), so comparing against the
+    # PREVIOUS turn's rate is what actually catches an unexplained jump.
+    gold_delta = after["player"]["gold"] - before["player"]["gold"]
+    expected = before["player"]["goldPerTurn"]
+    if gold_delta != expected:
+        body.append(
+            "  gold      %+d (treasury %d -> %d) - UNEXPECTED: last turn's rate"
+            " was %+d/turn, so %+d of this is unaccounted for"
+            % (
+                gold_delta, before["player"]["gold"], after["player"]["gold"],
+                expected, gold_delta - expected,
+            )
+        )
     if before["player"]["research"]["current"] != after["player"]["research"]["current"]:
         body.append(
             "  research  now %s (was %s)"
@@ -1126,13 +1144,12 @@ def render_intel(run):
     civ_ids = [p for p in civ_ids if not is_barbarian(latest, p)]
     barb_ids = [p for p in sorted(sightings) if is_barbarian(latest, p)]
 
-    if not civ_ids and not barb_ids:
-        lines.append("Nobody met and nothing sighted in this run.")
-        lines.append("")
-    for player_id in civ_ids:
-        lines.extend(_rival_block(run, names, sightings, contacts, player_id,
-                                  latest, latest_turn, land))
-        lines.append("")
+    # Own cities and barbarians lead: both are "is anything about to hurt me"
+    # questions, and both were found buried under the per-rival dossiers in
+    # trials - one nearly scrolled past the empty-city line entirely. Per-rival
+    # capability dossiers are lower-urgency reading and go after.
+    lines.extend(_garrisons(run, latest, latest_turn, land))
+    lines.append("")
 
     if barb_ids:
         lines.append("BARBARIANS AND ANIMALS")
@@ -1175,8 +1192,14 @@ def render_intel(run):
         )
         lines.append("")
 
-    lines.extend(_garrisons(run, latest, latest_turn, land))
-    lines.append("")
+    if not civ_ids and not barb_ids:
+        lines.append("Nobody met and nothing sighted in this run.")
+        lines.append("")
+    for player_id in civ_ids:
+        lines.extend(_rival_block(run, names, sightings, contacts, player_id,
+                                  latest, latest_turn, land))
+        lines.append("")
+
     lines.extend(_intel_footer(run, latest_turn))
     return lines
 

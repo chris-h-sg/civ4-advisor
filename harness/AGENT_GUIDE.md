@@ -22,7 +22,7 @@ Files are numbered for the turn **about to be played**, so a run starts at `turn
 
 **4. Rival cities are live through fog; rival units are not.** A revealed city keeps reporting its real current `name`, `population` and `capital` even while fogged — the engine paints the nameplate through fog. A population reading is current however long ago you looked. Its *insides* are never exported. Units are the opposite: forgotten the moment the tile fogs.
 
-**5. Check the XML; never recall a rule from memory.** Unit prerequisites, tech costs, building requirements, civics and difficulty modifiers live in the game's XML. **Use `rules.py` rather than grepping** — it resolves the right file, walks prerequisites transitively, and prices techs for this game's actual setup. A previous session asserted from memory that a Roman Archer implies Bronze Working; it implies **Archery** (Bronze Working is the Axeman). Confident, plausible, wrong.
+**5. Check the XML; never recall a rule from memory.** Unit prerequisites, tech costs, building requirements, civics and difficulty modifiers live in the game's XML. **Use `rules.py` rather than grepping** — it resolves the right file, walks prerequisites transitively, and prices techs for this game's actual setup.
 
 If you must grep by hand, the install holds ~18 copies of each file. Take `<install>/Beyond the Sword/Assets/XML/...`, falling back to `<install>/Assets/XML/...` — an expansion only ships the files it *changes*, so resources (`CIV4BonusInfos.xml`) live only in the base tree. Install path is in `config.local.json`; don't `find`, it is slow and hits the mod copies. Use large context windows: `PrereqTech` sits ~90 lines into a unit block.
 
@@ -39,7 +39,7 @@ Run from the repo root with the system Python. Stdlib only, no setup.
 ### `render_map.py` — anything spatial
 
 ```
-python harness/render_map.py <state.json> [--view NAME] [--around X,Y] [--radius N] [--brief]
+python harness/render_map.py <state.json> [--view NAME] [--around X,Y] [--radius N] [--brief] [--site-only]
 ```
 
 | view | the question it answers |
@@ -50,7 +50,9 @@ python harness/render_map.py <state.json> [--view NAME] [--around X,Y] [--radius
 | `yields` | Which tiles should my citizens work? |
 | `worker` | What should my workers build, and where? |
 
-**`--around X,Y` gives a site report** — coastal status, fresh water, overlap with your cities, legality, and the 21-tile cross as a yield table. **Use it before committing to a city site**: the grid narrows candidates, the report chooses between them. Agents that skipped it wandered, and horizontal position on a wide grid gets misread constantly — cropping fixes that.
+**`--around X,Y` gives a site report** — coastal status, fresh water, overlap with your cities, legality, and the 21-tile cross as a yield table. **Use it before committing to a city site**: the grid narrows candidates, the report chooses between them. **Add `--site-only` once you don't need the grid** — it prints just the report, nothing else.
+
+`yields`/`worker` flag a city `NOT GROWING` when food is 0 or negative and it isn't a Settler/Worker spending that food on purpose — a fact, not a diagnosis of why.
 
 Each render carries its own legend and a `THIS VIEW OMITS` block; `--brief` drops the legend once you know it.
 
@@ -64,8 +66,8 @@ python harness/run_history.py <run-folder> [--view timeline|intel|lost] [--from 
 
 Takes the **run folder**, not one turn.
 
-- **`timeline`** — what changed each turn: techs, cities, units gained and lost, contacts, sightings, tiles revealed, territory, resources unhidden. Unchanged turns are skipped. `--from`/`--to` scope it.
-- **`intel`** — per rival: recent sightings with positions, then every unit type ever fielded with the turn first seen. Plus barbarian sightings, and what's standing in each of your cities.
+- **`timeline`** — what changed each turn: techs, cities, units gained and lost, contacts, sightings, tiles revealed, territory, resources unhidden, and an unexplained gold swing (treasury moved by more or less than last turn's `goldPerTurn` — a goody hut or similar, not the ordinary rate). Unchanged turns are skipped. `--from`/`--to` scope it.
+- **`intel`** — leads with what's standing in each of your cities, then barbarian sightings, then per rival: recent sightings with positions, then every unit type ever fielded with the turn first seen.
 - **`lost`** — every unit of yours that disappeared: its track, damage history, the tiles revealed on its final turn, and what was in sight beforehand. Reach for this whenever a unit dies.
 
 **A unit's last exported position is usually not where it died** — it moves during the turn it is lost, and the export is the previous turn's snapshot. `lost` gives you that turn's revealed tiles as evidence: a unit sees radius 1 from flat ground, radius 2 from a hill, so the reveal shape constrains where it got to. That inference is yours.
@@ -80,7 +82,7 @@ Takes the **run folder**, not one turn.
 
 **Barbarians are listed apart from civs** (they imply nothing about anyone's tech) but with full positions, since early on they're the main threat.
 
-Positions carry **distance and bearing from your nearest city**. When the walk differs from the straight line the walk leads — `14 TO WALK NW of Lisbon (6 straight)` — because that is the number you act on. On the baseline map nearly half of all walkable tiles diverge, and the worst reads 4 straight against 17 on foot. **Neither figure is turns**; terrain costs more. `render_map.py`'s site report uses the same measure for settler-to-site distance.
+Positions carry **distance and bearing from your nearest city**. When the walk differs from the straight line the walk leads — `14 TO WALK NW of Lisbon (6 straight)` — because that is the number you act on. **Neither figure is turns**; terrain costs more. `render_map.py`'s site report uses the same measure for settler-to-site distance.
 
 `timeline` also reports **rival territory the first time you see it**, which is often the earliest hard evidence of where a rival city is: a border implies a city within about two tiles, possibly beyond your revealed edge. And it lists the **coordinates** of small reveals, which is what lets you work out where an unseen event happened.
 
@@ -145,7 +147,7 @@ Reading the JSON directly. Filtering units, comparing city yields, checking rese
 
 **State your confidence and what would change it** — the player can look at things you can't.
 
-**Never manufacture a cause for something you can't see.** If a unit died with no hostile in sight, say something killed it off-screen and you can't tell what. In testing an agent built a mechanism out of two unrelated timeline lines that happened to sit near each other.
+**Never manufacture a cause for something you can't see.** If a unit died with no hostile in sight, say something killed it off-screen and you can't tell what.
 
 **Reachability before alarm.** `intel` counts what's standing in each city — a count, not a verdict. What matters is what can actually *reach* it: a threat across water is a different kind of threat, not a nearer one, and a city on an open land approach may be exposed even with a defender in it. Barbarians also need unowned, unwatched land to spawn in. Say which case it is, and don't call the player safe just because a count looks fine.
 

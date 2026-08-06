@@ -120,6 +120,15 @@ OWN_UNIT_GLYPH = (
     ("UNIT_WORKER", "W"),
 )
 
+# Units the base XML flags bFood: their build can draw on food surplus as well
+# as hammers, so a food-starved turn while building one of these is the city
+# spending growth on the unit on purpose, not a city that's stuck. Not the
+# whole gate in general (a Police State civic makes military units food-fed
+# too - see CLAUDE.md) but it's the only case that recurs turns 0-50, and
+# scope stays there. Same two types as OWN_UNIT_GLYPH above by coincidence of
+# scope, not by rule - that list is glyph precedence, unrelated to food cost.
+FOOD_COST_UNITS = frozenset(("UNIT_SETTLER", "UNIT_WORKER"))
+
 
 STATE_SCHEMA_VERSION = 2
 
@@ -463,9 +472,11 @@ def axis_window(values, size, wraps):
 
     On a wrapping axis the smallest window is found by dropping the largest gap
     between consecutive occupied coordinates, so a region straddling the seam
-    renders contiguously instead of spanning the whole map. No sample exercises
-    this yet - the baseline run sits flush against x=83 without crossing - which
-    is exactly why it is computed rather than assumed away.
+    renders contiguously instead of spanning the whole map. The baseline run's
+    revealed tiles sit flush against x=83 without crossing it, so this path is
+    exercised only via a `--around` crop placed near the seam, not by the
+    whole-map case - which is exactly why it is computed rather than assumed
+    away.
     """
     present = sorted(set(values))
     if not present:
@@ -507,10 +518,31 @@ def select_region(state, around, radius):
         desc = "cropped around (%d,%d) radius %d" % (cx, cy, radius)
     if not xs or not ys:
         return xs, ys, desc
-    desc += ": x %d-%d, y %d-%d (%d x %d)" % (
-        xs[0], xs[-1], ys[0], ys[-1], len(xs), len(ys),
+    desc += ": x %s, y %d-%d (%d x %d)" % (
+        _x_range_label(xs), ys[0], ys[-1], len(xs), len(ys),
     )
     return xs, ys, desc
+
+
+def _x_range_label(xs):
+    """'80-83' normally; '80-83 then 0-4 (wraps past the east edge)' when the
+    window crosses the seam.
+
+    x-only: wrapY is always false in the standard Civ4 cylinder map (see
+    State.wrap_y), so y never wraps and needs no equivalent handling.
+
+    axis_window returns values in walk order, not sorted - so a wrapped window
+    has xs[0] > xs[-1] (e.g. 80..83,0..4). Printing that pair bare as '80-4'
+    reads as a typo'd backwards range rather than as a wrap; a bare comma
+    ('80-83,0-4') still leaves the reader to infer which edge and combine the
+    two ranges themselves (roadmap item 7).
+    """
+    if len(xs) > 1 and xs[0] > xs[-1]:
+        split = next(i for i in range(1, len(xs)) if xs[i] < xs[i - 1])
+        return "%d-%d then %d-%d (wraps past the east edge)" % (
+            xs[0], xs[split - 1], xs[split], xs[-1],
+        )
+    return "%d-%d" % (xs[0], xs[-1])
 
 
 # -- cell composition -----------------------------------------------------
@@ -1572,20 +1604,36 @@ class OwnEmpireRenderer(Renderer):
                 city["producing"], city["production"],
                 city["productionNeeded"], city["productionPerTurn"],
             )
-        return [
+        rows = [
             "  %s (%d,%d) pop %d, %d/%d food (%+d/turn), %s"
             % (
                 city["name"], city["x"], city["y"], city["population"],
                 city["food"], city["growthThreshold"], city["foodPerTurn"],
                 build,
             ),
+        ]
+        # foodPerTurn<=0 alone is ambiguous - a Settler or Worker costs 1 pop
+        # regardless of how its hammers happen to be funded that turn, so the
+        # city isn't "stuck", it's paused on purpose for the build. Checking
+        # productionFromFood==0 doesn't tell them apart: a Worker/Settler can
+        # show 0 there too (all-hammer turn, food banked for later in the
+        # build) and still be exactly this deliberate case. Check the unit
+        # type building, not the turn's funding split.
+        if (city["foodPerTurn"] <= 0
+                and city["producing"] not in FOOD_COST_UNITS):
+            rows.append(
+                "  NOT GROWING: 0 or negative food this turn, and it isn't a"
+                " Settler/Worker build spending it on purpose."
+            )
+        rows.append(
             "  culture %d/%d, happy %d vs unhappy %d, healthy %d vs unhealthy %d"
             % (
                 city["culture"], city["cultureThreshold"],
                 city["happy"], city["unhappy"],
                 city["healthy"], city["unhealthy"],
-            ),
-        ]
+            )
+        )
+        return rows
 
 
 class YieldsRenderer(OwnEmpireRenderer):
@@ -1950,7 +1998,7 @@ def _preamble(state, view, region_desc, brief):
     return lines
 
 
-def render(state, view, around=None, radius=5, brief=False):
+def render(state, view, around=None, radius=5, brief=False, site_only=False):
     """Render one view. `brief` drops the legend and the reading-the-grid note.
 
     Brief exists because an agent making a dozen calls was piping the legend
@@ -1958,11 +2006,21 @@ def render(state, view, around=None, radius=5, brief=False):
     exactly how the TRAPS warnings get lost. Better to offer the cut than to
     have it made badly. The TRAPS and THIS VIEW OMITS blocks stay in brief
     output: they are the parts whose absence changes a decision.
+
+    `site_only` (only meaningful with `around`) drops the grid too and prints
+    just the preamble plus extra_sections - the site report / city cross a
+    caller wanted was already there in extra_sections; four trials found
+    `--radius 1` as a workaround (a 3x3 grid still printed, just small) and one
+    piped through `sed`, so the grid itself is what needed a way to opt out.
     """
     renderer = RENDERERS[view](state, around, radius)
     xs, ys, region_desc = select_region(state, around, radius)
 
     lines = _preamble(state, view, region_desc, brief)
+
+    if site_only:
+        _append_extra_sections(lines, renderer)
+        return "\n".join(lines).rstrip() + "\n"
 
     if not xs or not ys:
         lines.append("(nothing revealed in this region)")
@@ -2025,12 +2083,16 @@ def render(state, view, around=None, radius=5, brief=False):
         lines.append("  %-54s ->  %s" % (what, where))
     lines.append("")
 
+    _append_extra_sections(lines, renderer)
+
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _append_extra_sections(lines, renderer):
     for title, rows in renderer.extra_sections():
         lines.append(title.upper())
         lines.extend(row.rstrip() for row in rows)
         lines.append("")
-
-    return "\n".join(lines).rstrip() + "\n"
 
 
 def parse_point(text):
@@ -2082,16 +2144,24 @@ def main(argv=None):
         help="drop the symbol legend and the reading-the-grid note. Traps and"
              " omissions are kept. Use after the first call in a session.",
     )
+    parser.add_argument(
+        "--site-only", action="store_true",
+        help="requires --around. Skip the grid entirely and print just the site"
+             " report / city cross for that tile.",
+    )
     args = parser.parse_args(argv)
 
     if not os.path.isfile(args.state_file):
         parser.error("no such state file: %s" % args.state_file)
     if args.radius < 1:
         parser.error("--radius must be at least 1")
+    if args.site_only and args.around is None:
+        parser.error("--site-only requires --around")
 
     state = State(args.state_file)
     sys.stdout.write(
-        render(state, args.view, args.around, args.radius, args.brief)
+        render(state, args.view, args.around, args.radius, args.brief,
+               args.site_only)
     )
     return 0
 

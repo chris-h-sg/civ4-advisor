@@ -20,21 +20,21 @@ You are advising a human playing Civilization IV: Beyond the Sword. **You do not
 
 ## Where the data is
 
-- Your run folder is a connected folder alongside this one — the folder containing `turn_0000.json`, `turn_0001.json`, etc. This is a **fresh restart of the same game** used in an earlier Cowork trial — turn numbering starts at 0 again, so don't assume history from a prior session carries over here.
+- Your run folder is a connected folder alongside this one — the folder containing `turn_0000.json`, `turn_0001.json`, etc. Don't assume history from a prior session carries over here — check the turn numbering starts where you expect.
 - The highest-numbered file in that folder is always "now." `turn_0000.json` is not a stub — it's the real pre-turn-1 snapshot, and it's exactly what the first-city decision should be made from.
 - Game setup (leader, difficulty, speed, map options) is inside the state file itself (`game` section) — don't ask the player for it, read it.
 - `harness/` is also connected alongside this folder. Read `harness/AGENT_GUIDE.md` in full before your first turn of advice if you haven't already. It documents the tools below and five specific ways the data will mislead you if read carelessly (fog-of-war honesty, absence-isn't-absence, field omission defaults, live-vs-forgotten rival objects, "check the XML, never recall a rule from memory").
-- The Civ IV install (for `rules.py`'s XML lookups) may also be connected as a separate folder — check what paths you actually have before assuming it's there. `rules.py` needs `config.local.json` with `civ4_install_path` pointing at wherever that install folder actually landed in your working directory, which is very unlikely to be its real Windows path (e.g. not literally `D:\SteamLibrary\...`). If a `rules.py` call fails, check `config.local.json` first — this exact problem broke `rules.py` in the Cowork trial and needed a config pointed at the connected folder's actual local path.
+- The Civ IV install (for `rules.py`'s XML lookups) may also be connected as a separate folder — check what paths you actually have before assuming it's there. `rules.py` needs `config.local.json` with `civ4_install_path` pointing at wherever that install folder actually landed in your working directory, which is very unlikely to be its real Windows path (e.g. not literally `D:\SteamLibrary\...`). If a `rules.py` call fails, check `config.local.json` first.
 
 ## Tools (run from your working directory, system Python, stdlib only)
 
 Use whatever path each connected folder actually presents as — the examples below assume `harness/` and the run folder are visible at those relative paths from where you're running; adjust if not.
 
-- `python harness/render_map.py <state.json> [--view NAME] [--around X,Y] [--radius N] [--brief]` — anything spatial. Views: `settle`, `explore`, `military`, `yields`, `worker`.
+- `python harness/render_map.py <state.json> [--view NAME] [--around X,Y] [--radius N] [--brief] [--site-only]` — anything spatial. Views: `settle`, `explore`, `military`, `yields`, `worker`.
 - `python harness/run_history.py <path-to-your-run-folder> [--view timeline|intel|lost] [--from N] [--to M] [--as-of N]` — anything across turns. Takes the run folder, not a single file.
 - `python harness/rules.py unit|tech|building|promotion|city|handicap [TYPE] <state.json>` — anything about game rules (costs, prerequisites, what a city can build now, what a promotion does). Always pass the current state file, never guess a rule from memory.
 
-**Don't edit `harness/` or the run folder.** Use `temp/claude-code/` (this folder) for anything you want to persist: restated objectives, scratch notes, reusable scripts. If you write a one-off script to answer a question — e.g. because a tool gap the guide or `ROADMAP.md` already documents forced you to — save it here rather than as a throwaway, and say so out loud rather than quietly running it. That's a known trial finding worth confirming or contradicting this time round.
+**Don't edit `harness/` or the run folder.** Use `temp/claude-code/` (this folder) for anything you want to persist: restated objectives, scratch notes, reusable scripts. If you write a one-off script to answer a question — e.g. because a tool gap the guide or `ROADMAP.md` already documents forced you to — save it here rather than as a throwaway, and say so out loud rather than quietly running it.
 
 ## Keeping yourself honest across a long session
 
@@ -43,8 +43,6 @@ Use whatever path each connected folder actually presents as — the examples be
 - Separate observation, inference, and guess, and label which is which when you report back.
 - State your confidence and what would change your mind.
 
-## One more thing worth watching for, specific to this trial
+## Flag data gaps as you find them
 
-This is a repeat of a Cowork trial on the same game. A known gap from that run is recorded in this project's roadmap (not a file you have access to here) and may or may not still bite — the `damage` staleness this note used to warn about is now fixed at the mod level and no longer applies.
-
-If you notice yourself telling the player something the JSON should have carried, or vice versa, flag it explicitly — that out-of-band signal is the main way gaps like that one get found at all.
+If you notice yourself telling the player something the JSON should have carried, or vice versa, flag it explicitly.
