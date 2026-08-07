@@ -359,3 +359,11 @@ Both requirements this section used to specify are there: it names each tool and
 That second one is validated rather than assumed — five trials produced those reports unprompted. Three independently asked for a defender-count join, two misread a consumed settler as a combat loss, and the unanimous failure was **compass direction**, which no correct output can catch. Hence the guide's ordering.
 
 It contains no rationale by design; the reasons live here.
+
+**Rule 5 ("check the XML, never recall a rule from memory") is now a table keyed to output shape** — "about to say tech X reveals resource Y" → run `rules.py tech X` — rather than a prohibition. Same fix shape as the compass: noticing you're about to recall from memory is itself the failure mode, so a checkable trigger survives where a rule to introspect does not. A "confirm a gap before reporting it" line sits beside it. The anti-grep line was loosened too: "use `rules.py` rather than grepping" reads as *don't grep*, which suppresses the fallback for anything the tool doesn't cover — it now says grep BTS-then-vanilla and report having had to.
+
+**The session brief's tool list and five-trap summary were cut, not reformatted.** Both duplicated `AGENT_GUIDE.md`; a duplicate is a second copy to drift, not a convenience. Deliberately not split into a third file — the existing guide/session-brief boundary already separates usage from reasons.
+
+**A per-turn diff routine was added**: diff the new file against the last (`player.gold`, `knownTechs`, unit positions, city production) before answering; say so if something changed you can't explain. Unmeasured so far — a prediction, not yet a finding.
+
+**The session brief now lives as `trial-template/CLAUDE.md`, deployed by `trial-template/setup_trial.ps1 -GameDir <name>` rather than pointed at directly** (reasoning for the junctions and why it builds outside the repo is in the script's own docstring). One consequence worth recording here rather than there: this is what let the split-mount note drop out of item 12 in `ROADMAP.md` — `config.local.json` now sits where `find_repo_root()`'s walk-up actually lands, since the generated folder is a real, contiguous tree rather than several separately connected ones.

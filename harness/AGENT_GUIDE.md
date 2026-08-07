@@ -22,9 +22,19 @@ Files are numbered for the turn **about to be played**, so a run starts at `turn
 
 **4. Rival cities are live through fog; rival units are not.** A revealed city keeps reporting its real current `name`, `population` and `capital` even while fogged — the engine paints the nameplate through fog. A population reading is current however long ago you looked. Its *insides* are never exported. Units are the opposite: forgotten the moment the tile fogs.
 
-**5. Check the XML; never recall a rule from memory.** Unit prerequisites, tech costs, building requirements, civics and difficulty modifiers live in the game's XML. **Use `rules.py` rather than grepping** — it resolves the right file, walks prerequisites transitively, and prices techs for this game's actual setup.
+**5. Check the XML before stating a rule — don't recall one from memory.**
 
-If you must grep by hand, the install holds ~18 copies of each file. Take `<install>/Beyond the Sword/Assets/XML/...`, falling back to `<install>/Assets/XML/...` — an expansion only ships the files it *changes*, so resources (`CIV4BonusInfos.xml`) live only in the base tree. Install path is in `config.local.json`; don't `find`, it is slow and hits the mod copies. Use large context windows: `PrereqTech` sits ~90 lines into a unit block.
+| about to say... | run this first |
+|---|---|
+| "tech X reveals/unlocks resource Y" | `rules.py tech X` |
+| "unit A beats/loses to unit B" | `rules.py unit A` and `rules.py unit B` |
+| "this city can build Z" | `rules.py city NAME` |
+| "promotion P does..." | `rules.py promotion P` |
+| any cost, prereq, or turns-to-complete number | `rules.py <subcommand>` for it |
+
+`rules.py` resolves the right file tree, walks prerequisites transitively, and prices everything for this game's actual setup — use it first. When it doesn't cover something, grep the install directly and **say out loud that you had to** — that's the signal for what to add to `rules.py` next. The install holds ~18 copies of each file: take `<install>/Beyond the Sword/Assets/XML/...`, falling back to `<install>/Assets/XML/...` — an expansion only ships the files it *changes*, so resources (`CIV4BonusInfos.xml`) live only in the base tree. Install path is in `config.local.json`; don't `find`, it is slow and hits the mod copies. Use large context windows: `PrereqTech` sits ~90 lines into a unit block.
+
+**Before reporting something as a gap, confirm it's actually missing.** Check the file you're already holding open before concluding a tool doesn't cover it — a past trial reported the beakers-per-turn change as a possible schema gap when reading the previous turn file would have answered it outright.
 
 ## Map orientation
 

@@ -87,31 +87,7 @@ That is the compass failure mode again: wrong-but-plausible, self-consistent, in
 
 The fix is not tooling. It is a protocol: during a trial, **note every time you tell the agent something the JSON should have carried.** That turns an accident into a repeatable finding mechanism, and it costs nothing. Belongs in the advisor instructions used to set up a session.
 
-Record there too, from the same trial: in a **split-mount setup** (harness, run folder, game install and temp connected as separate mounts rather than one repo tree) `find_repo_root()` has no contiguous tree to walk, so `config.local.json` must sit at the sandbox mount root rather than in `harness/`. Not a tool bug — an environment note that recurs on every session reset.
-
-### 13. Rework the agent instructions, guided by what actually failed in two trials
-
-`harness/SESSION_TEMPLATE.md` is the committed baseline — the exact session brief the first Claude Code trial ran on, copied unedited so changes can be measured against it. `AGENT_GUIDE.md` is the persistent half.
-
-**The pattern across both trials: almost nothing failed because a tool was missing. Things failed because a tool wasn't called.** `rules.py tech` prints `resources revealed BONUS_COPPER` plainly and the agent asserted the inverse from memory (item 10). The beakers-per-turn "mystery" was answered by reading two turn files side by side, and was instead reported as a possible schema gap. The scout's `iAnimalCombat` is absent from `rules.py` (item 9) but the install was mounted and greppable, and it never looked.
-
-These changes must **displace text, not accumulate**: a caveat that doesn't stick needs a layout fix, not more words piled on top of it.
-
-To `AGENT_GUIDE.md`:
-
-- **Convert rule 5 from a prohibition into a trigger list.** "Never state a rule from memory" requires the agent to notice it is recalling from memory — the same invisible-from-inside failure as the compass. A short table keyed to *output shapes* is checkable where an internal state is not: about to say "tech X reveals resource Y" → run `rules.py tech X`; "unit A beats unit B" → `rules.py unit A`; "this city can build Z" → `rules.py city NAME`.
-- **Fix the anti-grep line.** "Use `rules.py` rather than grepping" is reasoned from the 18 duplicate file copies but reads as *don't grep*, and probably suppressed the fallback that would have found `iAnimalCombat`. It should say: `rules.py` first because it resolves the right tree; when it doesn't cover something, grep BTS-then-vanilla directly and report having had to.
-- **One line: confirm a gap before reporting it.** The beakers non-gap would have cost nothing to check against the file it was already reading.
-- **Move any permanent data traps here** from the session brief, since those are properties of the export, not of a trial, and a session file is rewritten each run. The one example on file (stale `damage`) is now fixed at the mod level and has been dropped from `SESSION_TEMPLATE.md` rather than moved — this line stays as a placeholder for whenever the next one turns up.
-
-To the session template:
-
-- **Cut the tool list and the five-trap summary.** Both duplicate the guide; the Claude Code version had to hedge paths with "adjust if not", making it worse than a pointer, and summarising the traps invites reading the summary instead of the guide. Keep only what is genuinely session-specific: which game, where the files are, turns 0–50, advice-only.
-- **Add a per-turn routine.** Neither agent had one and both improvised. Three of four out-of-band discoveries (damage, promotions, hut gold) were *changes between turns* nobody systematically looked for. Something as small as "diff the new file against the last — `player.gold`, `knownTechs`, unit positions, city production — before answering; if something changed you can't explain, say so" catches the gold jump without the player mentioning it, and catches the beakers change with its cause attached.
-
-**Do not split into a third file.** The guide/session-brief cut is the right one and matches the existing "usage in the guide, reasons in the README" discipline; a third document is a third thing to keep in sync for something read once.
-
-**One asymmetry worth carrying into item 12.** A trial can report itself confident and correct while the player observes real slips. The guide's "tell us what's missing" instruction only catches failures the agent *notices*, which structurally excludes the entire wrong-but-plausible class. Not fixable in the agent's instructions — it is the argument for the player-side protocol being more load-bearing than it looks.
+**One asymmetry this doesn't fix.** A trial can report itself confident and correct while the player observes real slips. The guide's "tell us what's missing" instruction only catches failures the agent *notices*, which structurally excludes the entire wrong-but-plausible class. Not fixable in the agent's instructions — it is the argument for the player-side protocol being more load-bearing than it looks.
 
 ---
 
@@ -138,4 +114,4 @@ Not for increment ⑦ or the `doTurn()` mutation-order audit's `damage` fix as a
 
 ## Sequence rationale
 
-**2 is recorded, not scheduled** — the best-evidenced finding on this page, but it needs a design for what an affordable fix even looks like before it can be sequenced at all. **12 now**, since it costs nothing and pays off on the very next trial. **4 and 5** are the two substantial harness builds, both carrying 4-of-6 trial evidence and both unblocked; item 5's `timeline`/`intel` additions should build on the current section order and gold-anomaly line (see `harness/README.md`) rather than the layout that predates them. **9 and 10** are independent and belong to whenever `rules.py` is next open — the `iAnimalCombat` fix in particular is nearly free. **8** needs a small design decision first. **11** happens whenever a game is played to a wonder completion — opportunistic rather than scheduled. **13 before the next trial**, since instruction changes are only measurable against a run, and `harness/SESSION_TEMPLATE.md` is the committed baseline the next run's changes get compared to.
+**2 is recorded, not scheduled** — the best-evidenced finding on this page, but it needs a design for what an affordable fix even looks like before it can be sequenced at all. **12 now**, since it costs nothing and pays off on the very next trial. **4 and 5** are the two substantial harness builds, both carrying 4-of-6 trial evidence and both unblocked; item 5's `timeline`/`intel` additions should build on the current section order and gold-anomaly line (see `harness/README.md`) rather than the layout that predates them. **9 and 10** are independent and belong to whenever `rules.py` is next open — the `iAnimalCombat` fix in particular is nearly free. **8** needs a small design decision first. **11** happens whenever a game is played to a wonder completion — opportunistic rather than scheduled.
