@@ -88,8 +88,8 @@ python harness/run_history.py <run-folder> [--view timeline|intel|lost] [--from 
 
 Takes the **run folder**, not one turn.
 
-- **`timeline`** — what changed each turn: techs, cities, units gained and lost, contacts, sightings, tiles revealed, territory, resources unhidden, and an unexplained gold swing (treasury moved by more or less than last turn's `goldPerTurn` — a goody hut or similar, not the ordinary rate). Unchanged turns are skipped. `--from`/`--to` scope it.
-- **`intel`** — leads with what's standing in each of your cities, then barbarian sightings, then per rival: recent sightings with positions, then every unit type ever fielded with the turn first seen.
+- **`timeline`** — what changed each turn: techs, cities, units gained and lost, **what each city is building and when that changed**, contacts, sightings, tiles revealed, territory, resources unhidden, and an unexplained gold swing (treasury moved by more or less than last turn's `goldPerTurn` — a goody hut or similar, not the ordinary rate). Unchanged turns are skipped. `--from`/`--to` scope it.
+- **`intel`** — leads with what's standing in each of your cities **and what each is building, with an ETA**, then barbarian sightings, then per rival: recent sightings with positions, then every unit type ever fielded with the turn first seen.
 - **`lost`** — every unit of yours that disappeared: its track, damage history, the tiles revealed on its final turn, and what was in sight beforehand. Reach for this whenever a unit dies.
 
 **A unit's last exported position is usually not where it died** — it moves during the turn it is lost, and the export is the previous turn's snapshot. `lost` gives you that turn's revealed tiles as evidence: a unit sees radius 1 from flat ground, radius 2 from a hill, so the reveal shape constrains where it got to. That inference is yours.
@@ -99,6 +99,12 @@ Takes the **run folder**, not one turn.
 **`[NON-COMBAT]`** on a city's occupants means combat strength 0 (settlers, workers, work boats). A city holding only those is undefended however occupied it looks.
 
 **A `[WOODSMAN1, ...]` or `[N promotion(s) available]` tag next to a unit is a name, not an explanation** — see `rules.py promotion` below.
+
+**`SWITCHED` is a mind changed mid-build; `COMPLETED` means the item actually arrived.** A switch is often the sharpest fact of the turn — ask about it.
+
+**Banked hammers survive a switch but do not transfer to the new item.** Sample: Lisbon drops a Worker at 27/60, returns two turns later at 39/60. Never advise a switch on the belief that existing hammers will finish the new build.
+
+**The `~N turn(s)` ETA is at today's rate, not a schedule** — the rate shifts when anything else does. `N of that rate is FOOD` means growth is stopped for as long as that build lasts: that is its real cost. `NOTHING QUEUED` is worth acting on, especially in a city with no defenders.
 
 `intel`'s two per-rival sections differ in how fast they go stale. **Recent sightings** are perishable — read them before moving anything vulnerable. **Ever fielded** is permanent: a type seen once is one they can build, forever. That's how you read their tech level — run each type through `rules.py unit`.
 

@@ -437,6 +437,245 @@ def test_intel_reports_rival_city_with_observation_turn(run):
     assert "pop %d as of t%d" % (rome["population"], last_turn) in text
 
 
+# -- production history ----------------------------------------------------
+
+
+def production_changes():
+    """Every (turn, city name, from, to) production change in the sample."""
+    changes = []
+    for prev, turn in zip(SAMPLE_TURNS, SAMPLE_TURNS[1:]):
+        was = dict((c["id"], c) for c in load(prev)["cities"])
+        now = dict((c["id"], c) for c in load(turn)["cities"])
+        for city_id in sorted(set(was) & set(now)):
+            old, new = was[city_id], now[city_id]
+            if old.get("producing") != new.get("producing"):
+                changes.append(
+                    (turn, new["name"], old.get("producing"), new.get("producing"))
+                )
+    return changes
+
+
+def test_timeline_reports_every_production_change_in_the_sample():
+    """No change in what a city is building may pass unreported.
+
+    Derived rather than spot-checked: 4 of 6 trials went to raw JSON for this,
+    so the guarantee that matters is completeness, not that one known line
+    renders.
+    """
+    text = render(run_history.Run(SAMPLE_DIR), "timeline")
+    changes = production_changes()
+    assert changes, "sample should contain production changes"
+    for turn, name, _was, became in changes:
+        expected = "nothing" if became is None else became.split("_", 1)[1]
+        block = [line for line in text.splitlines() if name in line and expected in line]
+        assert block, "t%d %s -> %s went unreported" % (turn, name, became)
+
+
+def test_timeline_reports_the_mind_changed_twice_case(run):
+    """The sharpest production fact in the run, and the item's motivating case.
+
+    Lisbon abandons a Worker at 27/60 for a Warrior, then returns to that same
+    Worker two turns later at 39/60 - the banked hammers were never lost. It is
+    derived here rather than quoted: find a city that switches AWAY from
+    something and back to it within a few turns.
+    """
+    changes = production_changes()
+    revisited = None
+    for i, (turn, name, was, became) in enumerate(changes):
+        # Both ends must be real builds: a completion empties the queue and the
+        # next choice reads as (None -> X), which is not a change of mind.
+        if was is None or became is None:
+            continue
+        for later_turn, later_name, later_was, later_became in changes[i + 1:]:
+            if later_name == name and later_became == was:
+                revisited = (turn, later_turn, name, was, became)
+                break
+        if revisited:
+            break
+    assert revisited, "sample should contain a build abandoned and resumed"
+    turn, later_turn, name, original, detour = revisited
+
+    text = render(run, "timeline")
+    lines = text.splitlines()
+    away = [l for l in lines if name in l and "SWITCHED" in l
+            and original.split("_", 1)[1] in l and detour.split("_", 1)[1] in l]
+    assert away, "the switch away from %s was not reported as a decision" % original
+
+    # And the resumption carries the banked total forward rather than resetting.
+    before = [c for c in load(turn - 1)["cities"] if c["name"] == name][0]
+    after = [c for c in load(later_turn)["cities"] if c["name"] == name][0]
+    assert after["production"] > before["production"], (
+        "sample premise: banked hammers should survive the detour"
+    )
+    back = [l for l in lines if name in l and str(after["production"]) in l]
+    assert back, "the resumed build did not report its carried-forward total"
+
+
+def test_timeline_calls_a_switch_a_decision_not_a_completion(run):
+    """A falling production total does NOT mean the previous item finished.
+
+    Switching from a Worker at 27/60 to a Warrior at 2/15 drops the total
+    exactly as a completion would; the sample contains that case and the unit
+    never arrived. Completion is claimed only when the item shows up in the
+    turn's gains, so this asserts the two are not conflated.
+    """
+    text = render(run, "timeline")
+    for turn, name, was, became in production_changes():
+        if was is None or became is None:
+            continue
+        gained = set(u["type"] for u in run_history.diff_own_units(
+            load(turn - 1), load(turn))[0])
+        if was in gained:
+            continue
+        def buildings_of(t):
+            for c in load(t)["cities"]:
+                if c["name"] == name:
+                    return set(c.get("buildings") or [])
+            return set()
+        if was in buildings_of(turn) - buildings_of(turn - 1):
+            continue
+        block = [l for l in text.splitlines()
+                 if name in l and "SWITCHED" in l and was.split("_", 1)[1] in l]
+        assert block, "t%d %s switch was not reported" % (turn, name)
+        assert "COMPLETED" not in block[0], (
+            "t%d: %s did not arrive, so this is a decision, not a completion"
+            % (turn, was)
+        )
+
+
+def test_timeline_reports_a_completion_that_empties_the_queue(run):
+    """The commonest production event of all: the item arrives, queue empties.
+
+    Reading that as "STOPPED building" would mislabel most completions in a
+    run, so it is asserted directly.
+    """
+    text = render(run, "timeline")
+    found = False
+    for turn, name, was, became in production_changes():
+        if became is not None or was is None:
+            continue
+        gained = set(u["type"] for u in run_history.diff_own_units(
+            load(turn - 1), load(turn))[0])
+        if was not in gained:
+            continue
+        found = True
+        block = [l for l in text.splitlines()
+                 if name in l and "COMPLETED" in l and was.split("_", 1)[1] in l]
+        assert block, "t%d completion of %s was not reported" % (turn, was)
+    assert found, "sample should contain a completion that empties the queue"
+
+
+def test_timeline_reports_a_completed_building(run, tmp_path):
+    """No sample turn finishes a building, so this path is built synthetically.
+
+    It works only because `producing` and `cities[].buildings` are both
+    `BUILDING_` form. The top-level `wonders` section is deliberately not
+    consulted (it is `BUILDINGCLASS_` keyed and reports rivals' builds too), so
+    this asserts the join that IS used.
+    """
+    before = copy.deepcopy(load(LAST_TURN - 1))
+    after = copy.deepcopy(load(LAST_TURN))
+    name = before["cities"][0]["name"]
+    for state, producing in ((before, "BUILDING_BARRACKS"), (after, "UNIT_WARRIOR")):
+        city = [c for c in state["cities"] if c["name"] == name][0]
+        city["producing"] = producing
+        city["productionNeeded"] = 60
+    kept = [c for c in before["cities"] if c["name"] == name][0]
+    built = [c for c in after["cities"] if c["name"] == name][0]
+    kept["buildings"] = ["BUILDING_PALACE"]
+    built["buildings"] = ["BUILDING_PALACE", "BUILDING_BARRACKS"]
+
+    path = write_run(tmp_path, [before, after])
+    text = render(run_history.Run(path), "timeline")
+    line = [l for l in text.splitlines() if name in l and "BARRACKS" in l]
+    assert line, "the completed building was not reported"
+    assert "COMPLETED" in line[0], line[0]
+
+
+def test_timeline_does_not_credit_a_rival_wonder_to_your_city(run, tmp_path):
+    """`wonders` reports builds from ANYWHERE, so it must not settle this."""
+    before = copy.deepcopy(load(LAST_TURN - 1))
+    after = copy.deepcopy(load(LAST_TURN))
+    name = before["cities"][0]["name"]
+    for state, producing in ((before, "BUILDING_PYRAMIDS"), (after, "UNIT_WARRIOR")):
+        city = [c for c in state["cities"] if c["name"] == name][0]
+        city["producing"] = producing
+        city["productionNeeded"] = 300
+    # A rival finished it: it appears in the global list, never in our city.
+    after["wonders"] = dict(after.get("wonders") or {})
+    after["wonders"]["built"] = ["BUILDINGCLASS_PYRAMIDS"]
+
+    path = write_run(tmp_path, [before, after])
+    text = render(run_history.Run(path), "timeline")
+    line = [l for l in text.splitlines() if name in l and "PYRAMIDS" in l]
+    assert line, "the abandoned wonder was not reported"
+    assert "COMPLETED" not in line[0], (
+        "a wonder built elsewhere must not read as our completion: %s" % line[0]
+    )
+
+
+def test_intel_reports_what_each_city_is_building(run):
+    """The join 4 of 6 trials made by hand after being told a city was empty."""
+    text = render(run, "intel")
+    for city in run.latest()["cities"]:
+        assert city["name"] in text
+        order = city.get("producing")
+        expected = "NOTHING QUEUED" if order is None else order.split("_", 1)[1]
+        assert expected in text, "%s's current build is missing" % city["name"]
+
+
+def test_intel_turns_to_complete_matches_the_arithmetic(run):
+    """The ETA is checked against the fields, not against a remembered number."""
+    text = render(run, "intel")
+    for city in run.latest()["cities"]:
+        turns = run_history.turns_to_complete(city)
+        if turns is None or turns == 0:
+            continue
+        assert "~%d turn(s)" % turns in text
+
+
+def test_turns_to_complete_refuses_to_answer_when_it_cannot():
+    """An empty queue, a process and a stalled city all have no honest number.
+
+    `productionNeeded` is None for both an empty queue and a process, and a
+    city producing nothing per turn would need "never" - any integer there
+    would be a lie.
+    """
+    assert run_history.turns_to_complete({"productionNeeded": None}) is None
+    assert run_history.turns_to_complete(
+        {"productionNeeded": 60, "production": 10, "productionPerTurn": 0}
+    ) is None
+    assert run_history.turns_to_complete(
+        {"productionNeeded": 60, "production": 10, "productionPerTurn": 5}
+    ) == 10
+
+
+def test_intel_flags_a_food_fed_build_as_stopping_growth(run, tmp_path):
+    """The growth cost is a Findings entry - under-weighted by a live trial -
+    so where the export carries the split, the view states it."""
+    state = copy.deepcopy(run.latest())
+    assert state["cities"], "sample should have cities"
+    city = state["cities"][0]
+    city["producing"] = "UNIT_SETTLER"
+    city["productionNeeded"] = 100
+    city["production"] = 10
+    city["productionFromFood"] = 6
+    city["productionFromHammers"] = 7
+    city["productionPerTurn"] = 13
+    text = render_single(tmp_path, state, "intel")
+    assert "growth is stopped" in text
+
+
+def test_intel_says_plainly_when_a_city_is_building_nothing(run, tmp_path):
+    """An empty queue in an empty city is sharper than either fact alone."""
+    state = copy.deepcopy(run.latest())
+    city = state["cities"][0]
+    city["producing"] = None
+    city["productionNeeded"] = None
+    text = render_single(tmp_path, state, "intel")
+    assert "NOTHING QUEUED" in text
+
+
 def test_intel_ignores_turn_range(run, capsys):
     """A truncated dossier would drop the earliest sighting, which is the fact
     that proves a capability - so the range is refused rather than applied."""

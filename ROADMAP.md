@@ -24,7 +24,6 @@ Every item carries a **`Target:`** line naming the files it will have to edit. T
 | `trial-per-turn-checklist` | Lane E — trial docs | Player-observed ×2, plus the agent's own B5 lapse | Ready, costs nothing |
 | `bearings-by-default` | Cross-tool — all three | Agent's own #1, and player-observed independently | Ready; needs a scope call (prose only) |
 | `city-approach-report` | Lane A — `run_history.py` | 4 of 6 `rules.py` trials; 2 wrote their own BFS | Ready, unblocked |
-| `per-city-production-history` | Lane A — `run_history.py` | 4 of 6 trials read raw JSON for it | Ready, unblocked |
 | `garrison-posture` | Lane A — `run_history.py` | Follows increment ⑨; no tool reads the new fields | Ready, small |
 | `coastal-undetermined-wording` | Lane B — `render_map.py` | Player-observed; the output was already right | Ready; wording only, will break one test assertion |
 | `multi-site-comparison` | Lane B — `render_map.py` | Both trial rounds; one diffed 10 runs by eye | **Reframed** — the gap is the trigger, not the table |
@@ -41,7 +40,7 @@ Every item carries a **`Target:`** line naming the files it will have to edit. T
 
 Grouped by `Target:`, so what can run concurrently is visible without reading the prose.
 
-- **Lane A — `harness/run_history.py`.** `city-approach-report`, `per-city-production-history`, `garrison-posture`. All land in the same module and all touch `intel`; **treat as serial with each other**, though the collision is far smaller than Lane C's. The last two both extend the garrison block, so one agent should take them together.
+- **Lane A — `harness/run_history.py`.** `city-approach-report`, `garrison-posture`. Both land in the same module and both touch `intel`; **treat as serial with each other**, though the collision is far smaller than Lane C's. `garrison-posture` extends the same garrison block that `per-city-production-history` (landed) has already rewritten, so read the current block before starting.
 - **Lane B — `harness/render_map.py`.** `coastal-undetermined-wording`, `multi-site-comparison`. Both land in the site report, so treat as serial with each other; the wording fix is small enough to take first in the same sitting. Parallel-safe against every other lane.
 - **Lane C — `harness/rules.py` — SERIAL.** `goody-hut-outcomes`, `rules-improvement`, `unit-animal-combat`, `rules-lookup-gaps`. `rules.py` is a single ~3300-line module and every one of these adds lookups into it and its tests. **Do not assign these to two agents at once.** The natural move is one agent taking the whole lane, since `unit-animal-combat` is nearly free once the file is open and `goody-hut-outcomes` extends a subcommand that already parses the right file. This is now the fullest lane on the page.
 - **Lane D — `samples/`.** `varied-setup-samples`. Requires actual play; collides with nothing.
@@ -71,7 +70,7 @@ This is a sharper case of the same root cause already named in `run_history.py`'
 
 ### `city-approach-report` — the best-evidenced gap in the folder
 
-**Lane A.** **Target:** `harness/run_history.py`, `harness/tests/test_run_history.py`, `harness/AGENT_GUIDE.md`, `harness/README.md`. Likely read-only against `harness/render_map.py` (`State.land_distance` lives there and is imported, not moved) — but if the walk machinery needs generalizing, that file is in scope too and this item then collides with Lane B.
+**Lane A.** **Target:** `harness/run_history.py`, `harness/tests/test_run_history.py`, `harness/AGENT_GUIDE.md`, `harness/README.md`. **Not** in scope against `harness/render_map.py`. An earlier draft said `State.land_distance` lives there and is imported here; that is wrong (checked while landing `per-city-production-history`) — `run_history.py` has its own `land_path`/`land_distances_from`, already used by `intel`. The walk machinery is local, so this does not collide with Lane B.
 
 **4 of 6 `rules.py` trials asked for it; 2 independently wrote their own BFS** over `map.tiles`, which is this repo's stated signal for a missing tool.
 
@@ -85,17 +84,9 @@ Wanted is presentation, not a verdict: per city, distance to the nearest unowned
 
 Increment ⑨ exports `units[].activity` and `units[].fortifyTurns`; **no harness tool reads either** (checked, not assumed), so the guide has to send the agent to raw JSON. `intel`'s garrison listing already prints `[NON-COMBAT]` and promotion tags — posture belongs on the same line, since a Warrior at `fortifyTurns: 5` carries +25% defence over one that just walked in.
 
-Small, and it shares the garrison block with `per-city-production-history`. **Presentation only** — print the count, never a "this city is defended" verdict, per the line `intel` already holds.
+Small. It shares the garrison block with the landed `per-city-production-history`, which added a `building:` line under each city — posture belongs on the occupant line above it, so read the current block first. **Presentation only** — print the count, never a "this city is defended" verdict, per the line `intel` already holds.
 
-### `per-city-production-history` — per-city production over the run
-
-**Lane A.** **Target:** `harness/run_history.py` (both the `timeline` and `intel` views), `harness/tests/test_run_history.py`, `harness/AGENT_GUIDE.md`, `harness/README.md`. The turns-to-complete half overlaps conceptually with a `rules-lookup-gaps` sub-item, but the arithmetic it wants already lives in `rules.py building` — *uncertain* whether that is imported (touching `harness/rules.py`, and so Lane C) or reimplemented; deciding that is part of the item.
-
-**4 of 6 trials read raw JSON for this** after `intel` told them a city was empty. `timeline` reports techs, cities, units, contacts, sightings, tiles, territory and resources — but not what any city is *producing*, or when that changed.
-
-One trial found Lisbon started a Warrior on t38 while both cities were empty and switched **back** to a Worker on t40 — the sharpest fact in the run, visible in no view, recovered with a throwaway loop over five files.
-
-Two obvious halves: a `producing` change line in `timeline`, and current build plus turns-to-complete on `intel`'s garrison block.
+**Sample gap:** `samples/baseline-early-game/` predates increments ⑦–⑨ and carries no `activity` or `fortifyTurns`, so this can only be tested against synthetic states (as `test_intel_flags_a_food_fed_build_as_stopping_growth` already does). Accepted; `varied-setup-samples` retires it.
 
 ### `bearings-by-default` — coordinates are the wrong interface for the human player
 
@@ -161,7 +152,7 @@ The bonus is not SDK-hidden: `CIV4UnitInfos.xml` carries a per-unit `<iAnimalCom
 
 ### `rules-lookup-gaps` — smaller `rules.py` gaps
 
-**Lane C (serial).** **Target:** `harness/rules.py`, `harness/tests/test_rules.py`, `harness/AGENT_GUIDE.md`, `harness/README.md`. The worker-build-times sub-item reads `CIV4BuildInfos.xml` from the game install, which `rules.py` already opens (`BUILD_FILE`) — no new data source, and nothing in this repo. The turns-to-complete sub-item is the one that may also want `harness/run_history.py`; see `per-city-production-history`, which asks for the same join from the other side.
+**Lane C (serial).** **Target:** `harness/rules.py`, `harness/tests/test_rules.py`, `harness/AGENT_GUIDE.md`, `harness/README.md`. The worker-build-times sub-item reads `CIV4BuildInfos.xml` from the game install, which `rules.py` already opens (`BUILD_FILE`) — no new data source, and nothing in this repo. The turns-to-complete sub-item is **partly answered**: `per-city-production-history` (landed) put the ETA on `intel`, reimplementing the arithmetic locally rather than importing from `rules.py` to keep the lanes decoupled (reasoning in `harness/README.md`). What remains is the `rules.py city` side — an accepted duplication of one small formula, not worth coupling the modules to remove.
 
 - **Worker action build times.** No build-time data for worker actions, so the live trial's road-versus-pasture-first answer was general BTS knowledge rather than tool-verified — flagged by the agent itself against the guide's own rule 5. **Cheaper than it sounds and not a mod change**: the data is in `CIV4BuildInfos.xml`, already on disk. A missing lookup in an existing tool, independent of everything else here.
 - **The tech↔map resource join, positive direction — 2 of 4 trials.** `rules.py tech TECH_MASONRY` prints `resources usable BONUS_STONE` while the player already has stone inside their borders; one trial called it "a decisive fact printed nowhere". The `unit` view does this join; the `tech` view does not.
@@ -203,7 +194,7 @@ Also outstanding from the same caveat: the baseline's increment-⑤ and ⑥ fiel
 - **Site comparison.** *Player-observed:* thorough and well-tabulated when asked, absent otherwise — see `multi-site-comparison`, which this partly displaces.
 - **Objectives drift.** *Agent-asked* (its B5, and its own lapse): `trial-template/CLAUDE.md` asks for a restatement every 5–10 turns; the agent wrote one at t0, updated through t10, then stopped — t15–t36 have none, spanning first contact with two civs, a completed Settler and a unit loss.
 
-The last one has a cheap tool half worth pairing with the prose: a line in `run_history`'s header — `objectives.md last written: t10 (26 turns ago)` — makes the drift visible exactly when the advisor is already reading run state. **That half is Lane A**, so if it is taken, it goes with `per-city-production-history` rather than here.
+The last one has a cheap tool half worth pairing with the prose: a line in `run_history`'s header — `objectives.md last written: t10 (26 turns ago)` — makes the drift visible exactly when the advisor is already reading run state. **That half is Lane A**, so if it is taken, it goes with whatever Lane A item is in hand rather than here.
 
 **It also has a second job: making the `Findings` section testable.** Several findings resolve to "watch whether this recurs" — Warriors' movement, resource-versus-yield weighting, coastal status read past in the site report. Those are only checkable if someone is looking at the right moment, which is what a per-turn checklist is for. Adding them as explicit check lines converts a passive list of observations into something the next trial actively tests.
 
@@ -266,7 +257,7 @@ Also worth recording: across two live trials (Cowork and Claude Code, 25 turns e
 
 **`bearings-by-default` needs its own window.** It touches all three tools and therefore collides with Lanes A, B and C at once. It is the highest-frequency usability item on the page — a translation step removed from every turn — but it cannot be parallelized, so it wants a slot where nothing else is running. Settle the prose-only scope question before starting.
 
-**`city-approach-report` and `per-city-production-history`** remain the two substantial harness builds, both carrying 4-of-6 trial evidence and both unblocked; `per-city-production-history`'s `timeline`/`intel` additions should build on the current section order and gold-anomaly line (see `harness/README.md`) rather than the layout that predates them. They share Lane A, so run them one after the other rather than concurrently.
+**`city-approach-report`** is now the one substantial harness build left — 4-of-6 trial evidence, unblocked, and cleanly Lane A (see its target line for the corrected `land_distance` claim, which removes the suspected Lane B collision).
 
 **`multi-site-comparison` now follows `trial-per-turn-checklist`** rather than standing alone — the trial evidence says the missing thing is the trigger, not the table. It still needs its interface decision.
 

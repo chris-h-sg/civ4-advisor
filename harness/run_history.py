@@ -26,6 +26,7 @@ Run it directly with the system Python; stdlib only, no setup:
 import argparse
 import glob
 import json
+import math
 import os
 import sys
 
@@ -788,6 +789,161 @@ def diff_own_cities(before, after):
     return founded, lost, grown
 
 
+def diff_production(before, after):
+    """What each surviving city switched to, and what it completed.
+
+    Two facts, kept apart because they are different events. A city whose
+    `producing` changes because the previous item COMPLETED is the ordinary
+    case and reads as progress; a city that changed its mind mid-build is a
+    decision, and it is the one trials had to recover by hand. The export
+    carries no "completed" flag, so which happened has to be inferred.
+
+    A FALLING `production` total does not settle it, and getting this wrong is
+    easy: switching from a Worker at 27/60 to a Warrior at 2/15 drops the total
+    exactly as a completion would. The baseline run contains that precise case
+    at t38 and it is NOT a completion - the Worker is still unbuilt, and
+    resumes at 39/60 two turns later. What actually distinguishes them is
+    whether the finished item ARRIVED, so completion is only claimed when the
+    item shows up - a unit in the same turn's gains, or a building newly
+    present in `cities[].buildings`. Everything else is reported as a switch,
+    which is the honest reading of a changed `producing` with nothing to show
+    for it.
+
+    Both keys line up for this: `producing` and `cities[].buildings` are both
+    `BUILDING_` form, so a wonder we build ourselves matches like any other
+    building. (`wonders` uses `BUILDINGCLASS_` keys and is deliberately NOT
+    consulted here - the two are not interconvertible by string surgery, and
+    it reports wonders built ANYWHERE, including by rivals, which would credit
+    our city with someone else's build.)
+
+    A process is the residual gap, and it cannot be otherwise: a process never
+    completes, so switching away from one is always a decision, which is what
+    this reports.
+
+    `producing` is None for an empty queue AND for a process (the schema says
+    the engine reports MAX_INT for both), and `productionNeeded` is None with
+    it. Neither is a switch to anything, so an empty queue is reported as
+    exactly that rather than as a change to "nothing".
+
+    Only cities present in BOTH turns are considered. A city founded this turn
+    has no previous build to differ from, and its first choice is already
+    reported by the founding line.
+
+    Yields (old_city, new_city, completed) triples, where `completed` is the
+    evidence that the previous item arrived: a unit type, a building type, or
+    None if nothing did.
+    """
+    was = dict((c["id"], c) for c in before["cities"])
+    now = dict((c["id"], c) for c in after["cities"])
+    gained_units = [u["type"] for u in diff_own_units(before, after)[0]]
+    changes = []
+    for city_id in sorted(set(now) & set(was)):
+        old, new = was[city_id], now[city_id]
+        if old.get("producing") == new.get("producing"):
+            continue
+        ordered = old.get("producing")
+        completed = None
+        if ordered is not None:
+            if ordered in gained_units:
+                completed = ordered
+            elif ordered in (set(new.get("buildings") or [])
+                             - set(old.get("buildings") or [])):
+                completed = ordered
+        changes.append((old, new, completed))
+    return changes
+
+
+def _production_note(old, new, completed):
+    """The one line describing a single city's change of build."""
+    banked = old.get("production") or 0
+    was = old.get("producing")
+    became = new.get("producing")
+
+    if became is None:
+        # The ordinary end of a build: the item arrives and the queue is empty
+        # at export time, with the next choice made on the following turn. That
+        # is most of the completions in a run, so reading it as "stopped" would
+        # mislabel the single most common production event there is.
+        if completed is not None:
+            return (
+                "  city      %s COMPLETED %s - nothing queued behind it, so it is"
+                " building NOTHING until something is chosen"
+                % (new["name"], _short_order(completed))
+            )
+        return (
+            "  city      %s STOPPED building %s with no %s to show for it -"
+            " queue now empty, %d hammer(s) were banked against it"
+            % (new["name"], _short_order(was), _short_order(was), banked)
+        )
+    if was is None:
+        return (
+            "  city      %s STARTED %s%s"
+            % (new["name"], _short_order(became), _needed_note(new))
+        )
+    if completed is not None:
+        return (
+            "  city      %s COMPLETED %s, now building %s%s"
+            % (
+                new["name"], _short_order(completed), _short_order(became),
+                _needed_note(new),
+            )
+        )
+    return (
+        "  city      %s SWITCHED %s -> %s%s - a DECISION, not a completion:"
+        " no %s arrived this turn, and %d hammer(s) were banked against it"
+        % (
+            new["name"], _short_order(was), _short_order(became),
+            _needed_note(new), _short_order(was), banked,
+        )
+    )
+
+
+def _short_order(order):
+    """UNIT_WARRIOR -> WARRIOR, for a line that already has enough words."""
+    if order is None:
+        return "nothing"
+    for prefix in ("UNIT_", "BUILDING_", "PROJECT_", "PROCESS_"):
+        if order.startswith(prefix):
+            return order[len(prefix):]
+    return order
+
+
+def _needed_note(city):
+    """` (N/M)` progress, omitted when the engine reports no target."""
+    needed = city.get("productionNeeded")
+    if needed is None:
+        return ""
+    return " (%d/%d)" % (city.get("production") or 0, needed)
+
+
+def turns_to_complete(city):
+    """Whole turns until the current build finishes, or None if unanswerable.
+
+    Deliberately reimplemented here rather than imported from `rules.py`: this
+    is arithmetic over three exported fields, not a rules lookup, and importing
+    would couple this module to a 3300-line one that has several queued items
+    about to churn it.
+
+    None whenever the question has no honest answer - an empty queue or a
+    process (`productionNeeded` is None for both), or a city producing nothing
+    per turn, where "never" is the truthful answer and any number would be a
+    lie. The rate itself is NOT a steady state: `productionPerTurn` carries
+    one-off overflow the turn after a build completes, and the food half only
+    applies while a food-fed build is queued. So this is an estimate at the
+    current rate, and the caller says so.
+    """
+    needed = city.get("productionNeeded")
+    if needed is None:
+        return None
+    rate = city.get("productionPerTurn") or 0
+    if rate <= 0:
+        return None
+    remaining = needed - (city.get("production") or 0)
+    if remaining <= 0:
+        return 0
+    return int(math.ceil(remaining / float(rate)))
+
+
 def diff_tiles(before, after):
     """Newly revealed tiles, and per-field changes on tiles known to both.
 
@@ -900,6 +1056,14 @@ def timeline_block(run, names, before, after):
             "  city      %s pop %d -> %d" % (now["name"], was["population"],
                                              now["population"])
         )
+
+    # What a city is building, and when that changed, appeared in no view at
+    # all - 4 of 6 trials looped over the raw files to recover it. The sharpest
+    # case in the baseline run is Lisbon starting a Warrior on t38 with a
+    # Worker at 27/60 banked, then returning to that Worker on t40 at 39/60:
+    # a mind changed twice, invisible here until now.
+    for was, now, completed in diff_production(before, after):
+        body.append(_production_note(was, now, completed))
 
     for unit in gained:
         body.append(
@@ -1427,6 +1591,45 @@ def _combat_note(unit):
     return ""
 
 
+def _building_note(city):
+    """One city's current build, with an ETA at the CURRENT rate.
+
+    An empty queue says so plainly: 4 of 6 trials went to raw JSON after being
+    told a city was empty, and a city building nothing while undefended is a
+    sharper fact than either half alone.
+
+    The rate caveat is printed rather than assumed away. `productionPerTurn`
+    carries one-off overflow the turn after a build completes and folds food in
+    while a Settler or Worker is queued, so a number derived from it is an
+    estimate at today's rate, not a schedule - and the split is printed when
+    food is part of it, because that half stops the moment the build changes.
+    """
+    order = city.get("producing")
+    if order is None:
+        return (
+            "NOTHING QUEUED (production %d/turn is accumulating against no item)"
+            % (city.get("productionPerTurn") or 0)
+        )
+
+    turns = turns_to_complete(city)
+    if turns is None:
+        eta = "no completion estimate - producing 0 hammer(s)/turn"
+    elif turns == 0:
+        eta = "completes this turn"
+    else:
+        eta = "~%d turn(s) at the current %d/turn" % (
+            turns, city.get("productionPerTurn") or 0,
+        )
+
+    from_food = city.get("productionFromFood") or 0
+    split = ""
+    if from_food:
+        split = " - %d of that rate is FOOD, so growth is stopped while this builds" % (
+            from_food,
+        )
+    return "%s%s, %s%s" % (_short_order(order), _needed_note(city), eta, split)
+
+
 def _garrisons(run, latest, latest_turn, land=None):
     """Which of your units are standing in each city, as of the latest turn.
 
@@ -1467,6 +1670,7 @@ def _garrisons(run, latest, latest_turn, land=None):
         else:
             what = "nothing standing in it"
         lines.append("  %-12s (%d,%d)  %s" % (city["name"], pos[0], pos[1], what))
+        lines.append("               building: %s" % _building_note(city))
 
     outside = [
         u for u in latest["units"]
