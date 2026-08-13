@@ -60,7 +60,12 @@ def _unit(type_key, prereq, unit_class="UNITCLASS_X", strength=1, moves=1,
           domain="DOMAIN_LAND", religion="NONE", corporation="NONE",
           only_defensive=False, ignore_terrain_cost=False, interception=0,
           collateral_damage=0, collateral_damage_limit=0,
-          collateral_damage_max_units=0):
+          collateral_damage_max_units=0, animal_combat=0, is_animal=False,
+          hills_defense=0, free_promotions=(), off_promotions=(),
+          class_attack_mods=(), class_defense_mods=(), flanking=(),
+          combat_limit=100, city_attack=0, ignore_building_defense=False,
+          bombard_rate=0, no_bad_goodies=False, first_strike_immune=False,
+          collateral_immune=()):
     # `filler_lines` pushes PrereqTech far from <Type>, reproducing the real
     # file's ~90-line gap that defeats `grep -A6`.
     filler = "\n".join("      <iFiller%d>0</iFiller%d>" % (i, i)
@@ -73,6 +78,8 @@ def _unit(type_key, prereq, unit_class="UNITCLASS_X", strength=1, moves=1,
       <Combat>%s</Combat>
 %s
       <UnitCombatMods>%s</UnitCombatMods>
+      <UnitClassAttackMods>%s</UnitClassAttackMods>
+      <UnitClassDefenseMods>%s</UnitClassDefenseMods>
       <PrereqTech>%s</PrereqTech>
       <PrereqReligion>%s</PrereqReligion>
       <PrereqCorporation>%s</PrereqCorporation>
@@ -83,6 +90,12 @@ def _unit(type_key, prereq, unit_class="UNITCLASS_X", strength=1, moves=1,
       <iCombat>%d</iCombat>
       <iFirstStrikes>%d</iFirstStrikes>
       <iCityDefense>%d</iCityDefense>
+      <iCityAttack>%d</iCityAttack>
+      <bIgnoreBuildingDefense>%d</bIgnoreBuildingDefense>
+      <iBombardRate>%d</iBombardRate>
+      <bNoBadGoodies>%d</bNoBadGoodies>
+      <bFirstStrikeImmune>%d</bFirstStrikeImmune>
+      <UnitCombatCollateralImmunes>%s</UnitCombatCollateralImmunes>
       <iWithdrawalProb>0</iWithdrawalProb>
       <bNoDefensiveBonus>0</bNoDefensiveBonus>
       <bOnlyDefensive>%d</bOnlyDefensive>
@@ -91,6 +104,13 @@ def _unit(type_key, prereq, unit_class="UNITCLASS_X", strength=1, moves=1,
       <iCollateralDamage>%d</iCollateralDamage>
       <iCollateralDamageLimit>%d</iCollateralDamageLimit>
       <iCollateralDamageMaxUnits>%d</iCollateralDamageMaxUnits>
+      <iAnimalCombat>%d</iAnimalCombat>
+      <bAnimal>%d</bAnimal>
+      <iHillsDefense>%d</iHillsDefense>
+      <iHillsAttack>0</iHillsAttack>
+      <iCombatLimit>%d</iCombatLimit>
+      <FlankingStrikes>%s</FlankingStrikes>
+      <FreePromotions>%s</FreePromotions>
       <TerrainImpassables/>
       <FeatureImpassables/>
     </UnitInfo>""" % (
@@ -100,12 +120,49 @@ def _unit(type_key, prereq, unit_class="UNITCLASS_X", strength=1, moves=1,
             "<iUnitCombatMod>%d</iUnitCombatMod></UnitCombatMod>" % m
             for m in mods
         ),
+        "".join(
+            "<UnitClassAttackMod><UnitClassType>%s</UnitClassType>"
+            "<iUnitClassMod>%d</iUnitClassMod></UnitClassAttackMod>" % m
+            for m in class_attack_mods
+        ),
+        "".join(
+            "<UnitClassDefenseMod><UnitClassType>%s</UnitClassType>"
+            "<iUnitClassMod>%d</iUnitClassMod></UnitClassDefenseMod>" % m
+            for m in class_defense_mods
+        ),
         prereq, religion, corporation,
         "".join("<BonusType>%s</BonusType>" % b for b in bonuses),
-        cost, moves, strength, first_strikes, city_defense,
+        cost, moves, strength, first_strikes, city_defense, city_attack,
+        1 if ignore_building_defense else 0, bombard_rate,
+        1 if no_bad_goodies else 0, 1 if first_strike_immune else 0,
+        # The real field is <iUnitCombatCollateralImmune>, not the b-prefixed
+        # name the container's singular tag suggests - checking the wrong one
+        # reports every siege unit as taking full collateral from its own kind.
+        "".join(
+            "<UnitCombatCollateralImmune><UnitCombatType>%s</UnitCombatType>"
+            "<iUnitCombatCollateralImmune>1</iUnitCombatCollateralImmune>"
+            "</UnitCombatCollateralImmune>" % c
+            for c in collateral_immune
+        ),
         1 if only_defensive else 0, 1 if ignore_terrain_cost else 0,
         interception, collateral_damage, collateral_damage_limit,
-        collateral_damage_max_units,
+        collateral_damage_max_units, animal_combat, 1 if is_animal else 0,
+        hills_defense, combat_limit,
+        "".join(
+            "<FlankingStrike><FlankingStrikeUnitClass>%s"
+            "</FlankingStrikeUnitClass>"
+            "<iFlankingStrength>%d</iFlankingStrength></FlankingStrike>" % f
+            for f in flanking
+        ),
+        # off_promotions carry <bFreePromotion>0</bFreePromotion>: entries that
+        # are present but explicitly turned OFF, which is what stops the parser
+        # taking every PromotionType in the container.
+        "".join(
+            "<FreePromotion><PromotionType>%s</PromotionType>"
+            "<bFreePromotion>%d</bFreePromotion></FreePromotion>" % (p, flag)
+            for p, flag in ([(p, 1) for p in free_promotions]
+                            + [(p, 0) for p in off_promotions])
+        ),
     )
 
 
@@ -410,6 +467,49 @@ def xml_root(tmp_path):
         _unit("UNIT_OTHER_CLASS", "TECH_SIMPLE", unit_class="UNITCLASS_Y"),
         _unit("UNIT_ELSEWHERE", "TECH_ROOT_B", unit_class="UNITCLASS_Z"),
         _unit("UNIT_DEFENDER", "TECH_ROOT_A", first_strikes=1, city_defense=50),
+        # The two sides of the animal matchup. On the real install UNIT_SCOUT is
+        # the only unit with a non-zero iAnimalCombat, and exactly four units
+        # are bAnimal.
+        _unit("UNIT_SCOUTER", "TECH_ROOT_A", unit_class="UNITCLASS_SCOUTER",
+              strength=1, animal_combat=100, no_bad_goodies=True),
+        _unit("UNIT_BEASTIE", "TECH_ROOT_A", unit_class="UNITCLASS_BEASTIE",
+              strength=2, combat="NONE", cost=0, is_animal=True),
+        # Hills defence, ignored terrain cost and free promotions - three
+        # fields the file parsed or ignored but never printed, each real on the
+        # install (Archer +25% on hills; Explorer ignores terrain cost and
+        # starts with Guerilla1 + Woodsman1). PROMOTION_OFF is present but
+        # flagged off, so it must NOT be reported as free.
+        _unit("UNIT_HILLMAN", "TECH_ROOT_A", unit_class="UNITCLASS_HILLMAN",
+              hills_defense=25),
+        # The two sides of a class counter, which the engine keeps in separate
+        # containers: the Chariot's +100% applies only when IT attacks, the
+        # Greek Phalanx's only when it DEFENDS. Same number, opposite advice.
+        _unit("UNIT_RIDER", "TECH_ROOT_A", unit_class="UNITCLASS_RIDER",
+              class_attack_mods=[("UNITCLASS_X", 100)]),
+        _unit("UNIT_BLOCKER", "TECH_ROOT_A", unit_class="UNITCLASS_BLOCKER",
+              class_defense_mods=[("UNITCLASS_RIDER", 100)]),
+        # A capped-damage unit (the Catapult's 75) and a flanker. Flanking is
+        # per target class, so UNIT_FLANKER must NOT read as flanking anything
+        # other than the class it names.
+        _unit("UNIT_SIEGE", "TECH_ROOT_A", unit_class="UNITCLASS_SIEGE",
+              combat_limit=75, collateral_damage=100,
+              collateral_damage_limit=50, collateral_damage_max_units=6,
+              bombard_rate=8, collateral_immune=["UNITCOMBAT_SIEGE"]),
+        # Carries the collateral LIMIT and MAX-UNITS but deals no collateral -
+        # exactly the shape of a Knight, which reuses those two fields for
+        # flanking damage. 25 units on the install look like this, so gating
+        # the output on the limit would report every one of them as siege.
+        _unit("UNIT_FLANKER", "TECH_ROOT_A", unit_class="UNITCLASS_FLANKER",
+              flanking=[("UNITCLASS_SIEGE", 100)], first_strike_immune=True,
+              collateral_damage_limit=100, collateral_damage_max_units=6),
+        # The attacking half of the city matchup, and the building-defence
+        # bypass. UNIT_DEFENDER above holds the defending half.
+        _unit("UNIT_STORMER", "TECH_ROOT_A", unit_class="UNITCLASS_STORMER",
+              city_attack=10, ignore_building_defense=True),
+        _unit("UNIT_ROAMER", "TECH_ROOT_A", unit_class="UNITCLASS_ROAMER",
+              ignore_terrain_cost=True,
+              free_promotions=["PROMOTION_TESTER"],
+              off_promotions=["PROMOTION_ARCHER_ONLY"]),
         # The gates `city` needs and the single lookups do not.
         _unit("UNIT_BOAT", "TECH_ROOT_A", unit_class="UNITCLASS_BOAT",
               domain="DOMAIN_SEA", cost=30),
@@ -860,6 +960,271 @@ def test_unit_parses_combat_fields_and_drops_none_bonuses(xml_root, tmp_path):
     assert unit["combat_mods"] == [("UNITCOMBAT_MELEE", 50)]
     # The real PrereqBonuses list is padded with NONE entries.
     assert unit["prereq_bonuses"] == ["BONUS_COPPER", "BONUS_IRON"]
+
+
+def test_unit_parses_the_animal_combat_bonus_and_the_animal_flag(
+        xml_root, tmp_path):
+    """iAnimalCombat lives in its own field rather than <UnitCombatMods>, which
+    is why it was missed: a trial hand-estimated a Scout's odds against a Lion
+    and flagged the number as a guess, never having seen the +100%."""
+    _, state = make_state(tmp_path)
+    r = build_rules(xml_root, state)
+    assert r.units["UNIT_SCOUTER"]["animal_combat"] == 100
+    assert r.units["UNIT_SCOUTER"]["is_animal"] is False
+    assert r.units["UNIT_BEASTIE"]["is_animal"] is True
+    # The default, which is what nearly every unit in the real file carries.
+    assert r.units["UNIT_TESTER"]["animal_combat"] == 0
+    assert r.units["UNIT_TESTER"]["is_animal"] is False
+
+
+def test_unit_view_prints_the_animal_bonus_beside_other_combat_mods(
+        xml_root, tmp_path):
+    _, state = make_state(tmp_path)
+    r = build_rules(xml_root, state)
+
+    text = rules.view_unit(r, "UNIT_SCOUTER", state, False, None)
+    assert "+100% vs animals" in text
+
+    # The other side of the matchup, so a lookup on the animal answers the
+    # same question rather than going silent.
+    beast = rules.view_unit(r, "UNIT_BEASTIE", state, False, None)
+    assert "counts as an animal" in beast
+
+    # A unit with neither says nothing about animals at all - the field is
+    # zero on nearly every unit, so printing it unconditionally is noise.
+    plain = rules.view_unit(r, "UNIT_TESTER", state, False, None)
+    assert "animal" not in plain.lower()
+
+
+def test_animal_view_names_the_bonus_holders_from_the_data(xml_root, tmp_path):
+    """The holder is looked up, not hardcoded to UNIT_SCOUT. It is the only one
+    on the stock install, but that is a fact about the data rather than a rule -
+    a hardcoded name reads as an engine special case and goes wrong under a mod
+    without anything to catch it."""
+    _, state = make_state(tmp_path)
+    r = build_rules(xml_root, state)
+
+    text = rules.view_unit(r, "UNIT_BEASTIE", state, False, None)
+    assert "UNIT_SCOUTER" in text
+    assert "UNIT_SCOUT" not in text.replace("UNIT_SCOUTER", "")
+
+    # Give a second unit the bonus and both are named, with the verb agreeing.
+    r.units["UNIT_TESTER"]["animal_combat"] = 50
+    both = rules.view_unit(r, "UNIT_BEASTIE", state, False, None)
+    assert "UNIT_SCOUTER, UNIT_TESTER have" in both
+
+    # And with none, it falls back to the general statement rather than
+    # printing an empty list.
+    r.units["UNIT_TESTER"]["animal_combat"] = 0
+    r.units["UNIT_SCOUTER"]["animal_combat"] = 0
+    none = rules.view_unit(r, "UNIT_BEASTIE", state, False, None)
+    assert "units with an animal combat bonus" in none
+
+
+def test_unit_class_mods_are_parsed_and_keep_attack_apart_from_defence(
+        xml_root, tmp_path):
+    """A Chariot's +100% vs UNITCLASS_AXEMAN lives in <UnitClassAttackMods>,
+    a different container from the <UnitCombatMods> the parser already read -
+    so the unit's signature ability was printed nowhere. Attack and defence
+    stay separate because they are opposite advice: the Chariot's bonus is a
+    reason to attack, the Greek Phalanx's +100% vs chariots a reason to sit."""
+    _, state = make_state(tmp_path)
+    r = build_rules(xml_root, state)
+    assert r.units["UNIT_RIDER"]["class_mods"]["attacking"] == [
+        ("UNITCLASS_X", 100)]
+    assert r.units["UNIT_RIDER"]["class_mods"]["defending vs"] == []
+    assert r.units["UNIT_BLOCKER"]["class_mods"]["defending vs"] == [
+        ("UNITCLASS_RIDER", 100)]
+    assert r.units["UNIT_BLOCKER"]["class_mods"]["attacking"] == []
+
+    attacker = rules.view_unit(r, "UNIT_RIDER", state, False, None)
+    assert "+100% attacking UNITCLASS_X" in attacker
+    assert "defending" not in attacker
+
+    defender = rules.view_unit(r, "UNIT_BLOCKER", state, False, None)
+    assert "+100% defending vs UNITCLASS_RIDER" in defender
+    assert "attacking" not in defender
+
+    # A unit with neither container gets no class-modifier line. Asserted on
+    # the abilities wording rather than on "UNITCLASS" appearing anywhere:
+    # SAME TECH ALSO UNLOCKS legitimately prints unit classes, so the bare
+    # substring is not evidence of a modifier.
+    plain = rules.view_unit(r, "UNIT_TESTER", state, False, None)
+    assert "attacking UNITCLASS" not in plain
+    assert "defending vs UNITCLASS" not in plain
+
+
+def test_no_bad_goodies_first_strike_immunity_and_collateral_immunity(
+        xml_root, tmp_path):
+    """Three fields found by auditing the whole UnitInfo block rather than
+    reacting to a question. The first matters most: only the Scout and Explorer
+    carry bNoBadGoodies, so the hut that killed a trial's Warrior could not
+    have killed a Scout - which is a fact about WHICH UNIT to send, and the
+    goody-hut odds alone never say it."""
+    _, state = make_state(tmp_path)
+    r = build_rules(xml_root, state)
+
+    scout = rules.view_unit(r, "UNIT_SCOUTER", state, False, None)
+    assert r.units["UNIT_SCOUTER"]["no_bad_goodies"] is True
+    assert "never triggers a hostile result from a goody hut" in scout
+
+    # Siege is immune to its own collateral, which is why massed catapults
+    # do not grind each other down.
+    assert r.units["UNIT_SIEGE"]["collateral_immune"] == ["UNITCOMBAT_SIEGE"]
+    siege = rules.view_unit(r, "UNIT_SIEGE", state, False, None)
+    assert "immune to collateral damage from UNITCOMBAT_SIEGE" in siege
+
+    flanker = rules.view_unit(r, "UNIT_FLANKER", state, False, None)
+    assert "immune to first strikes" in flanker
+
+    plain = rules.view_unit(r, "UNIT_TESTER", state, False, None)
+    assert "goody hut" not in plain
+    assert "immune" not in plain
+
+
+def test_bombard_rate_is_reported_as_its_own_mechanic(xml_root, tmp_path):
+    """Bombardment strips a CITY'S DEFENCE BONUS and is a third mechanic
+    distinct from collateral damage (which hits units in a stack) and from
+    iCityAttack (a combat modifier). The Catapult carries all three plus a
+    combat limit, and listing any one of them alone misdescribes the unit."""
+    _, state = make_state(tmp_path)
+    r = build_rules(xml_root, state)
+    assert r.units["UNIT_SIEGE"]["bombard_rate"] == 8
+    assert r.units["UNIT_TESTER"]["bombard_rate"] == 0
+
+    text = rules.view_unit(r, "UNIT_SIEGE", state, False, None)
+    assert "bombards a city's defence bonus down by 8 points per turn" in text
+    # All four siege facts present together, which is the point.
+    assert "collateral damage" in text
+    assert "cannot make the kill" in text
+
+    plain = rules.view_unit(r, "UNIT_TESTER", state, False, None)
+    assert "bombard" not in plain
+
+
+def test_collateral_damage_is_gated_on_dealing_it_not_on_the_limit(
+        xml_root, tmp_path):
+    """iCollateralDamageLimit and MaxUnits are non-zero on 25 units that deal
+    NO collateral damage - flanking reuses the same two fields. Gating the
+    output on the limit would report a Knight as a siege unit."""
+    _, state = make_state(tmp_path)
+    r = build_rules(xml_root, state)
+
+    siege = rules.view_unit(r, "UNIT_SIEGE", state, False, None)
+    assert "collateral damage to up to 6 other units" in siege
+    assert "each down to 50% health" in siege
+
+    # Has the limit and the cap, deals none: must stay silent.
+    flanker = rules.view_unit(r, "UNIT_FLANKER", state, False, None)
+    assert r.units["UNIT_FLANKER"]["collateral_damage_limit"] == 100
+    assert "collateral" not in flanker
+
+    plain = rules.view_unit(r, "UNIT_TESTER", state, False, None)
+    assert "collateral" not in plain
+
+
+def test_city_attack_and_building_defence_bypass_are_printed(
+        xml_root, tmp_path):
+    """iCityDefense was printed while iCityAttack was not, so the view showed
+    one half of the assault matchup and hid the other. bIgnoreBuildingDefense
+    is a unit flag about a BUILDING effect, so it names what it ignores rather
+    than echoing the field name."""
+    _, state = make_state(tmp_path)
+    r = build_rules(xml_root, state)
+    assert r.units["UNIT_STORMER"]["city_attack"] == 10
+    assert r.units["UNIT_STORMER"]["ignore_building_defense"] is True
+
+    text = rules.view_unit(r, "UNIT_STORMER", state, False, None)
+    assert "+10% attacking cities" in text
+    assert "ignores a city's building defence bonus" in text
+
+    # The defending half still prints, and prints nothing about attacking.
+    defender = rules.view_unit(r, "UNIT_DEFENDER", state, False, None)
+    assert "+50% city defence" in defender
+    assert "attacking cities" not in defender
+
+    plain = rules.view_unit(r, "UNIT_TESTER", state, False, None)
+    assert "attacking cities" not in plain
+    assert "building defence" not in plain
+
+
+def test_combat_limit_prints_only_for_a_real_cap(xml_root, tmp_path):
+    """iCombatLimit is 100 (no cap) on 83 units and 0 (non-combat) on 34, so
+    printing it unconditionally would put a meaningless line on nearly every
+    unit. Only six carry a real limit - and the Catapult's 75 is the one that
+    matters early: siege damages a stack but cannot land the killing blow."""
+    _, state = make_state(tmp_path)
+    r = build_rules(xml_root, state)
+    assert r.units["UNIT_SIEGE"]["combat_limit"] == 75
+    assert r.units["UNIT_TESTER"]["combat_limit"] == 100
+
+    capped = rules.view_unit(r, "UNIT_SIEGE", state, False, None)
+    assert "damages only to 75% health" in capped
+    assert "cannot make the kill" in capped
+
+    # The default prints nothing rather than "damages only to 100%".
+    plain = rules.view_unit(r, "UNIT_TESTER", state, False, None)
+    assert "damages only to" not in plain
+
+    # Nor does a non-combat unit, whose strength 0 already says it.
+    r.units["UNIT_TESTER"]["combat_limit"] = 0
+    noncombat = rules.view_unit(r, "UNIT_TESTER", state, False, None)
+    assert "damages only to" not in noncombat
+
+
+def test_flanking_is_parsed_per_target_class_not_as_a_flat_stat(
+        xml_root, tmp_path):
+    """<FlankingStrikes> is a list of (class, strength) pairs. A bare sweep for
+    <iFlankingStrength> finds the nested values and reads as though the unit
+    flanked everything - a Horse Archer flanks catapults and trebuchets only."""
+    _, state = make_state(tmp_path)
+    r = build_rules(xml_root, state)
+    assert r.units["UNIT_FLANKER"]["flanking"] == [("UNITCLASS_SIEGE", 100)]
+    assert r.units["UNIT_TESTER"]["flanking"] == []
+
+    text = rules.view_unit(r, "UNIT_FLANKER", state, False, None)
+    assert "flanking strike vs UNITCLASS_SIEGE" in text
+    # The named class, and no other - the whole point of parsing the pairs.
+    assert "flanking strike vs UNITCLASS_X" not in text
+
+    plain = rules.view_unit(r, "UNIT_TESTER", state, False, None)
+    assert "flanking" not in plain
+
+
+def test_unit_view_prints_hills_defence_and_ignored_terrain_cost(
+        xml_root, tmp_path):
+    """Both were readable in the XML and neither was printed: an Archer's +25%
+    on hills, and the Explorer's ignored terrain cost - which was already
+    parsed for the promotion cascade and simply never surfaced."""
+    _, state = make_state(tmp_path)
+    r = build_rules(xml_root, state)
+
+    hills = rules.view_unit(r, "UNIT_HILLMAN", state, False, None)
+    assert "+25% defence on hills" in hills
+
+    roamer = rules.view_unit(r, "UNIT_ROAMER", state, False, None)
+    assert "ignores terrain movement cost" in roamer
+
+    plain = rules.view_unit(r, "UNIT_TESTER", state, False, None)
+    assert "hills" not in plain.lower()
+    assert "terrain movement cost" not in plain
+
+
+def test_free_promotions_are_parsed_and_the_off_flag_is_honoured(
+        xml_root, tmp_path):
+    """<FreePromotions> is a list of (promotion, flag) pairs, so a flat sweep
+    of PromotionType would also collect entries explicitly turned off."""
+    _, state = make_state(tmp_path)
+    r = build_rules(xml_root, state)
+    assert r.units["UNIT_ROAMER"]["free_promotions"] == ["PROMOTION_TESTER"]
+    assert r.units["UNIT_TESTER"]["free_promotions"] == []
+
+    text = rules.view_unit(r, "UNIT_ROAMER", state, False, None)
+    assert "starts with PROMOTION_TESTER" in text
+    assert "PROMOTION_ARCHER_ONLY" not in text
+    # Points at the subcommand that says what they do - a bare promotion name
+    # is a name, not an explanation.
+    assert "`rules.py promotion`" in text
 
 
 def test_blocks_report_their_line_number(xml_root, tmp_path):

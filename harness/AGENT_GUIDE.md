@@ -129,7 +129,7 @@ python harness/rules.py promotion <state.json> --for-unit ID [--eligible]
 
 | subcommand | what it answers |
 |---|---|
-| `unit UNIT_AXEMAN` | What does this unit need — tech, resources — and what does *that* tech need? Plus combat stats and everything else the same tech unlocks. |
+| `unit UNIT_AXEMAN` | What does this unit need — tech, resources — and what does *that* tech need? Plus its full combat profile and everything else the same tech unlocks. |
 | `tech TECH_MONARCHY` | What does this tech need, transitively, and **everything** it unlocks — units, buildings, civics, worker actions, resources revealed, and abilities like bridge-building. |
 | `building BUILDING_PYRAMID` | Buildings and wonders: cost in hammers and turns *per city*, prerequisites, effects, and whether it's an ordinary building, a national wonder or one-per-world. |
 | `promotion PROMOTION_COMBAT1` | What a promotion actually does — combat/terrain/movement modifiers, which unit-combat classes can take it, its own prerequisite chain. |
@@ -146,6 +146,8 @@ It lists what is available now **and** what is one tech away, each blocked row c
 **Settlers and workers eat the city's food surplus**, so their estimates are marked `(+food, growth stops)`: the build lands sooner *and* the city stops growing while it does. That trade is yours to weigh. On a capture too old to carry the exported food/hammer split, a header line warns that the other estimates in that city run slightly fast while such a build is queued; if there is no such line, the numbers are exact.
 
 **Reach for it whenever you're about to state a rule.** Especially after `intel` shows you a rival unit: `rules.py unit UNIT_ARCHER <state>` turns a sighting into a dated tech conclusion, which is the join `intel` deliberately refuses to make for you. Same when `intel`'s garrison listing names a unit's promotions (e.g. `[WOODSMAN1, WOODSMAN2]`) or shows `N promotion(s) available` — that names WHICH promotions, never what they do; `rules.py promotion <state> --for-unit ID` (the id `intel` prints beside the unit) is the join, and fetches every promotion that unit holds automatically with a combined total, rather than needing each name typed by hand.
+
+**Never call a fight on strength alone — run both units and read the `abilities` block.** Modifiers there routinely swing a matchup the raw numbers get backwards, and each names its own condition: `+100% attacking UNITCLASS_AXEMAN` applies only when attacking, `+100% defending vs UNITCLASS_CHARIOT` only when defending. Quote the modifier, not the strength.
 
 **Guessed a type name and got an error? Read the suggestions, don't fall back to grep.** Unique units are civ-prefixed and inconsistently so — the Praetorian is `UNIT_ROME_PRAETORIAN`, not `UNIT_PRAETORIAN`.
 

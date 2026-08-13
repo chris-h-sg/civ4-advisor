@@ -340,11 +340,97 @@ def parse_units(text):
             ):
                 combat_mods.append((mod.group(1).strip(), int(mod.group(2))))
 
+        # Modifiers against a specific unit CLASS, which are a different
+        # container from the <UnitCombatMods> above and were invisible until
+        # someone asked what a Chariot does: its +100% vs UNITCLASS_AXEMAN is
+        # the unit's whole point and printed nowhere. Three containers, because
+        # the engine distinguishes attacking from defending and from both:
+        # a Chariot's bonus applies only when IT attacks, while a Greek
+        # Phalanx's +100% vs chariots applies only when it DEFENDS. Collapsing
+        # them into one line would invert exactly the fact that decides whether
+        # to attack or wait.
+        class_mods = {}
+        for container, label in (
+            ("UnitClassAttackMods", "attacking"),
+            ("UnitClassDefenseMods", "defending vs"),
+            ("UnitClassMods", "vs"),
+        ):
+            found = []
+            mods_block = re.search(r"<%s>(.*?)</%s>" % (container, container),
+                                   block, re.S)
+            if mods_block:
+                for mod in re.finditer(
+                    r"<UnitClassType>(.*?)</UnitClassType>\s*"
+                    r"<iUnitClassMod>(-?\d+)</iUnitClassMod>",
+                    mods_block.group(1),
+                    re.S,
+                ):
+                    value = int(mod.group(2))
+                    if value:
+                        found.append((mod.group(1).strip(), value))
+            class_mods[label] = found
+
+        # Immunity to another class's collateral damage, per source class.
+        # Every siege unit is immune to siege collateral - so a stack of
+        # catapults does not grind itself down, which is why massed siege
+        # works at all. Nested pairs like the flanking block below; a first
+        # pass at this checked <bUnitCombatCollateralImmune> and found nothing,
+        # because the real field is <iUnitCombatCollateralImmune>.
+        collateral_immune = []
+        immune_block = re.search(
+            r"<UnitCombatCollateralImmunes>(.*?)</UnitCombatCollateralImmunes>",
+            block, re.S)
+        if immune_block:
+            for entry in re.finditer(
+                r"<UnitCombatType>(.*?)</UnitCombatType>\s*"
+                r"<iUnitCombatCollateralImmune>(\d)</iUnitCombatCollateralImmune>",
+                immune_block.group(1),
+                re.S,
+            ):
+                if entry.group(2) == "1":
+                    collateral_immune.append(entry.group(1).strip())
+
+        # Flanking is per TARGET CLASS, not a flat unit stat: a Horse Archer
+        # gets a flanking strike against catapults and trebuchets specifically,
+        # and against nothing else. A bare <iFlankingStrength> sweep finds the
+        # nested values and reads as though the unit flanked everything - which
+        # is what a first pass at this did.
+        flanking = []
+        flank_block = re.search(r"<FlankingStrikes>(.*?)</FlankingStrikes>",
+                                block, re.S)
+        if flank_block:
+            for strike in re.finditer(
+                r"<FlankingStrikeUnitClass>(.*?)</FlankingStrikeUnitClass>\s*"
+                r"<iFlankingStrength>(-?\d+)</iFlankingStrength>",
+                flank_block.group(1),
+                re.S,
+            ):
+                flanking.append((strike.group(1).strip(), int(strike.group(2))))
+
         prereq_bonuses = [
             bonus
             for bonus in _list_tag(block, "PrereqBonuses", "BonusType")
             if bonus != "NONE"
         ]
+
+        # Promotions the unit is BUILT with, which is a different fact from the
+        # ones it can earn and the only reason an Explorer starts able to cross
+        # jungle at full speed. The <bFreePromotion> flag is checked rather than
+        # taking every PromotionType in the block: the container is a list of
+        # (promotion, flag) pairs, so a flat list would also collect any entry
+        # explicitly turned OFF. 18 units carry these on the real install.
+        free_promotions = []
+        free_block = re.search(r"<FreePromotions>(.*?)</FreePromotions>",
+                               block, re.S)
+        if free_block:
+            for entry in re.finditer(
+                r"<PromotionType>(.*?)</PromotionType>\s*"
+                r"<bFreePromotion>(\d)</bFreePromotion>",
+                free_block.group(1),
+                re.S,
+            ):
+                if entry.group(2) == "1":
+                    free_promotions.append(entry.group(1).strip())
         bonus_type = _tag(block, "BonusType")
         religion = _tag(block, "PrereqReligion")
         corporation = _tag(block, "PrereqCorporation")
@@ -371,24 +457,94 @@ def parse_units(text):
                 _tag(block, "Combat")),
             "strength": _int_tag(block, "iCombat"),
             "moves": _int_tag(block, "iMoves"),
+            # A percentage bonus against <bAnimal> units only, and the reason a
+            # Scout survives a Lion far more often than raw strength 1 vs 2
+            # suggests. It is an ordinary combat modifier that happens to live
+            # in its own field rather than in <UnitCombatMods>, which is why it
+            # was missing here: a trial hand-estimated those odds and flagged
+            # the number as a guess - the one unconfident answer it gave all
+            # session. Measured on the install, UNIT_SCOUT is the ONLY unit
+            # carrying a non-zero value, and exactly four units are bAnimal
+            # (lion, bear, panther, wolf).
+            "animal_combat": _int_tag(block, "iAnimalCombat"),
+            # Marks this unit as one the modifier above applies against, so the
+            # view can say which side of that matchup it is on.
+            "is_animal": _int_tag(block, "bAnimal") == 1,
             "cost": _int_tag(block, "iCost"),
             "prereq_tech": _tag(block, "PrereqTech"),
             "bonus_type": bonus_type if bonus_type != "NONE" else None,
             "prereq_bonuses": prereq_bonuses,
             "unit_class": _tag(block, "Class"),
             "combat_mods": combat_mods,
+            "class_mods": class_mods,
+            "flanking": flanking,
+            "collateral_immune": collateral_immune,
+            "free_promotions": free_promotions,
+            # Cannot draw a HOSTILE result from a goody hut. Only the Scout and
+            # the Explorer carry it, and it is the single most decision-relevant
+            # field in the file for turns 0-50: the hut that killed a trial's
+            # warrior could not have killed a scout. Directly relevant to
+            # `goody-hut-outcomes`, whose whole subject is that roll.
+            "no_bad_goodies": _int_tag(block, "bNoBadGoodies") == 1,
+            # Immune to the defender's first strikes - the mounted line's
+            # answer to archers and drill promotions. 9 units, several early
+            # (Egyptian War Chariot, Horse Archer, Knight).
+            "first_strike_immune": _int_tag(block, "bFirstStrikeImmune") == 1,
+            # The damage ceiling a unit can inflict, as a percentage. 100 is
+            # the default and means no cap; 0 marks a non-combat unit. Only six
+            # units in the file carry a real limit, and UNIT_CATAPULT (75) is
+            # the one that matters before turn 50: siege damages a stack but
+            # CANNOT land the killing blow, so "the catapult will finish it"
+            # is a plausible, wrong plan the raw strength number invites.
+            "combat_limit": _int_tag(block, "iCombatLimit"),
             "first_strikes": _int_tag(block, "iFirstStrikes"),
             "city_defense": _int_tag(block, "iCityDefense"),
+            # Percentage points of a city's DEFENCE BONUS knocked down per
+            # bombarding turn - a third, separate mechanic from collateral
+            # damage (which hits units in a stack) and from iCityAttack (a
+            # combat modifier). A Catapult's 8 means roughly three turns to
+            # strip a 25% culture bonus before the assault, which is the whole
+            # reason siege leads a stack rather than following it. 12 units,
+            # Catapult being the early one; naval bombardment shares the field.
+            "bombard_rate": _int_tag(block, "iBombardRate"),
+            # The attacking half of the same matchup, and printed alongside
+            # iCityDefense because showing one without the other is worse than
+            # showing neither: a Swordsman's +10% vs cities is exactly the
+            # question "should this unit lead the assault" turns on. Five units,
+            # four of them early (Swordsman and three uniques).
+            "city_attack": _int_tag(block, "iCityAttack"),
+            # A UNIT flag about a BUILDING effect: the city's walls-type
+            # defence bonus does not apply against this attacker. Named in the
+            # output rather than echoed as a field name, since "ignores
+            # building defence" assumes the reader knows which buildings.
+            # Nothing before Gunpowder carries it - Musketman is the earliest.
+            "ignore_building_defense": (
+                _int_tag(block, "bIgnoreBuildingDefense") == 1),
+            # The archer line's signature bonus, and absent from the output
+            # until someone asked why an Archer on a hill was not reported as
+            # stronger. Four units carry it (Archer, Longbowman and two of
+            # their uniques), all at 25; iHillsAttack exists in the schema and
+            # is zero on every unit in the file, so it is parsed but never
+            # printed unless a mod sets one.
+            "hills_defense": _int_tag(block, "iHillsDefense"),
+            "hills_attack": _int_tag(block, "iHillsAttack"),
             "withdrawal": _int_tag(block, "iWithdrawalProb"),
             "no_defensive_bonus": _int_tag(block, "bNoDefensiveBonus") == 1,
             "terrain_impassable": _list_tag(block, "TerrainImpassables", "TerrainType"),
             "feature_impassable": _list_tag(block, "FeatureImpassables", "FeatureType"),
-            # The remaining fields exist only for _promotable_promotions'
-            # isPromotionValid cascade (CvGameCoreUtils.cpp) - unused by any
-            # other view, so they are not surfaced in `unit`'s own output.
+            # `only_defensive` and `interception` are read for
+            # _promotable_promotions' isPromotionValid cascade
+            # (CvGameCoreUtils.cpp) and not surfaced in `unit`'s own output -
+            # interception is air combat, far outside the advising window.
             "only_defensive": _int_tag(block, "bOnlyDefensive") == 1,
             "ignore_terrain_cost": _int_tag(block, "bIgnoreTerrainCost") == 1,
             "interception": _int_tag(block, "iInterceptionProbability"),
+            # All three are needed together to deal collateral damage, which is
+            # the cascade's own test at _promotable_promotions and the reason
+            # the view gates on `collateral_damage` rather than on the limit:
+            # 25 units carry a non-zero limit and max-units while dealing NO
+            # collateral, because flanking damage reuses the same two fields.
+            # Gating on the limit would report a Knight as a siege unit.
             "collateral_damage": _int_tag(block, "iCollateralDamage"),
             "collateral_damage_limit": _int_tag(block, "iCollateralDamageLimit"),
             "collateral_damage_max_units": _int_tag(block, "iCollateralDamageMaxUnits"),
@@ -1870,21 +2026,113 @@ def view_unit(rules, unit_type, state, show_known, max_depth):
     abilities = []
     for combat_type, value in unit["combat_mods"]:
         abilities.append("%+d%% vs %s" % (value, combat_type))
+    # Attack-only and defence-only modifiers keep their own wording: "+100%
+    # attacking UNITCLASS_AXEMAN" is a reason to move, "+100% defending vs
+    # UNITCLASS_CHARIOT" is a reason to sit still, and a shared phrasing would
+    # make the two indistinguishable.
+    for label in ("attacking", "defending vs", "vs"):
+        for unit_class, value in unit["class_mods"].get(label, []):
+            abilities.append("%+d%% %s %s" % (value, label, unit_class))
+    # Printed beside the <UnitCombatMods> entries because it is the same kind
+    # of fact, despite living in its own XML field. The animals are named
+    # rather than left as a bare "vs animals" - four is a short enough list to
+    # state, and "which ones" is the immediate next question - but they are
+    # looked up from the data for the same reason the holders below are: which
+    # units are animals is a fact about the file, not a rule. Lowercased
+    # without the prefix because this sits mid-clause; the keys are one lookup
+    # away for anyone who wants to grep them.
+    if unit["animal_combat"]:
+        animals = sorted(key[len("UNIT_"):].lower() if key.startswith("UNIT_")
+                         else key
+                         for key, other in rules.units.items()
+                         if other["is_animal"])
+        abilities.append("%+d%% vs animals%s"
+                         % (unit["animal_combat"],
+                            " (%s)" % ", ".join(animals) if animals else ""))
+    if unit["is_animal"]:
+        # The holders are looked up rather than named, because "the Scout" is a
+        # fact about the current data, not a rule: iAnimalCombat is an ordinary
+        # field any unit could carry, and a hardcoded name would go quietly
+        # wrong under a mod while reading as though the engine special-cases it.
+        holders = sorted(key for key, other in rules.units.items()
+                         if other["animal_combat"])
+        if holders:
+            abilities.append("counts as an animal - %s %s an animal combat "
+                             "bonus against this"
+                             % (", ".join(holders),
+                                "has" if len(holders) == 1 else "have"))
+        else:
+            abilities.append("counts as an animal - units with an animal "
+                             "combat bonus get it against this")
+    if unit["city_attack"]:
+        abilities.append("%+d%% attacking cities" % unit["city_attack"])
     if unit["city_defense"]:
         abilities.append("%+d%% city defence" % unit["city_defense"])
+    if unit["bombard_rate"]:
+        abilities.append(
+            "bombards a city's defence bonus down by %d points per turn"
+            % unit["bombard_rate"])
+    if unit["ignore_building_defense"]:
+        abilities.append("ignores a city's building defence bonus "
+                         "(walls and the like)")
+    # Gated on iCollateralDamage, never on the limit: 25 units carry a non-zero
+    # limit and max-units while dealing no collateral at all, because flanking
+    # reuses those two fields. The limit and cap are folded into this one line
+    # rather than printed separately - alone they say nothing, and the engine
+    # needs all three to be non-zero for any of it to happen.
+    if (unit["collateral_damage"] and unit["collateral_damage_limit"]
+            and unit["collateral_damage_max_units"]):
+        abilities.append(
+            "collateral damage to up to %d other units in the stack, "
+            "each down to %d%% health"
+            % (unit["collateral_damage_max_units"],
+               unit["collateral_damage_limit"]))
+    if unit["hills_defense"]:
+        abilities.append("%+d%% defence on hills" % unit["hills_defense"])
+    if unit["hills_attack"]:
+        abilities.append("%+d%% attacking hills" % unit["hills_attack"])
     if unit["first_strikes"]:
         abilities.append("%d first strike%s" % (unit["first_strikes"],
                                                 "" if unit["first_strikes"] == 1 else "s"))
     if unit["withdrawal"]:
         abilities.append("%d%% withdrawal" % unit["withdrawal"])
+    for unit_class, value in unit["flanking"]:
+        abilities.append("flanking strike vs %s (%d%%)" % (unit_class, value))
+    # Printed only for a genuine cap. 100 is the default and 0 is a non-combat
+    # unit, whose strength 0 already says so - printing either would put a
+    # line on 117 of the 123 units that means nothing.
+    if 0 < unit["combat_limit"] < 100:
+        abilities.append(
+            "damages only to %d%% health - cannot make the kill"
+            % unit["combat_limit"])
+    for combat_type in unit["collateral_immune"]:
+        abilities.append("immune to collateral damage from %s" % combat_type)
+    if unit["first_strike_immune"]:
+        abilities.append("immune to first strikes")
     if unit["no_defensive_bonus"]:
         abilities.append("no terrain defensive bonus")
+    if unit["ignore_terrain_cost"]:
+        abilities.append("ignores terrain movement cost (every tile costs 1)")
+    # Stated as the concrete consequence rather than as the field name: the
+    # question this answers is "is it safe to send THIS unit into that hut",
+    # and "no bad goodies" does not obviously mean "cannot trigger the hostile
+    # barbarian result".
+    if unit["no_bad_goodies"]:
+        abilities.append("never triggers a hostile result from a goody hut")
     for terrain in unit["terrain_impassable"]:
         abilities.append("cannot enter %s" % terrain)
     for feature in unit["feature_impassable"]:
         abilities.append("cannot enter %s" % feature)
     if abilities:
         out.append("  abilities  " + ("\n             ".join(abilities)))
+
+    # Its own line rather than an `abilities` entry: these are promotions, so
+    # the answer to "what does that actually do" is another subcommand, and a
+    # bare name inside a list of prose effects reads as if it were one.
+    if unit["free_promotions"]:
+        out.append("  starts with %s" % ", ".join(unit["free_promotions"]))
+        out.append("             built with these already taken - "
+                   "`rules.py promotion` for what each does")
 
     out.append("")
     out.append("REQUIRES")
@@ -1948,6 +2196,9 @@ def view_unit(rules, unit_type, state, show_known, max_depth):
     out.append("  Buildings, civics and improvements on this tech - `rules.py tech`.")
     out.append("  Obsolescence, upgrade paths and AI weighting.")
     out.append("  What a specific promotion does - `rules.py promotion`.")
+    out.append("  Air-combat fields (interception), and the AI weighting, XP and")
+    out.append("  unit-AI values. These are real fields in the same block, NOT")
+    out.append("  printed: silence here is not a claim the unit lacks them.")
     out.append("  Abilities defined outside CIV4UnitInfos.xml. Some movement and")
     out.append("  terrain rules live in the SDK and are NOT reported here.")
     out.append("  " + MOD_WARNING)
