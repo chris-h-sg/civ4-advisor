@@ -213,14 +213,43 @@ def _promotion(type_key, prereq="NONE", prereq_or=(), tech="NONE",
     )
 
 
-def _handicap(type_key, research=100, **fields):
+def _handicap(type_key, research=100, goodies=(), **fields):
     body = "".join("<%s>%d</%s>" % (k, v, k) for k, v in sorted(fields.items()))
+    # Repeats are the weighting - the real file has no probability field, just
+    # a flat list with duplicates - so this is written as a list and the
+    # fixtures below deliberately repeat entries.
+    table = "".join("<GoodyType>%s</GoodyType>" % g for g in goodies)
     return """
     <HandicapInfo>
       <Type>%s</Type>
       <iResearchPercent>%d</iResearchPercent>
+      <Goodies>%s</Goodies>
       %s
-    </HandicapInfo>""" % (type_key, research, body)
+    </HandicapInfo>""" % (type_key, research, table, body)
+
+
+def _goody(type_key, **fields):
+    """A GoodyInfo block. Every field defaults to 0/NONE, as in the real file."""
+    defaults = {
+        "iGold": 0, "iGoldRand1": 0, "iGoldRand2": 0, "iMapOffset": 0,
+        "iMapRange": 0, "iMapProb": 0, "iExperience": 0, "iHealing": 0,
+        "iDamagePrereq": 0, "bTech": 0, "bBad": 0,
+    }
+    defaults.update((k, v) for k, v in fields.items() if k.startswith(("i", "b")))
+    body = "".join("<%s>%s</%s>" % (k, v, k) for k, v in sorted(defaults.items()))
+    return """
+    <GoodyInfo>
+      <Type>%s</Type>
+      %s
+      <UnitClass>%s</UnitClass>
+      <BarbarianClass>%s</BarbarianClass>
+      <iBarbarianUnitProb>%d</iBarbarianUnitProb>
+      <iMinBarbarians>%d</iMinBarbarians>
+    </GoodyInfo>""" % (
+        type_key, body,
+        fields.get("UnitClass", "NONE"), fields.get("BarbarianClass", "NONE"),
+        fields.get("iBarbarianUnitProb", 0), fields.get("iMinBarbarians", 0),
+    )
 
 
 @pytest.fixture
@@ -596,15 +625,38 @@ def xml_root(tmp_path):
     (root / "Civilizations" / "CIV4CivilizationInfos.xml").write_text(
         civs, encoding="latin-1")
 
+    # Ten-entry draw tables rather than the real twenty, so the arithmetic in
+    # the assertions is checkable by eye. HARD carries 2 hostile entries (20%
+    # raw), EASY none - the real spread between difficulties, in miniature.
     handicaps = "<Civ4HandicapInfos><HandicapInfos>%s</HandicapInfos></Civ4HandicapInfos>" % "".join([
         _handicap("HANDICAP_EASY", research=75, iAnimalAttackProb=85,
                   iAnimalBonus=-40, iFreeWinsVsBarbs=2,
-                  iBarbarianCreationTurnsElapsed=35),
+                  iBarbarianCreationTurnsElapsed=35,
+                  goodies=(["GOODY_TESTGOLD"] * 6 + ["GOODY_TESTMAP"] * 2
+                           + ["GOODY_TESTXP", "GOODY_TESTWARRIOR"])),
         _handicap("HANDICAP_HARD", research=120, iAnimalAttackProb=90,
                   iAnimalBonus=-10, iFreeWinsVsBarbs=0,
-                  iBarbarianCreationTurnsElapsed=20),
+                  iBarbarianCreationTurnsElapsed=20,
+                  goodies=(["GOODY_TESTGOLD"] * 4 + ["GOODY_TESTMAP"] * 2
+                           + ["GOODY_TESTXP", "GOODY_TESTWARRIOR"]
+                           + ["GOODY_TESTBARBS"] * 2)),
     ])
     (root / "GameInfo" / "CIV4HandicapInfo.xml").write_text(handicaps, encoding="latin-1")
+
+    # VANILLA-ONLY, exactly like CIV4BonusInfos.xml above and like the real
+    # install: BTS ships no override, so a BTS-only lookup finds nothing.
+    goodies = "<Civ4GoodyInfo><GoodyInfos>%s</GoodyInfos></Civ4GoodyInfo>" % "".join([
+        _goody("GOODY_TESTGOLD", iGold=20, iGoldRand1=21, iGoldRand2=21),
+        _goody("GOODY_TESTMAP", iMapRange=4, iMapProb=80),
+        _goody("GOODY_TESTXP", iExperience=5),
+        _goody("GOODY_TESTHEAL", iHealing=100, iDamagePrereq=60),
+        # A combat, non-only-defensive unit: withheld before turn 20.
+        _goody("GOODY_TESTWARRIOR", UnitClass="UNITCLASS_X"),
+        _goody("GOODY_TESTBARBS", bBad=1, BarbarianClass="UNITCLASS_X",
+               iBarbarianUnitProb=40, iMinBarbarians=2),
+    ])
+    (vanilla / "GameInfo" / "CIV4GoodyInfo.xml").write_text(
+        goodies, encoding="latin-1")
 
     speeds = ("<Civ4GameSpeedInfo><GameSpeedInfos>"
               "<GameSpeedInfo><Type>GAMESPEED_NORMAL</Type>"
@@ -655,11 +707,17 @@ def make_city(name="Testville", x=10, y=10, rate=13, coastal=False,
 def make_state(tmp_path, known=(), handicap="HANDICAP_HARD",
                world="WORLDSIZE_STANDARD", speed="GAMESPEED_NORMAL", turn=34,
                rate=13, tiles=(), research=None, cities=None, wonders=None,
-               civilization=None, units=None):
+               civilization=None, units=None, options=(),
+               map_width=40, map_height=20, wrap_x=True):
+    # Map dimensions default to a wrapping cylinder, matching the real setup -
+    # `goody`'s distance check folds x around the map, and a non-wrapping
+    # fixture would never exercise that path.
     state = {
         "meta": {"schemaVersion": 2},
         "game": {"gameTurn": turn, "handicap": handicap, "worldSize": world,
-                 "gameSpeed": speed},
+                 "gameSpeed": speed, "options": list(options),
+                 "mapWidth": map_width, "mapHeight": map_height,
+                 "wrapX": wrap_x, "wrapY": False},
         "player": {"leader": "LEADER_TEST", "knownTechs": list(known),
                    "beakersPerTurn": rate,
                    "research": research or {}},
@@ -1390,7 +1448,7 @@ def test_promotable_excludes_leader_promotions(xml_root, tmp_path):
 def test_promotable_gates_on_prereq_and_or_prereq(xml_root, tmp_path):
     _, state = make_state(tmp_path)
     r = build_rules(xml_root, state)
-    available, blocked = rules._promotable_promotions(
+    available, _blocked = rules._promotable_promotions(
         r, "UNIT_TESTER", set(), set())
     assert "PROMOTION_TESTER" in available
     assert "PROMOTION_ADVANCED" not in available  # needs TESTER first
@@ -2281,7 +2339,12 @@ def test_handicap_view_flags_a_type_that_is_not_this_games_own(xml_root, tmp_pat
     assert "NOT" in other and "HANDICAP_HARD" in other
 
     own = rules.view_handicap(r, None, state)
-    assert "are NOT" not in own
+    # Matched on the banner's own sentence rather than on "are NOT", which
+    # `goody-hut-outcomes` made ambiguous: a field description in the same
+    # view now reads "huts are NOT gated by it", so the loose matcher failed
+    # on output that was entirely correct.
+    assert "and are NOT" not in own
+    assert "run without a TYPE" not in own
 
 
 def test_handicap_view_explains_the_negative_bonus_sign(xml_root, tmp_path):
@@ -2301,6 +2364,498 @@ def test_handicap_view_carries_no_turn_window_advice(xml_root, tmp_path):
     text = rules.view_handicap(r, "HANDICAP_HARD", state)
     assert "turns 0-50" not in text.lower()
     assert "0-50" not in text
+
+
+def test_handicap_view_denies_that_its_turn_fields_gate_goody_huts(
+        xml_root, tmp_path):
+    """The exact false inference that cost a live trial its only unit.
+
+    The agent read iBarbarianCreationTurnsElapsed off this block and concluded
+    a hut was safe to pop for another 16 turns. Nothing in the output could
+    contradict it, so the field's own description now carries the qualifier and
+    OMITS points at the subcommand that actually answers the question.
+    """
+    _, state = make_state(tmp_path)
+    r = build_rules(xml_root, state)
+    text = rules.view_handicap(r, "HANDICAP_HARD", state)
+    assert "MAP-SPAWNED" in text
+    assert "huts are NOT gated by it" in text
+    assert "rules.py goody" in text
+
+
+# ---------------------------------------------------------------------------
+# goody - what a hut can produce
+# ---------------------------------------------------------------------------
+
+
+def test_goody_view_weights_outcomes_by_their_repeats(xml_root, tmp_path):
+    """The draw table has no probability field: multiplicity IS the weight.
+
+    HARD's fixture table is 10 entries, 4 of them GOODY_TESTGOLD, so a correct
+    reading is 40% and a set-based one would say 10%.
+    """
+    _, state = make_state(tmp_path, handicap="HANDICAP_HARD", turn=34,
+                          cities=[make_city(), make_city(name="Second")])
+    r = build_rules(xml_root, state)
+    text = rules.view_goody(r, None, state)
+    assert "GOODY_TESTGOLD" in text
+    # The share is the assertion now that the raw `Nx` column is gone: 4 of 10
+    # entries is 40%, where a set-based reading would print 10%.
+    assert "40.0%" in text
+
+
+def test_goody_view_states_that_the_spawn_timer_does_not_gate_huts(
+        xml_root, tmp_path):
+    """The headline correction. iBarbarianCreationTurnsElapsed is 20 on HARD,
+    and a hut can still turn hostile on turn 1."""
+    _, state = make_state(tmp_path, handicap="HANDICAP_HARD", turn=1,
+                          cities=[make_city(), make_city(name="Second")])
+    r = build_rules(xml_root, state)
+    text = rules.view_goody(r, None, state)
+    assert "iBarbarianCreationTurnsElapsed does NOT gate huts" in text
+    assert "hostile on turn 1" in text
+
+
+def test_goody_view_never_calls_a_hut_safe_or_unsafe(xml_root, tmp_path):
+    """Presentation, not a verdict - the line every view in this module holds.
+
+    Here it is load-bearing rather than stylistic: whether a specific hut is
+    inside the one-city protection radius depends on which hut, and this view
+    is given no plot. A verdict would have to invent that.
+    """
+    for turn, cities in ((1, []), (9, [make_city()]), (34, [make_city()])):
+        _, state = make_state(tmp_path, handicap="HANDICAP_HARD", turn=turn,
+                              cities=cities)
+        r = build_rules(xml_root, state)
+        text = rules.view_goody(r, None, state).lower()
+        assert "safe" not in text
+        assert "unsafe" not in text
+        assert "you should" not in text
+
+
+def test_goody_view_renormalises_over_what_can_actually_be_drawn(
+        xml_root, tmp_path):
+    """The finding that makes this more than a table print.
+
+    The engine RE-DRAWS when an outcome is ineligible rather than skipping it,
+    so a blocked entry's weight lands on the rows that remain - including the
+    hostile ones. At turn 9 the XP and free-warrior rows are both gated off, so
+    the hostile share must be reported HIGHER than its raw 20%.
+    """
+    _, state = make_state(tmp_path, handicap="HANDICAP_HARD", turn=9,
+                          cities=[make_city(), make_city(name="Second")])
+    r = build_rules(xml_root, state)
+    text = rules.view_goody(r, None, state)
+
+    assert "not before turn 10" in text          # GOODY_TESTXP
+    assert "combat unit, not before turn 20" in text  # GOODY_TESTWARRIOR
+    # 2 hostile of 10 raw = 20%; 8 entries remain eligible -> 2/8 = 25%.
+    assert _hostile_chance(text) == 25.0
+    assert "above the 20.0%" in text
+
+
+def test_goody_view_excludes_hostile_rows_for_a_no_bad_goodies_unit(
+        xml_root, tmp_path):
+    """The interaction the ROADMAP asked for by name.
+
+    The trial's Warrior died to a roll a Scout was immune to, and the
+    distribution alone never says so. With such a unit named, the hostile rows
+    are not merely unlikely - they cannot be drawn, and their weight
+    redistributes onto the good outcomes.
+    """
+    _, state = make_state(tmp_path, handicap="HANDICAP_HARD", turn=34,
+                          cities=[make_city(), make_city(name="Second")])
+    r = build_rules(xml_root, state)
+
+    text = rules.view_goody(r, None, state, "UNIT_SCOUTER")
+    assert "UNIT_SCOUTER can never draw a hostile result" in text
+    assert "UNIT_SCOUTER carries bNoBadGoodies" in text
+
+    # The headline must agree with the row-level exclusion rather than being
+    # computed off the raw table - a hostile share of 20% printed beside
+    # "cannot draw a hostile result" is the contradiction this guards.
+    assert _hostile_chance(text) == 0.0
+
+    # And a unit without the flag still gets the immunity stated, naming the
+    # units that do carry it rather than passing over it in silence.
+    other = rules.view_goody(r, None, state, "UNIT_TESTER")
+    assert "UNIT_SCOUTER" in other
+    assert "UNIT_TESTER can never draw" not in other
+    assert _hostile_chance(other) > 0.0
+
+
+def test_goody_view_always_names_the_immune_units_unprompted(
+        xml_root, tmp_path):
+    """The trial failed because nobody knew to ask, so the immunity cannot be
+    gated behind the flag that requires knowing about it."""
+    _, state = make_state(tmp_path, handicap="HANDICAP_HARD", turn=34,
+                          cities=[make_city(), make_city(name="Second")])
+    r = build_rules(xml_root, state)
+    text = rules.view_goody(r, None, state)
+    assert "UNIT_SCOUTER" in text
+    assert "cannot draw a hostile result" in text
+    assert "--for-unit" in text
+
+
+def test_goody_view_reports_the_one_city_protection_as_conditional(
+        xml_root, tmp_path):
+    """Blocked-within-N-tiles is not a flat exclusion - it depends which hut.
+
+    So the row stays eligible (its weight is really drawn) and the condition is
+    printed beside it, rather than being silently counted either way. It also
+    ENDS at the second city, which is the opposite of what a player assumes.
+    """
+    _, one = make_state(tmp_path, handicap="HANDICAP_HARD", turn=34,
+                        cities=[make_city()])
+    r = build_rules(xml_root, one)
+    text = rules.view_goody(r, None, one)
+    assert "blocked within 7 tiles of your only city" in text
+
+    _, two = make_state(tmp_path, handicap="HANDICAP_HARD", turn=34,
+                        cities=[make_city(), make_city(name="Second")])
+    both = rules.view_goody(r, None, two)
+    assert "only city" not in both
+
+
+def test_goody_view_does_not_claim_a_named_unit_is_undamaged(
+        xml_root, tmp_path):
+    """--popped-by takes a unit TYPE, which says nothing about that unit's
+    damage - a healthy Warrior and a half-dead one are the same string.
+
+    So the healing row must stay conditional rather than becoming CANNOT.
+    Asserting an exclusion the tool cannot see is the exact failure mode this
+    subcommand was built to remove, and it would also understate the hostile
+    share by shrinking the eligible pool.
+    """
+    _, state = make_state(tmp_path, handicap="HANDICAP_EASY", turn=34,
+                          cities=[make_city()])
+    r = build_rules(xml_root, state)
+    # GOODY_TESTHEAL is not in either fixture draw table, so drive the gate
+    # directly rather than through a table that cannot reach it.
+    reason = rules._goody_eligibility(
+        r, r.goodies["GOODY_TESTHEAL"], state, r.units["UNIT_TESTER"])
+    assert reason.startswith("conditional:")
+    assert "60%" in reason
+
+
+def test_goody_view_never_prints_the_conditional_sentinel(xml_root, tmp_path):
+    """`conditional:` is an internal marker on the reason string, and stripping
+    it is easy to break silently - the row would still render, just with a
+    stray keyword in front of the prose."""
+    for cities in ([], [make_city()], [make_city(), make_city(name="Second")]):
+        _, state = make_state(tmp_path, handicap="HANDICAP_HARD", turn=34,
+                              cities=cities)
+        r = build_rules(xml_root, state)
+        assert "conditional:" not in rules.view_goody(r, None, state)
+
+
+def test_goody_view_excludes_hostiles_with_no_cities_and_with_the_option_off(
+        xml_root, tmp_path):
+    """Two hard exclusions the engine really applies, and both surprise."""
+    _, none = make_state(tmp_path, handicap="HANDICAP_HARD", turn=34,
+                         cities=[])
+    r = build_rules(xml_root, none)
+    assert "you have no cities yet" in rules.view_goody(r, None, none)
+
+    _, off = make_state(tmp_path, handicap="HANDICAP_HARD", turn=34,
+                        cities=[make_city()],
+                        options=["GAMEOPTION_NO_BARBARIANS"])
+    assert "GAMEOPTION_NO_BARBARIANS is on" in rules.view_goody(r, None, off)
+
+
+def test_goody_view_states_the_guaranteed_floor_not_just_the_probability(
+        xml_root, tmp_path):
+    """iBarbarianUnitProb is how many MORE, never whether any at all.
+
+    The engine makes a second pass that ignores the roll until iMinBarbarians
+    is met, so reading 40% as "40% chance of trouble" understates it to zero
+    risk 60% of the time when the real floor is 2 units, guaranteed.
+    """
+    _, state = make_state(tmp_path, handicap="HANDICAP_HARD", turn=34,
+                          cities=[make_city(), make_city(name="Second")])
+    r = build_rules(xml_root, state)
+    text = rules.view_goody(r, None, state)
+    assert "2+ UNITCLASS_X adjacent, guaranteed" in text
+    # And the 40% must NOT appear on the row: printed beside a hostile outcome
+    # it reads as the chance of being attacked, which is exactly backwards.
+    hostile_row = [ln for ln in text.splitlines() if "TESTBARBS" in ln][0]
+    assert "40" not in hostile_row
+
+
+def test_goody_view_handles_a_difficulty_with_no_hostile_entries(
+        xml_root, tmp_path):
+    """EASY's table has none, and 0% must print as a number rather than as an
+    absent section - "no hostile row" and "hostile row omitted" read alike."""
+    _, state = make_state(tmp_path, handicap="HANDICAP_EASY", turn=34,
+                          cities=[make_city()])
+    r = build_rules(xml_root, state)
+    assert _hostile_chance(rules.view_goody(r, None, state)) == 0.0
+
+
+def test_goody_view_flags_a_type_that_is_not_this_games_own(xml_root, tmp_path):
+    """Same trap as `handicap`: comparing difficulties is legitimate, but the
+    reported rules are then not the ones in play."""
+    _, state = make_state(tmp_path, handicap="HANDICAP_HARD", turn=34,
+                          cities=[make_city()])
+    r = build_rules(xml_root, state)
+    other = rules.view_goody(r, "HANDICAP_EASY", state)
+    assert "and are NOT" in other and "HANDICAP_HARD" in other
+    assert "and are NOT" not in rules.view_goody(r, None, state)
+
+
+def test_goody_view_rejects_an_unknown_unit_and_handicap(xml_root, tmp_path):
+    _, state = make_state(tmp_path, handicap="HANDICAP_HARD", turn=34,
+                          cities=[make_city()])
+    r = build_rules(xml_root, state)
+    with pytest.raises(rules.RulesError):
+        rules.view_goody(r, None, state, "UNIT_NOPE")
+    with pytest.raises(rules.RulesError):
+        rules.view_goody(r, "HANDICAP_NOPE", state)
+
+
+def _hut(x, y):
+    """A revealed goody-hut tile, as the mod exports one."""
+    return {"x": x, "y": y, "terrain": "TERRAIN_GRASS", "yields": [2, 0, 0],
+            "improvement": "IMPROVEMENT_GOODY_HUT"}
+
+
+def _hostile_chance(text):
+    """The headline hostile figure, parsed out of a `goody` view.
+
+    One helper rather than the same line-scan copied into every test: the
+    headline's wording is the part most likely to be reworded, and three
+    hand-rolled copies is three places to fix when it is.
+    """
+    line = [ln for ln in text.splitlines()
+            if ln.startswith("HOSTILE CHANCE")]
+    assert line, "no HOSTILE CHANCE line in:\n%s" % text
+    return float(line[0].split()[-1].rstrip("%"))
+
+
+def test_plot_distance_is_not_chebyshev(tmp_path):
+    """The engine's plotDistance is `max + min/2` (CvGameCoreUtils.h:144).
+
+    Chebyshev is a DIFFERENT metric (`stepDistance`) and the two diverge on
+    every diagonal - at (3,3) the engine says 4 and Chebyshev 3. Using the
+    wrong one misjudges the one-city hostile radius exactly at its boundary,
+    which is where it gets asked. `render_map.distance` is deliberately the
+    other metric, for a rule that really is a square box scan, so this is the
+    guard against someone unifying them on the strength of the shared name.
+    """
+    _, state = make_state(tmp_path, map_width=40, map_height=20)
+    for (a, b), expected in (
+        (((0, 0), (3, 3)), 4),      # Chebyshev would say 3
+        (((0, 0), (4, 4)), 6),      # Chebyshev would say 4
+        (((0, 0), (7, 0)), 7),      # straight line: the two agree
+        (((0, 0), (5, 2)), 6),
+        (((0, 0), (0, 0)), 0),
+    ):
+        assert rules.plot_distance(state, a, b) == expected, (a, b)
+
+    # x wraps on a cylinder, so the short way round counts.
+    assert rules.plot_distance(state, (1, 5), (39, 5)) == 2
+    # ...and y does not, wrapY being false.
+    assert rules.plot_distance(state, (5, 1), (5, 19)) == 18
+
+
+def test_goody_decides_the_one_city_radius_when_given_the_hut(
+        xml_root, tmp_path):
+    """The gate that governed the trial's hut, and the last one that kept the
+    view from stating a definite hostile percentage.
+
+    Measured from the HUT, not from the unit - `canReceiveGoody` takes the
+    plot - so this needs the target tile rather than where the unit stands.
+    """
+    near, far = _hut(12, 10), _hut(30, 10)
+    _, state = make_state(
+        tmp_path, handicap="HANDICAP_HARD", turn=34,
+        cities=[make_city(x=10, y=10)], tiles=[near, far],
+        units=[{"id": 7, "type": "UNIT_TESTER", "x": 11, "y": 10}])
+    r = build_rules(xml_root, state)
+
+    # 2 tiles away, inside the radius of 7: hostiles are impossible, and the
+    # view can now say so outright rather than as a condition.
+    blocked = rules.view_goody(r, None, state, None, 7, (12, 10))
+    assert "hut is 2 tiles from Testville, your only city" in blocked
+    assert "conditional" not in blocked
+    assert _hostile_chance(blocked) == 0.0
+
+    # 20 tiles away, outside it: hostiles are live, and equally definite.
+    # Parsed rather than matched as a substring - "20.0%" appears on row
+    # shares too, so a substring test would pass on the blocked case as well.
+    exposed = rules.view_goody(r, None, state, None, 7, (30, 10))
+    assert "your only city" not in exposed
+    assert _hostile_chance(exposed) == 20.0
+
+
+def test_goody_radius_protection_ends_at_the_second_city(xml_root, tmp_path):
+    """`8 - getNumCities()` stops applying at two cities, so founding one
+    REMOVES this protection from every hut - the opposite of the intuition."""
+    tiles = [_hut(12, 10)]
+    for cities, expect_blocked in (
+        ([make_city(x=10, y=10)], True),
+        ([make_city(x=10, y=10), make_city(name="Second", x=20, y=10)], False),
+    ):
+        _, state = make_state(tmp_path, handicap="HANDICAP_HARD", turn=34,
+                              cities=cities, tiles=tiles)
+        r = build_rules(xml_root, state)
+        text = rules.view_goody(r, None, state, None, None, (12, 10))
+        assert ("your only city" in text) is expect_blocked
+
+
+def test_goody_decides_healing_from_the_units_own_damage(xml_root, tmp_path):
+    """A unit id answers what a unit TYPE cannot: how hurt THIS unit is."""
+    tiles = [_hut(12, 10)]
+    hurt = {"id": 7, "type": "UNIT_TESTER", "x": 11, "y": 10, "damage": 70}
+    whole = {"id": 8, "type": "UNIT_TESTER", "x": 11, "y": 10}
+    _, state = make_state(tmp_path, handicap="HANDICAP_EASY", turn=34,
+                          cities=[make_city()], tiles=tiles,
+                          units=[hurt, whole])
+    r = build_rules(xml_root, state)
+    heal = r.goodies["GOODY_TESTHEAL"]
+
+    # Undamaged: a decided CANNOT, naming both numbers.
+    reason = rules._goody_eligibility(r, heal, state, r.units["UNIT_TESTER"],
+                                      whole, None)
+    assert "is at 0% damage, needs 60%" in reason
+    # Damaged past the threshold: eligible outright.
+    assert rules._goody_eligibility(r, heal, state, r.units["UNIT_TESTER"],
+                                    hurt, None) is None
+
+
+def test_goody_rejects_a_hut_coordinate_with_no_hut_on_it(xml_root, tmp_path):
+    """A coordinate typo would otherwise produce a confident distance to the
+    wrong tile - the failure mode this whole subcommand exists to remove."""
+    _, state = make_state(tmp_path, handicap="HANDICAP_HARD", turn=34,
+                          cities=[make_city()], tiles=[_hut(12, 10)])
+    r = build_rules(xml_root, state)
+    with pytest.raises(rules.RulesError) as exc:
+        rules.view_goody(r, None, state, None, None, (13, 10))
+    assert "(12,10)" in str(exc.value)
+
+
+def test_goody_rejects_a_unit_standing_on_the_hut(xml_root, tmp_path):
+    """A unit ON a hut has already popped it, so this is never a real query -
+    it means the caller passed the unit's tile instead of the hut's."""
+    _, state = make_state(
+        tmp_path, handicap="HANDICAP_HARD", turn=34,
+        cities=[make_city()], tiles=[_hut(12, 10)],
+        units=[{"id": 7, "type": "UNIT_TESTER", "x": 12, "y": 10}])
+    r = build_rules(xml_root, state)
+    with pytest.raises(rules.RulesError) as exc:
+        rules.view_goody(r, None, state, None, 7, (12, 10))
+    assert "already popped it" in str(exc.value)
+
+
+def test_goody_lists_revealed_huts_when_none_is_named(xml_root, tmp_path):
+    """An unlisted flag is a flag nobody uses, and the coordinate is sitting
+    in the state file the caller already passed."""
+    _, state = make_state(tmp_path, handicap="HANDICAP_HARD", turn=34,
+                          cities=[make_city()],
+                          tiles=[_hut(12, 10), _hut(30, 4)])
+    r = build_rules(xml_root, state)
+    text = rules.view_goody(r, None, state)
+    assert "REVEALED HUTS" in text
+    assert "(12,10)" in text and "(30,4)" in text
+    assert "--at X,Y" in text
+
+    # And once one IS named, the listing and its OMITS line both go away
+    # rather than advertising a decision already made.
+    named = rules.view_goody(r, None, state, None, None, (12, 10))
+    assert "REVEALED HUTS" not in named
+    assert "that needs the hut's tile" not in named
+
+
+def test_goody_states_the_assumption_behind_a_decided_answer(
+        xml_root, tmp_path):
+    """The figures hold for the board as it stands. Moving first is free, but
+    founding a city on the way changes the very gate just resolved."""
+    _, state = make_state(
+        tmp_path, handicap="HANDICAP_HARD", turn=34,
+        cities=[make_city(x=10, y=10)], tiles=[_hut(12, 10)],
+        units=[{"id": 7, "type": "UNIT_TESTER", "x": 11, "y": 10}])
+    r = build_rules(xml_root, state)
+    text = rules.view_goody(r, None, state, None, 7, (12, 10))
+    assert "1 tile away" in text          # singular, not "1 tiles"
+    assert "board as it stands" in text
+
+
+def test_goody_names_an_immune_unit_you_actually_have(xml_root, tmp_path):
+    """Suggesting a Scout to someone who has none is advice, not a lookup - so
+    it is named only when the state file shows one."""
+    tiles = [_hut(12, 10)]
+    warrior = {"id": 7, "type": "UNIT_TESTER", "x": 11, "y": 10}
+    scout = {"id": 8, "type": "UNIT_SCOUTER", "x": 11, "y": 11}
+
+    _, without = make_state(tmp_path, handicap="HANDICAP_HARD", turn=34,
+                            cities=[make_city()], tiles=tiles, units=[warrior])
+    r = build_rules(xml_root, without)
+    assert "You have" not in rules.view_goody(r, None, without, None, 7, None)
+
+    _, with_scout = make_state(tmp_path, handicap="HANDICAP_HARD", turn=34,
+                               cities=[make_city()], tiles=tiles,
+                               units=[warrior, scout])
+    text = rules.view_goody(r, None, with_scout, None, 7, None)
+    assert "You have UNIT_SCOUTER" in text
+    assert "zero risk" in text
+
+
+def test_real_install_hostile_counts_match_the_verified_table(tmp_path):
+    """Pin the actual numbers, because this item's whole value is that they
+    are right - a plausible wrong distribution is exactly what it replaces.
+
+    Counted from the install rather than taken from the trial report: each
+    handicap carries a flat 20-entry table, and the hostile entries rise one
+    per difficulty. Monarch's 5 is the trial's own difficulty, where the agent
+    reported "safe for 16 more turns".
+
+    Skips cleanly with no install, like the sample cost cross-check above.
+    """
+    try:
+        xml_root = rules.resolve_xml_root()
+    except rules.RulesError as exc:
+        pytest.skip("no Civ IV install: %s" % exc)
+
+    expected = {
+        "HANDICAP_SETTLER": 0, "HANDICAP_CHIEFTAIN": 1, "HANDICAP_WARLORD": 2,
+        "HANDICAP_NOBLE": 3, "HANDICAP_PRINCE": 4, "HANDICAP_MONARCH": 5,
+        "HANDICAP_EMPEROR": 6, "HANDICAP_IMMORTAL": 7, "HANDICAP_DEITY": 8,
+    }
+    _, state = make_state(tmp_path, handicap="HANDICAP_MONARCH", turn=34)
+    r = rules.Rules(xml_root, state["game"])
+
+    for handicap, hostile in sorted(expected.items()):
+        table = r.handicaps[handicap]["goodies"]
+        assert len(table) == 20, handicap
+        bad = sum(1 for key in table if r.goodies[key]["bad"])
+        assert bad == hostile, handicap
+
+    # The guaranteed floor on each hostile outcome - what decides how bad one
+    # actually is, since these land regardless of any roll.
+    weak = r.goodies["GOODY_BARBARIANS_WEAK"]
+    strong = r.goodies["GOODY_BARBARIANS_STRONG"]
+    assert (weak["min_barbarians"], strong["min_barbarians"]) == (1, 2)
+
+    # Exactly the Scout and the Explorer, on the real file.
+    immune = sorted(u["type"] for u in r.units.values()
+                    if u.get("no_bad_goodies"))
+    assert immune == ["UNIT_EXPLORER", "UNIT_SCOUT"]
+
+
+def test_goody_file_is_read_from_the_vanilla_tree(xml_root, tmp_path):
+    """It is vanilla-only on the real install, like CIV4BonusInfos.xml, so a
+    BTS-only resolver finds nothing - an agent trial hit exactly that for
+    CIV4BonusInfos and fell back to grepping.
+
+    Asserted on the loader rather than on the output: the view deliberately
+    does not cite this file (nothing in it is left unprinted to go and read),
+    so the fallback has to be checked where it actually happens.
+    """
+    _, state = make_state(tmp_path, handicap="HANDICAP_HARD", turn=34,
+                          cities=[make_city()])
+    r = build_rules(xml_root, state)
+    assert r.sources["goodies"][1] == "vanilla"
+    assert r.goodies, "the vanilla fallback loaded nothing"
 
 
 # ---------------------------------------------------------------------------
@@ -2342,6 +2897,81 @@ def test_cli_handicap_accepts_an_explicit_type(xml_root, tmp_path, config, capsy
         ["handicap", "HANDICAP_EASY", state_path, "--config", config]
     ) == 0
     assert "HANDICAP_EASY" in capsys.readouterr().out
+
+
+def test_cli_goody_takes_the_handicap_from_state_and_a_unit_from_the_flag(
+        xml_root, tmp_path, config, capsys):
+    state_path, _ = make_state(tmp_path, handicap="HANDICAP_HARD",
+                               cities=[make_city()])
+    assert rules.main(["goody", state_path, "--config", config]) == 0
+    assert "HANDICAP_HARD" in capsys.readouterr().out
+
+    # The unit is a FLAG, not TYPE: TYPE is the handicap here, exactly as for
+    # `handicap`, so a unit passed positionally must not be silently accepted
+    # as a difficulty.
+    assert rules.main(["goody", state_path, "--config", config,
+                       "--popped-by", "UNIT_SCOUTER"]) == 0
+    assert "UNIT_SCOUTER" in capsys.readouterr().out
+
+
+def test_cli_goody_accepts_for_unit_and_at(xml_root, tmp_path, config, capsys):
+    """`goody` keeps TYPE for the handicap, so unlike `promotion` the id does
+    NOT replace it - both may be given."""
+    state_path, _ = make_state(
+        tmp_path, handicap="HANDICAP_HARD", turn=34,
+        cities=[make_city(x=10, y=10)], tiles=[_hut(12, 10)],
+        units=[{"id": 7, "type": "UNIT_TESTER", "x": 11, "y": 10}])
+    assert rules.main(["goody", state_path, "--config", config,
+                       "--for-unit", "7", "--at", "12,10"]) == 0
+    out = capsys.readouterr().out
+    assert "id 7" in out and "(12,10)" in out
+
+    assert rules.main(["goody", "HANDICAP_EASY", state_path, "--config",
+                       config, "--for-unit", "7"]) == 0
+    assert "HANDICAP_EASY" in capsys.readouterr().out
+
+
+def test_cli_goody_explains_a_space_separated_coordinate(
+        xml_root, tmp_path, config, capsys):
+    """`--at 12 10` is the natural mistyping, and argparse alone reports it as
+    "unrecognized arguments: 10" - naming neither the flag nor the comma."""
+    state_path, _ = make_state(tmp_path, handicap="HANDICAP_HARD", turn=34,
+                               cities=[make_city()], tiles=[_hut(12, 10)])
+    assert rules.main(["goody", state_path, "--config", config,
+                       "--at", "12", "10"]) == 2
+    assert "--at 12,10" in capsys.readouterr().err
+
+    with pytest.raises(SystemExit):
+        rules.main(["goody", state_path, "--config", config, "bogus", "extra"])
+
+
+def test_cli_rejects_the_two_unit_flags_together(xml_root, tmp_path, config,
+                                                 capsys):
+    """Both name the popping unit; letting one win silently would answer about
+    a different unit than the caller named in the other."""
+    state_path, _ = make_state(tmp_path, handicap="HANDICAP_HARD", turn=34,
+                               cities=[make_city()],
+                               units=[{"id": 7, "type": "UNIT_TESTER",
+                                       "x": 1, "y": 1}])
+    assert rules.main(["goody", state_path, "--config", config,
+                       "--popped-by", "UNIT_SCOUTER", "--for-unit", "7"]) == 2
+    assert "both name the popping unit" in capsys.readouterr().err
+
+
+def test_cli_rejects_at_outside_goody(xml_root, tmp_path, config, capsys):
+    state_path, _ = make_state(tmp_path)
+    assert rules.main(["handicap", state_path, "--config", config,
+                       "--at", "1,1"]) == 2
+    assert "only applies to `goody`" in capsys.readouterr().err
+
+
+def test_cli_rejects_popped_by_outside_goody(xml_root, tmp_path, config, capsys):
+    """It reads as a general "which unit is asking" flag, but only `goody`
+    changes its answer based on one."""
+    state_path, _ = make_state(tmp_path)
+    assert rules.main(["handicap", state_path, "--config", config,
+                       "--popped-by", "UNIT_SCOUTER"]) == 2
+    assert "only applies to `goody`" in capsys.readouterr().err
 
 
 def test_cli_exits_2_on_an_unknown_type(xml_root, tmp_path, config, capsys):

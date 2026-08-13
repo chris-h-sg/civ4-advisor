@@ -199,7 +199,16 @@ class State(object):
         return (x, y)
 
     def distance(self, a, b):
-        """Chebyshev distance, wrap-aware. This is the engine's plot distance."""
+        """Chebyshev distance, wrap-aware - the engine's `stepDistance`.
+
+        NOT the engine's `plotDistance`, which is `max + min/2`
+        (`CvGameCoreUtils.h:144`) and differs on every diagonal: at (3,3) it
+        says 4 where this says 3. An earlier docstring called this "the
+        engine's plot distance", which was the wrong name for the right code -
+        the city-minimum-distance rule this serves really is a square dx/dy box
+        scan (`CvPlayer.cpp:5005-5008`), so Chebyshev is correct here. Anything
+        needing a true plot distance wants `rules.py`'s `plot_distance`.
+        """
         dx = abs(a[0] - b[0])
         if self.wrap_x:
             dx = min(dx, self.width - dx)

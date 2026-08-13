@@ -19,7 +19,6 @@ Every item carries a **`Target:`** line naming the files it will have to edit. T
 | Slug | Lane / target | Evidence | Status |
 | --- | --- | --- | --- |
 | `same-turn-round-trips` | Correctness — schema + mod (design first) | 1 trial, sharpest finding on the page | Recorded, **not scheduled** — no affordable design yet |
-| `goody-hut-outcomes` | Lane C — `rules.py` (**serial**) | Agent-asked, 1 trial — cost a unit and ~10 turns | Ready; **data verified, 25% on Monarch** |
 | `rules-improvement` | Lane C — `rules.py` (**serial**) | Agent-asked, 1 trial — the only flatly false number | Ready; data verified on disk |
 | `trial-per-turn-checklist` | Lane E — trial docs | Player-observed ×2, plus the agent's own B5 lapse | Ready, costs nothing |
 | `bearings-by-default` | Cross-tool — all three | Agent's own #1, and player-observed independently | Ready; needs a scope call (prose only) |
@@ -41,7 +40,7 @@ Grouped by `Target:`, so what can run concurrently is visible without reading th
 
 - **Lane A — `harness/run_history.py`.** `city-approach-report`, `garrison-posture`. Both land in the same module and both touch `intel`; **treat as serial with each other**, though the collision is far smaller than Lane C's. `garrison-posture` extends the same garrison block that `per-city-production-history` (landed) has already rewritten, so read the current block before starting.
 - **Lane B — `harness/render_map.py`.** `coastal-undetermined-wording`, `multi-site-comparison`. Both land in the site report, so treat as serial with each other; the wording fix is small enough to take first in the same sitting. Parallel-safe against every other lane.
-- **Lane C — `harness/rules.py` — SERIAL.** `goody-hut-outcomes`, `rules-improvement`, `rules-lookup-gaps`. `rules.py` is a single ~3400-line module and every one of these adds lookups into it and its tests. **Do not assign these to two agents at once.** The natural move is one agent taking the whole lane, since `goody-hut-outcomes` extends a subcommand that already parses the right file. This is still the fullest lane on the page.
+- **Lane C — `harness/rules.py` — SERIAL.** `rules-improvement`, `rules-lookup-gaps`. `rules.py` is a single ~3600-line module and both of these add lookups into it and its tests. **Do not assign these to two agents at once.** The natural move is one agent taking the whole lane. `goody-hut-outcomes` has landed out of this lane (see `harness/README.md`), which is why the module grew — expect the `handicap`/`goody` region to have moved.
 - **Lane D — `samples/`.** `varied-setup-samples`. Requires actual play; collides with nothing.
 - **Lane E — trial/advisor documentation.** `trial-protocol`, `trial-per-turn-checklist`. Touches only `trial-template/`; parallel-safe against every code lane. The two are close enough in subject that one agent should take both.
 - **Cross-tool — `bearings-by-default`.** Touches `render_map.py`, `run_history.py` and `rules.py`, so it **collides with Lanes A, B and C at once**. Run it alone, or accept a rebase. It is the one item that cannot be parallelized with anything.
@@ -116,20 +115,6 @@ Asked in both trial rounds; one trial ran `--around` ten times and diffed by eye
 It outlived the cheap presentation fixes it was once grouped with (`--site-only` and the seam-description wording, both since landed — see `harness/README.md`) because it is a real interface question (how many sites, what shape the table takes), not a layout tweak.
 
 **Reframed by the Ramesses trial, and worth reading before building it.** The player observed that the agent *"does comparative analysis of city sites when asked, has been very thorough considering tiles and strategic value vs rivals, produces a clear table — but only when asked."* So the agent already produces a good multi-site comparison on request, by hand, and the thing that fails is that nobody asks. Building the table buys a tidier version of something that works and leaves the actual failure untouched; the trigger belongs in `trial-per-turn-checklist`. **That is an argument about sequencing, not a cancellation** — the tool still removes hand-derivation and the wrap-handling risk that comes with it — but this item should follow the checklist rather than precede it.
-
-### `goody-hut-outcomes` — `rules.py handicap` reads as authoritative on barbarians and is not
-
-**Lane C (serial).** **Target:** `harness/rules.py`, `harness/tests/test_rules.py`, `harness/README.md`. No new data source — `CIV4HandicapInfo.xml` is the file the `handicap` subcommand already parses, and `CIV4GoodyInfo.xml` sits beside it in the base tree (BTS ships no override, checked).
-
-**The most expensive single finding of the Ramesses trial** (Monarch, t0–36): a goody hut sat one tile from the scouting Warrior at t9. The agent ran `rules.py handicap`, read `iBarbarianCreationTurnsElapsed = 25`, and told the player popping it was safe for another 16 turns. The hut produced a hostile warband that killed the unit — the player's only unit at the time, leaving the capital undefended and unscouted for several turns.
-
-**The numbers, verified against the install rather than taken from the trial report.** Each handicap carries a flat 20-entry `<Goodies>` table, and `GOODY_BARBARIANS_WEAK`/`GOODY_BARBARIANS_STRONG` carry `iBarbarianUnitProb` 20/40 with `iMinBarbarians` 1/2. Hostile entries per difficulty: Settler 0, Chieftain 1, Warlord 2, Noble 3, Prince 4, **Monarch 5**, Emperor 6, Immortal 7, Deity 8. So on the trial's own difficulty a hut was a **flat 25% hostile roll, from turn 1** — and `iBarbarianCreationTurnsElapsed` governs *map spawns*, not huts, so it gates none of it.
-
-The agent named its own under-weighting of the OMITS list as part of the cause, which is fair but not the whole story: the block is titled "barbarian and animal rules" and **leads with a turn number that reads as a safety guarantee**, while the table that actually answers the question is parsed and discarded. Same shape as the `city`/`effective_known` bug (see `harness/README.md`): an authoritative-looking block whose omission is load-bearing, with nothing in the output able to contradict it.
-
-Wanted is the outcome table for this handicap with the hostile rows visible, and a hard line that huts are ungated by the spawn timer. **Presentation, not a verdict** — print the distribution, never "safe" or "unsafe".
-
-**`bNoBadGoodies` reframes this, and it has already landed** (see `harness/README.md`, the `unit` combat-block audit). Exactly the Scout and the Explorer carry it: those two **cannot draw a hostile result at all**, on any difficulty, and `rules.py unit UNIT_SCOUT` now says so. So the useful answer is not only "25% on Monarch" but "and that risk is zero for the unit you should be sending", which the distribution alone never states — the trial's Warrior died to a roll a Scout was immune to. Whatever this prints should name the interaction rather than leaving the reader to join two subcommands.
 
 ### `rules-improvement` — no improvement-yield model
 
@@ -246,7 +231,7 @@ Also worth recording: across two live trials (Cowork and Claude Code, 25 turns e
 
 **Lane E first — `trial-protocol` and `trial-per-turn-checklist`.** Both cost nothing, both pay off on the very next trial, and the checklist addresses more separate observations than any other item here. Doing them first also means the next trial generates better evidence for everything below.
 
-**Then Lane C, as one agent taking the whole lane.** `goody-hut-outcomes` leads it: it is the only queued item with a demonstrated unit loss behind it, the data is verified, and it extends a subcommand that already parses the right file. `rules-improvement` follows — the only gap that produced a flatly false number, and it absorbs the buildable-now question that `render_map --view worker` currently punts. Then `rules-lookup-gaps`, whose seven sub-bullets are **not one item**: four are genuine lookups, two (the research- and production-switch rules) are prose assertions about engine behaviour with no XML field behind them, and the happiness/health view carries an unverified precondition. **All of these are serial with each other by construction**; do not split them across agents.
+**Then Lane C, as one agent taking the whole lane.** `rules-improvement` leads it now that `goody-hut-outcomes` has landed — the only gap that produced a flatly false number, and it absorbs the buildable-now question that `render_map --view worker` currently punts. Then `rules-lookup-gaps`, whose seven sub-bullets are **not one item**: four are genuine lookups, two (the research- and production-switch rules) are prose assertions about engine behaviour with no XML field behind them, and the happiness/health view carries an unverified precondition. **All of these are serial with each other by construction**; do not split them across agents.
 
 **`bearings-by-default` needs its own window.** It touches all three tools and therefore collides with Lanes A, B and C at once. It is the highest-frequency usability item on the page — a translation step removed from every turn — but it cannot be parallelized, so it wants a slot where nothing else is running. Settle the prose-only scope question before starting.
 
@@ -254,6 +239,6 @@ Also worth recording: across two live trials (Cowork and Claude Code, 25 turns e
 
 **`multi-site-comparison` now follows `trial-per-turn-checklist`** rather than standing alone — the trial evidence says the missing thing is the trigger, not the table. It still needs its interface decision.
 
-**`varied-setup-samples`** happens whenever a game is played to a wonder completion — opportunistic rather than scheduled. The Ramesses trial raised its value: it ran at **Monarch on Fractal with 7 civs** while the only committed sample is Emperor and otherwise default, and at least one finding (`goody-hut-outcomes`) is difficulty-dependent in a way that changes the advice. A second sample at a different difficulty would be worth more than a repeat.
+**`varied-setup-samples`** happens whenever a game is played to a wonder completion — opportunistic rather than scheduled. The Ramesses trial raised its value: it ran at **Monarch on Fractal with 7 civs** while the only committed sample is Emperor and otherwise default, and `rules.py goody` (landed) is difficulty-dependent in a way that changes the advice — its output differs on every one of the nine handicaps, and only Emperor is covered by a committed sample. A second sample at a different difficulty would be worth more than a repeat.
 
 **`same-turn-round-trips` stays recorded, not scheduled** — the best-evidenced finding on this page, but it needs a design for what an affordable fix even looks like before it can be sequenced at all.

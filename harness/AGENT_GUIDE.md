@@ -30,6 +30,7 @@ Files are numbered for the turn **about to be played**, so a run starts at `turn
 | "unit A beats/loses to unit B" | `rules.py unit A` and `rules.py unit B` |
 | "this city can build Z" | `rules.py city NAME` |
 | "promotion P does..." | `rules.py promotion P` |
+| "popping that hut is safe / risky" | `rules.py goody --for-unit ID --at X,Y` — **never** `rules.py handicap` |
 | any cost, prereq, or turns-to-complete number | `rules.py <subcommand>` for it |
 
 `rules.py` resolves the right file tree, walks prerequisites transitively, and prices everything for this game's actual setup — use it first. When it doesn't cover something, grep the install directly and **say out loud that you had to** — that's the signal for what to add to `rules.py` next. The install holds ~18 copies of each file: take `<install>/Beyond the Sword/Assets/XML/...`, falling back to `<install>/Assets/XML/...` — an expansion only ships the files it *changes*, so resources (`CIV4BonusInfos.xml`) live only in the base tree. Install path is in `config.local.json`; don't `find`, it is slow and hits the mod copies. Use large context windows: `PrereqTech` sits ~90 lines into a unit block.
@@ -121,8 +122,9 @@ The tool **exits non-zero on a run that isn't one continuous game**. That's a re
 ### `rules.py` — anything about the game's rules
 
 ```
-python harness/rules.py unit|tech|building|promotion|city|handicap [TYPE] <state.json> [--show-known] [--depth N]
+python harness/rules.py unit|tech|building|promotion|city|handicap|goody [TYPE] <state.json> [--show-known] [--depth N]
 python harness/rules.py promotion <state.json> --for-unit ID [--eligible]
+python harness/rules.py goody <state.json> [--for-unit ID | --popped-by UNIT_SCOUT] [--at X,Y]
 ```
 
 **The state file is required, and not a formality:** game speed, world size and difficulty multiply tech costs, so a raw XML cost is 1.0–4.5× wrong. Pass the turn you're advising on and every number is priced for the real game.
@@ -135,7 +137,8 @@ python harness/rules.py promotion <state.json> --for-unit ID [--eligible]
 | `promotion PROMOTION_COMBAT1` | What a promotion actually does — combat/terrain/movement modifiers, which unit-combat classes can take it, its own prerequisite chain. |
 | `promotion <state> --for-unit ID` | One of your own units, by engine id (as `intel` prints it, e.g. "id 16385"): their combined effect, then each promotion's own detail — no need to type each name yourself. Add `--eligible` to also list what it could take next and why not for the rest. Put `--for-unit` after the state file. |
 | `city Lisbon` | What this city can build **right now**, and what is blocking the rest. Takes a city name, not a TYPE. |
-| `handicap` | The barbarian and animal rules for this game's difficulty. Type defaults to the state file's own. |
+| `handicap` | The barbarian and animal rules for this game's difficulty. Type defaults to the state file's own. **Its turn fields do not gate goody huts** — for those use `goody`. |
+| `goody` | What a goody hut can produce, and how likely a hostile result is. Type defaults to the state file's own; `--for-unit ID --at X,Y` decides every gate. |
 
 **Reach for `city` before advising on production** — what to build next, or whether to switch. It is the only call that answers *what the options are*; the others answer questions about an option you have already named. Guessing type names to find out what exists is the failure it replaces.
 
@@ -149,6 +152,10 @@ It lists what is available now **and** what is one tech away, each blocked row c
 
 **Never call a fight on strength alone — run both units and read the `abilities` block.** Modifiers there routinely swing a matchup the raw numbers get backwards, and each names its own condition: `+100% attacking UNITCLASS_AXEMAN` applies only when attacking, `+100% defending vs UNITCLASS_CHARIOT` only when defending. Quote the modifier, not the strength.
 
+**Never answer a goody-hut question from `handicap`.** Its `iBarbarianCreationTurnsElapsed` looks like it settles the matter and does not — it bounds *map spawns* only, and **a hut can turn hostile on turn 1**. Reading it as a safety window killed a live trial's only unit. Run `goody`, and pass `--for-unit ID --at X,Y` (the popping unit and the hut's tile, both already in the state file) to turn the range into one number. `--at` is the **hut's** tile, never the unit's; the tool lists the revealed ones if you don't name one, and the figures then assume the hut is popped from where that unit stands now.
+
+**The Scout and the Explorer cannot draw a hostile result at all**, on any difficulty or turn — so which unit you send changes the answer completely, and if a Scout can reach the hut the risk is zero rather than merely lower.
+
 **Guessed a type name and got an error? Read the suggestions, don't fall back to grep.** Unique units are civ-prefixed and inconsistently so — the Praetorian is `UNIT_ROME_PRAETORIAN`, not `UNIT_PRAETORIAN`.
 
 **Routes to a tech are printed all-in and never ranked**, in XML order rather than cost order. The cheaper one is not automatically the right one; that judgement is yours.
@@ -157,7 +164,7 @@ It lists what is available now **and** what is one tech away, each blocked row c
 
 **Resource prerequisites are resolved against your trade network**, not just the map — `CONNECTED` means you can build the thing today, and where a resource is visible but unusable the tool names which of borders / improvement / road is missing. A resource you cannot see yet is a different answer again: `NOT YET REVEALED` means zero visible is evidence of nothing either way.
 
-Prerequisites you already have are hidden — `--show-known` restores them. Every block prints its source as `file:line`, states what it omits, and attaches its own caveats to the numbers. Read those in place; they are not repeated here.
+Prerequisites you already have are hidden — `--show-known` restores them. Blocks print their source as `file:line` where the file holds more than the tool showed you — that is the jump to make when you need something it did not print. Each also states what it omits and attaches its own caveats to the numbers. Read those in place; they are not repeated here.
 
 ### `bearing.py` — direction and distance between two arbitrary tiles
 

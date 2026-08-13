@@ -33,9 +33,9 @@ THE LINE IT MUST NOT CROSS: resolving what a unit requires is presentation.
 Answering "what should I research" is deciding. So this prints route costs side
 by side and never sorts them, never labels one "cheapest", and never recommends.
 
-Subcommands - `unit`, `tech`, `building`, `promotion`, `city`, `handicap` -
-each taking a state file, because game speed, world size and difficulty
-multiply tech costs and an unpriced answer is 1.0-4.5x wrong.
+Subcommands - `unit`, `tech`, `building`, `promotion`, `city`, `handicap`,
+`goody` - each taking a state file, because game speed, world size and
+difficulty multiply tech costs and an unpriced answer is 1.0-4.5x wrong.
 
 Run it directly with the system Python; stdlib only, no setup:
 
@@ -72,6 +72,11 @@ HANDICAP_FILE = os.path.join("GameInfo", "CIV4HandicapInfo.xml")
 GAMESPEED_FILE = os.path.join("GameInfo", "CIV4GameSpeedInfo.xml")
 WORLD_FILE = os.path.join("GameInfo", "CIV4WorldInfo.xml")
 BUILD_FILE = os.path.join("Units", "CIV4BuildInfos.xml")
+# Vanilla-only on the measured install, exactly like CIV4BonusInfos.xml - BTS
+# ships no override, so a BTS-only search finds nothing. What each goody
+# outcome DOES; which outcomes a difficulty can draw is the <Goodies> table
+# inside CIV4HandicapInfo.xml, not here.
+GOODY_FILE = os.path.join("GameInfo", "CIV4GoodyInfo.xml")
 BUILDING_CLASS_FILE = os.path.join("Buildings", "CIV4BuildingClassInfos.xml")
 COMMERCE_FILE = os.path.join("GameInfo", "CIV4CommerceInfo.xml")
 YIELD_FILE = os.path.join("Terrain", "CIV4YieldInfos.xml")
@@ -139,7 +144,11 @@ ANIMAL_FIELDS = (
     ("iUnownedTilesPerGameAnimal", "one animal per N unowned tiles"),
 )
 BARBARIAN_FIELDS = (
-    ("iBarbarianCreationTurnsElapsed", "no barbarians spawn before this turn"),
+    # "no barbarians before turn N" is how this field was read in a live trial,
+    # and it cost a unit: it bounds MAP SPAWNS only, and a goody hut can hand
+    # you a hostile warband on turn 1. The qualifier is not decoration.
+    ("iBarbarianCreationTurnsElapsed", "no MAP-SPAWNED barbarians before this "
+                                       "turn (huts are NOT gated by it)"),
     ("iBarbarianCityCreationTurnsElapsed", "no barbarian cities before this turn"),
     ("iUnownedTilesPerBarbarianUnit", "one barbarian per N unowned land tiles"),
     ("iUnownedWaterTilesPerBarbarianUnit", "one per N unowned water tiles"),
@@ -150,6 +159,26 @@ BARBARIAN_FIELDS = (
     ("iFreeWinsVsBarbs", "first N losses vs barbs/animals are negated"),
 )
 
+
+# Engine constants behind `goody`, none of them in the XML this module parses.
+#
+# NUM_DO_GOODY_ATTEMPTS is why this is not a twenty-row table print:
+# `CvPlayer::doGoody` re-draws an ineligible outcome rather than skipping it,
+# up to this many times, so a blocked entry's weight lands on the rows that
+# remain - hostile included. All ten can fail, and the hut is then consumed for
+# nothing (its goody is removed BEFORE the loop), which is why the eligible
+# shares deliberately sum short of 100%. Derivation in REFERENCES.md.
+NUM_DO_GOODY_ATTEMPTS = 10          # GlobalDefines.xml, same in both trees
+
+# Both in ELAPSED game turns, from `canReceiveGoody`. They are what make the
+# early game the WORST case for a hut rather than the safest.
+GOODY_EXPERIENCE_MIN_TURNS = 10
+GOODY_COMBAT_UNIT_MIN_TURNS = 20
+
+# `canReceiveGoody` refuses a hostile result within `8 - getNumCities()` tiles
+# of your city while you have exactly one - so 7, and the check stops applying
+# at two. Founding a second city REMOVES this protection from every hut.
+GOODY_BARB_SAFE_RADIUS_AT_ONE_CITY = 8
 
 # Printed at the foot of every view. One copy, because four hand-maintained
 # copies of the same caveat is how one of them quietly drifts.
@@ -964,8 +993,57 @@ def parse_handicap(text):
         for name, _desc in ANIMAL_FIELDS + BARBARIAN_FIELDS:
             entry[name] = _int_tag(block, name)
         entry["iResearchPercent"] = _int_tag(block, "iResearchPercent", 100)
+        # The goody-hut draw table: 20 <GoodyType> entries WITH REPEATS, and
+        # the repeats are the weighting - there is no probability field
+        # anywhere. Order is meaningless (the engine draws a uniform index),
+        # but multiplicity is everything, so this is a list and never a set.
+        entry["goodies"] = _list_tag(block, "Goodies", "GoodyType")
         handicaps[key] = entry
     return handicaps
+
+
+def parse_goodies(text):
+    """What each goody outcome does, from the vanilla-only CIV4GoodyInfo.xml.
+
+    Only the fields that decide an OUTCOME or gate ELIGIBILITY are kept; the
+    art/sound fields are noise here. `bad` is the field the whole subcommand
+    turns on: it is what `bNoBadGoodies` units are immune to, and it is set on
+    exactly the two GOODY_BARBARIANS_* entries.
+    """
+    goodies = {}
+    # `line` is deliberately not kept, unlike every other parser here: nothing
+    # cites this file, because the view prints everything in it that bears on a
+    # decision and a citation is for what was NOT printed (see README).
+    for key, block, _line in iter_blocks(text, "GoodyInfo"):
+        unit_class = _tag(block, "UnitClass")
+        barb_class = _tag(block, "BarbarianClass")
+        goodies[key] = {
+            "type": key,
+            "gold": _int_tag(block, "iGold"),
+            # Two independent rolls, each 0..N-1, both ADDED to iGold. So the
+            # range is iGold .. iGold + (r1-1) + (r2-1), not iGold + r1 + r2.
+            "gold_rand1": _int_tag(block, "iGoldRand1"),
+            "gold_rand2": _int_tag(block, "iGoldRand2"),
+            "map_range": _int_tag(block, "iMapRange"),
+            "map_prob": _int_tag(block, "iMapProb"),
+            "experience": _int_tag(block, "iExperience"),
+            "healing": _int_tag(block, "iHealing"),
+            "damage_prereq": _int_tag(block, "iDamagePrereq"),
+            "tech": _int_tag(block, "bTech") == 1,
+            "bad": _int_tag(block, "bBad") == 1,
+            "unit_class": unit_class if unit_class != "NONE" else None,
+            "barb_class": barb_class if barb_class != "NONE" else None,
+            # The guaranteed floor. These units ALWAYS appear once this outcome
+            # is drawn - the engine makes a second pass that ignores its
+            # per-plot probability roll until the floor is met.
+            #
+            # That roll (iBarbarianUnitProb, 20/40) is deliberately not parsed:
+            # it governs how many EXTRA barbarians appear, but printed beside a
+            # hostile outcome it reads as the chance of being attacked, which
+            # is exactly backwards. A test asserts it stays off the row.
+            "min_barbarians": _int_tag(block, "iMinBarbarians"),
+        }
+    return goodies
 
 
 # ---------------------------------------------------------------------------
@@ -1055,6 +1133,8 @@ class Rules(object):
             lambda text: parse_simple(text, "ImprovementInfo", "PrereqTech"))
         self.civilizations = self._load(
             CIVILIZATION_FILE, "civilizations", parse_civilizations)
+        self.goodies = self._load(GOODY_FILE, "goodies", parse_goodies)
+        self.goody_path = self.sources.get("goodies", (None, None))[0]
 
         # A building does not name its own class, so the wonder lookup joins
         # backwards through <DefaultBuilding>.
@@ -3349,6 +3429,487 @@ def view_city(rules, city_name, state):
     return "\n".join(out)
 
 
+GOODY_IMPROVEMENT = "IMPROVEMENT_GOODY_HUT"
+
+
+def plot_distance(state, a, b):
+    """The engine's `plotDistance`, wrap-aware. NOT Chebyshev.
+
+    `CvGameCoreUtils.h:144`: `max(dX, dY) + (min(dX, dY) / 2)`, over
+    `xDistance`/`yDistance`, which fold the coordinate difference around the
+    map when that axis wraps. The `+ min/2` term is the whole point and is
+    easy to miss: at (3,3) the engine says 4 and Chebyshev says 3, and they
+    diverge on every diagonal. Getting it wrong misjudges the one-city
+    hostile radius exactly at its boundary, which is where it is asked.
+
+    Deliberately implemented here rather than imported from `render_map`,
+    whose `distance()` is a different metric on purpose - the city-founding
+    rule it serves really is a square box scan (`CvPlayer.cpp:5005-5008`),
+    so that is `stepDistance` and correct for its own use. Two metrics both
+    called "distance" is the trap; each is named for what it actually is.
+    """
+    game = state.get("game") or {}
+    width = game.get("mapWidth") or 0
+    height = game.get("mapHeight") or 0
+    dx = abs(a[0] - b[0])
+    if game.get("wrapX") and width:
+        dx = min(dx, width - dx)
+    dy = abs(a[1] - b[1])
+    if game.get("wrapY") and height:
+        dy = min(dy, height - dy)
+    return max(dx, dy) + min(dx, dy) // 2
+
+
+def find_goody_huts(state):
+    """Every revealed goody hut on the map, as (x, y).
+
+    The engine's own `isRevealedGoody()` is `improvementInfo(revealed
+    improvement).isGoody()`, and `IMPROVEMENT_GOODY_HUT` is the only
+    `bGoody` improvement in either tree. `map.tiles.improvement` is already
+    the REVEALED getter, so this inherits the export's fog honesty: a hut in
+    unexplored territory is simply absent, exactly as for the player.
+    """
+    hits = []
+    for tile in (state.get("map") or {}).get("tiles") or []:
+        if tile.get("improvement") == GOODY_IMPROVEMENT:
+            hits.append((tile.get("x"), tile.get("y")))
+    return sorted(hits)
+
+
+def _unit_label(own):
+    """How to name one of our own units in prose: type plus id."""
+    return "%s (id %s)" % (own.get("type", "?"), own.get("id", "?"))
+
+
+def _goody_eligibility(rules, goody, state, unit, own=None, hut=None):
+    """Why this outcome cannot be drawn right now, or None if it can.
+
+    A direct transcription of `CvPlayer::canReceiveGoody`, in source order, and
+    deliberately only the clauses this tool can actually evaluate from a state
+    file. Every clause that IS evaluated returns prose naming the gate; the
+    ones that cannot be are listed in the view's OMITS rather than guessed.
+
+    `unit` is the unit dict from the XML (not the state), or None for "no
+    particular unit". None is NOT the same as an arbitrary unit: several
+    clauses key off the unit that pops the hut, and the engine treats a NULL
+    unit as failing them - but a hut is always popped BY something, so None
+    here means "unit-dependent, not yet decided" and those clauses are reported
+    as conditional rather than as hard exclusions.
+
+    `own` is the same unit as the STATE exports it (id, damage, promotions), or
+    None. It is what turns three of those conditionals into decided answers,
+    because a unit TYPE cannot answer them: a healthy Warrior and a half-dead
+    one are the same string. `hut` is the hut's own (x, y), which is never the
+    unit's tile - a unit standing on a hut has already popped it.
+    """
+    game = state.get("game") or {}
+    turn = game.get("gameTurn") or 0
+    cities = state.get("cities") or []
+
+    # iExperience: needs a promotable unit AND 10 elapsed turns. Only the turn
+    # half is decidable - `promotionsAvailable` cannot stand in for
+    # canAcquirePromotionAny(), so the rest is named in OMITS (see README).
+    if goody["experience"] > 0 and turn < GOODY_EXPERIENCE_MIN_TURNS:
+        return "not before turn %d" % GOODY_EXPERIENCE_MIN_TURNS
+
+    # iDamagePrereq: the unit must ALREADY be hurt to at least this share of
+    # its max HP. `damage` is exported as a percentage of health lost, which is
+    # the same scale the engine compares against (maxHitPoints * prereq / 100),
+    # so this is a direct comparison rather than a conversion.
+    if goody["damage_prereq"] > 0:
+        if own is not None:
+            hurt = own.get("damage") or 0
+            if hurt < goody["damage_prereq"]:
+                return ("%s is at %d%% damage, needs %d%%"
+                        % (_unit_label(own), hurt, goody["damage_prereq"]))
+        else:
+            # Without one of our units this is genuinely undecidable: a unit
+            # TYPE says nothing about that unit's damage. Asserting an
+            # exclusion the tool cannot see is the failure it exists to fix.
+            return ("conditional: only if the popping unit is already at %d%% "
+                    "damage" % goody["damage_prereq"])
+
+    # bBad: THE clause this subcommand exists for. Note the engine's own
+    # ordering - `pUnit == NULL || isNoBadGoodies()` - so immunity is a
+    # property of the popping unit, nothing else.
+    if goody["bad"] and unit is not None and unit.get("no_bad_goodies"):
+        return "%s can never draw a hostile result" % unit["type"]
+
+    # UnitClass: a free unit. If that unit is a combat unit and not
+    # only-defensive, it is withheld for the first 20 turns (and in every
+    # multiplayer game, which the export cannot see - see OMITS).
+    if goody["unit_class"]:
+        granted = _unit_of_class(rules, goody["unit_class"])
+        if granted is None:
+            return "no unit of %s for this civ" % goody["unit_class"]
+        if (granted["strength"] > 0 and not granted["only_defensive"]
+                and turn < GOODY_COMBAT_UNIT_MIN_TURNS):
+            return "combat unit, not before turn %d" % GOODY_COMBAT_UNIT_MIN_TURNS
+
+    # BarbarianClass: the hostile outcomes.
+    if goody["barb_class"]:
+        if "GAMEOPTION_NO_BARBARIANS" in (game.get("options") or []):
+            return "GAMEOPTION_NO_BARBARIANS is on"
+        # Both of these are genuine engine protections and both are temporary.
+        # The second one ENDS when you found your second city, which is the
+        # opposite of what a player would assume.
+        if not cities:
+            return "you have no cities yet"
+        if len(cities) == 1:
+            radius = GOODY_BARB_SAFE_RADIUS_AT_ONE_CITY - len(cities)
+            if hut is None:
+                return ("conditional: blocked within %d tiles of your only city"
+                        % radius)
+            # Decided, given the hut's own position. The engine measures from
+            # the HUT, not from the popping unit (`canReceiveGoody` takes the
+            # plot), so this needs the target tile rather than where the unit
+            # is standing - and `findCity` is nearest-own-city, hence min().
+            city = min(cities, key=lambda c: plot_distance(
+                state, hut, (c.get("x"), c.get("y"))))
+            gap = plot_distance(state, hut, (city.get("x"), city.get("y")))
+            if gap <= radius:
+                return ("hut is %d tile%s from %s, your only city (blocked "
+                        "within %d)" % (gap, "" if gap == 1 else "s",
+                                        city.get("name", "?"), radius))
+    return None
+
+
+def _unit_of_class(rules, unit_class):
+    """The unit this civ actually gets for a unit class, unique or default.
+
+    The engine reads `CivilizationInfo.getCivilizationUnits(class)`, which is
+    the civ's unique when it has one and the class default otherwise. Without
+    the civilization file loaded this falls back to any unit of the class,
+    which is right for every civ that has no unique in it.
+    """
+    candidates = [u for u in rules.units.values()
+                  if u.get("unit_class") == unit_class]
+    if not candidates:
+        return None
+    for unit in candidates:
+        if not _is_unique_unit(rules, unit["type"]):
+            return unit
+    return candidates[0]
+
+
+def _is_unique_unit(rules, unit_type):
+    """True if some civ names this unit as its replacement for a class.
+
+    `units` maps class -> unit type, so this tests the VALUES. Reading the keys
+    instead silently answers "is this a class", which is never true of a unit
+    type and would make every unit look like the class default.
+    """
+    for entry in rules.civilizations.values():
+        if unit_type in (entry.get("units") or {}).values():
+            return True
+    return False
+
+
+def goody_distribution(rules, handicap_entry, state, unit, own=None, hut=None):
+    """The draw table, split into what can and cannot be drawn right now.
+
+    Returns (rows, eligible_total, table_size). Each row is a dict carrying the
+    goody type, its multiplicity in the 20-entry table, its share of the draw,
+    and either None or the reason it cannot come up.
+
+    The share is over the WHOLE table, not over the eligible subset, because
+    that is what the engine actually rolls; the eligible entries' shares
+    therefore sum to less than 100% and the shortfall is the re-roll. See
+    NUM_DO_GOODY_ATTEMPTS for why that shortfall is a real outcome.
+    """
+    table = handicap_entry.get("goodies") or []
+    counts = {}
+    for key in table:
+        counts[key] = counts.get(key, 0) + 1
+
+    rows = []
+    eligible = 0
+    for key in sorted(counts):
+        goody = rules.goodies.get(key)
+        # An outcome named by the handicap but missing from GoodyInfo.xml can
+        # only mean the file did not load or a mod diverged. Reported, never
+        # silently dropped - a missing row understates the hostile share.
+        blocked = ("not in %s" % os.path.basename(GOODY_FILE) if goody is None
+                   else _goody_eligibility(rules, goody, state, unit, own, hut))
+        conditional = bool(blocked) and blocked.startswith("conditional:")
+        if not blocked or conditional:
+            eligible += counts[key]
+        rows.append({
+            "type": key,
+            "count": counts[key],
+            "goody": goody,
+            "blocked": None if conditional else blocked,
+            "conditional": blocked[len("conditional: "):] if conditional else None,
+        })
+    return rows, eligible, len(table)
+
+
+def _goody_effect(goody):
+    """One line saying what the outcome actually gives you."""
+    if goody is None:
+        return "?"
+    parts = []
+    if goody["gold"] or goody["gold_rand1"] or goody["gold_rand2"]:
+        low = goody["gold"]
+        high = goody["gold"] + max(goody["gold_rand1"] - 1, 0) \
+            + max(goody["gold_rand2"] - 1, 0)
+        parts.append("%d-%d gold" % (low, high))
+    if goody["tech"]:
+        parts.append("a free tech (any you could research now)")
+    if goody["experience"]:
+        parts.append("%d experience to the popping unit" % goody["experience"])
+    if goody["healing"]:
+        parts.append("heals %d%% damage" % goody["healing"])
+    if goody["map_range"]:
+        parts.append("reveals map within %d tiles (%d%% per tile)"
+                     % (goody["map_range"], goody["map_prob"]))
+    if goody["unit_class"]:
+        parts.append("a free %s" % goody["unit_class"])
+    if goody["barb_class"]:
+        # The FLOOR, not the probability. iBarbarianUnitProb reads as "chance
+        # of trouble" and is not - the engine spawns iMinBarbarians regardless
+        # and rolls only for further ones. Stating the guaranteed count is the
+        # part a decision turns on; the per-extra-tile roll is left to the
+        # OMITS note about where they land.
+        parts.append("HOSTILE: %d+ %s adjacent, guaranteed"
+                     % (goody["min_barbarians"], goody["barb_class"]))
+    return "; ".join(parts) if parts else "nothing"
+
+
+def view_goody(rules, handicap_type, state, unit_type=None, unit_id=None,
+               at=None):
+    """What a goody hut can produce for this game, and what it cannot.
+
+    THE FAILURE THIS EXISTS TO PREVENT, from a live trial: the agent ran
+    `rules.py handicap`, read `iBarbarianCreationTurnsElapsed = 25`, and told
+    the player a hut was safe to pop for another 16 turns. That field governs
+    MAP SPAWNS and gates nothing in the hut path - `CvPlayer::doGoody` never
+    consults it. The hut produced a hostile warband that killed the player's
+    only unit.
+
+    The answer sharpens with what the caller supplies: nothing gives the
+    difficulty's table with the unit- and position-dependent gates named as
+    conditions; `unit_type` resolves hostile immunity; `unit_id` plus `at`
+    resolve damage and the one-city radius too, deciding the rest.
+
+    Presentation, not a verdict, at every level - it prints a percentage and
+    never the words "safe" or "unsafe". Whether that percentage is worth the
+    unit is the player's trade, not the tool's.
+    """
+    if handicap_type is None:
+        handicap_type = state.get("game", {}).get("handicap")
+    if handicap_type is None:
+        raise RulesError("no handicap in the state file and none given")
+
+    entry = rules.handicaps.get(handicap_type)
+    if entry is None:
+        raise _not_found("handicap", handicap_type, rules.handicaps,
+                         _relative(rules.handicap_path, rules.xml_root),
+                         "HANDICAP_NOBLE")
+
+    # One of OUR units, by engine id, as `intel` prints it - the same shape as
+    # `promotion --for-unit`. It resolves its own TYPE, so passing both is a
+    # contradiction waiting to happen rather than a convenience.
+    own = None
+    if unit_id is not None:
+        own = find_unit(state, unit_id)
+        if own is None:
+            ids = ", ".join(str(u.get("id")) for u in (state.get("units") or []))
+            raise RulesError(
+                "no unit with id %s in this state file.%s"
+                % (unit_id, ("\nYour units: " + ids) if ids else
+                   " You have no units in it."))
+        unit_type = own.get("type")
+
+    unit = None
+    if unit_type:
+        unit = rules.units.get(unit_type)
+        if unit is None:
+            raise _not_found("unit", unit_type, rules.units,
+                             _relative(rules.unit_path, rules.xml_root),
+                             "UNIT_SCOUT")
+
+    huts = find_goody_huts(state)
+    hut = None
+    if at is not None:
+        hut = at
+        # A hut is a TARGET tile, never the unit's own: a unit standing on one
+        # has already popped it. So this is validated against the map rather
+        # than trusted - a coordinate typo would otherwise silently produce a
+        # confident distance to the wrong tile.
+        if hut not in huts:
+            known = (", ".join("(%d,%d)" % h for h in huts) if huts
+                     else "none are revealed in this state file")
+            raise RulesError(
+                "no revealed goody hut at (%d,%d).\nRevealed huts: %s"
+                % (hut[0], hut[1], known))
+        if own is not None and (own.get("x"), own.get("y")) == hut:
+            raise RulesError(
+                "%s is standing on the hut at (%d,%d) - a unit on a hut has "
+                "already popped it.\nPass the hut the unit is moving TO."
+                % (_unit_label(own), hut[0], hut[1]))
+
+    if not rules.goodies:
+        raise RulesError(
+            "%s did not load, so goody outcomes cannot be reported.\n"
+            "It is VANILLA-ONLY - there is no Beyond the Sword copy - so a "
+            "BTS-only search finds nothing." % GOODY_FILE)
+
+    rows, eligible, size = goody_distribution(rules, entry, state, unit,
+                                              own, hut)
+
+    out = []
+    out.append("%s - what a goody hut can produce" % handicap_type)
+    out.append("  against %s" % state_summary(state))
+    if own is not None:
+        line = "  popped by %s at (%s,%s)" % (_unit_label(own), own.get("x"),
+                                              own.get("y"))
+        if hut is not None:
+            steps = plot_distance(state, (own.get("x"), own.get("y")), hut)
+            line += ", hut at (%d,%d), %d tile%s away" % (
+                hut[0], hut[1], steps, "" if steps == 1 else "s")
+        out.append(line)
+        if hut is not None:
+            # The one assumption a decided answer rests on, stated rather than
+            # left implicit: the gates are evaluated for the board as it stands
+            # now. Moving there is free, but founding a city on the way removes
+            # the one-city protection this may just have applied.
+            out.append("  assumes it pops from there, board as it stands.")
+    else:
+        if unit is not None:
+            out.append("  popped by %s" % unit_type)
+        if hut is not None:
+            out.append("  hut at (%d,%d)" % hut)
+
+    own_handicap = state.get("game", {}).get("handicap")
+    if own_handicap and own_handicap != handicap_type:
+        out.append("")
+        out.append("  NOTE: this game is %s. The rules below are %s and are NOT"
+                   % (own_handicap, handicap_type))
+        out.append("  in effect - run without a TYPE for this game's own.")
+
+    # The handicap block only - one line, matching every other view.
+    #
+    # CIV4GoodyInfo.xml is deliberately NOT cited, though it is the other half
+    # of this view's data. A citation exists so the agent can go and read what
+    # the tool did not print (AGENT_GUIDE rule 5's "grep the install directly"
+    # escape hatch), and there is nothing left in that file to read: a
+    # GoodyInfo block carries 19 tags and the OUTCOMES rows already render
+    # every one that bears on a decision. The handicap block is the opposite -
+    # 67 tags, of which this view touches one table - so a reader landing there
+    # has somewhere to go.
+    out.append("")
+    out.append("  %s:%d"
+               % (_relative(rules.handicap_path, rules.xml_root), entry["line"]))
+
+    # The one piece of mechanism worth printing, above the table rather than in
+    # a footnote: a trial read this field off `handicap`, called a hut safe for
+    # 16 more turns, and lost its only unit. Everything else about how the roll
+    # works was cut as derivation an agent does not act on.
+    out.append("")
+    out.append("  iBarbarianCreationTurnsElapsed does NOT gate huts - it governs")
+    out.append("  map spawns only. A hut can turn hostile on turn 1.")
+
+    hostile = [r for r in rows
+               if r["goody"] and r["goody"]["bad"] and not r["blocked"]]
+    out.append("")
+    out.append("OUTCOMES")
+    # Share only, no raw multiplicity: the share IS the count over the table
+    # size, and the count is the half an agent cannot act on.
+    for row in rows:
+        share = 100.0 * row["count"] / size if size else 0.0
+        marker = "!" if row["goody"] and row["goody"]["bad"] else " "
+        detail = ("CANNOT: %s" % row["blocked"] if row["blocked"]
+                  else _goody_effect(row["goody"]))
+        out.append("%s %-26s %5.1f%%  %s"
+                   % (marker, row["type"], share, detail))
+        if row["conditional"]:
+            out.append("  %-26s         %s" % ("", row["conditional"]))
+
+    # Hostile alone: the only figure here that changes a decision. Every row's
+    # renormalised share was measured and nine of ten moved under 1.5 points,
+    # so printing them buried this number under arithmetic nobody acts on.
+    hostile_count = sum(r["count"] for r in hostile)
+    raw_share = 100.0 * hostile_count / size if size else 0.0
+    real_share = 100.0 * hostile_count / eligible if eligible else 0.0
+    # The `above N%` note only when the two genuinely differ - it explains why
+    # the rows do not sum to this figure, which otherwise reads as a bug.
+    out.append("")
+    out.append("HOSTILE CHANCE  %.1f%%" % real_share)
+    if eligible < size and real_share > raw_share:
+        out.append("  above the %.1f%% the table shows: blocked rows are"
+                   " re-drawn onto the rest." % raw_share)
+
+    # The interaction the ROADMAP asked for by name: the distribution alone
+    # never states it, and joining two subcommands by hand is what failed.
+    # Stated once, phrased for the case in hand - an earlier version printed
+    # the roster AND a branch about the named unit AND a re-run hint, which is
+    # three sentences carrying one fact.
+    immune = sorted(u["type"] for u in rules.units.values()
+                    if u.get("no_bad_goodies"))
+    out.append("")
+    if not immune:
+        out.append("NOTE: no unit in the loaded XML carries bNoBadGoodies,")
+        out.append("  which is unexpected for vanilla BTS - check the install.")
+    elif unit is not None and unit.get("no_bad_goodies"):
+        out.append("%s carries bNoBadGoodies: the hostile rows are excluded"
+                   % unit_type)
+        out.append("  for it entirely, not merely unlikely.")
+    else:
+        # Named only when we know what the player actually has: suggesting a
+        # Scout to someone with none is advice, not a lookup.
+        available = sorted(set(
+            u.get("type") for u in (state.get("units") or [])
+            if (rules.units.get(u.get("type")) or {}).get("no_bad_goodies")))
+        out.append("%s cannot draw a hostile result, on any difficulty or turn."
+                   % " and ".join(immune))
+        if available:
+            out.append("  You have %s this turn - popping with one is zero risk."
+                       % ", ".join(available))
+        elif unit is None:
+            out.append("  Pass --for-unit ID (or --popped-by TYPE) to price"
+                       " a specific unit.")
+
+    # Revealed huts are listed whenever the caller did not name one, because
+    # this is the argument that decides the most and the coordinate is sitting
+    # in the state file the caller already passed. An unlisted flag is a flag
+    # nobody uses - the same reason the immunity above is printed unprompted.
+    if hut is None and huts:
+        out.append("")
+        out.append("REVEALED HUTS  (--at X,Y decides the rows above)")
+        for spot in huts:
+            note = ""
+            if own is not None:
+                note = ("  %d tiles away"
+                        % plot_distance(state, (own.get("x"), own.get("y")),
+                                        spot))
+            out.append("  (%d,%d)%s" % (spot[0], spot[1], note))
+
+    out.append("")
+    out.append("OMITS")
+    # What is genuinely unavailable shrinks as the caller supplies more, and
+    # the list has to shrink with it: an OMITS line naming something the view
+    # just decided is the same authoritative-looking wrongness this subcommand
+    # was built to remove, only inverted.
+    if hut is None:
+        out.append("  Whether a specific hut is inside the one-city radius"
+                   " (--at X,Y).")
+    if own is None:
+        out.append("  How damaged the popping unit is, which gates healing"
+                   " (--for-unit ID).")
+    # canAcquirePromotionAny is never fully decidable even with a unit:
+    # promotionsAvailable counts what banked XP funds, and zero does not mean
+    # "cannot promote" - a fresh unit promotes fine once this goody grants XP.
+    out.append("  Whether the unit can still promote, which gates"
+               " GOODY_EXPERIENCE.")
+    out.append("  Whether any goody tech is still researchable for you.")
+    out.append("  Multiplayer, which withholds free combat units at any turn.")
+    out.append("  Exactly where barbarians land - terrain around the hut can")
+    out.append("  leave them fewer plots than the counts above suggest.")
+    out.append("  " + MOD_WARNING)
+    return "\n".join(out)
+
+
 def view_handicap(rules, handicap_type, state):
     if handicap_type is None:
         handicap_type = state.get("game", {}).get("handicap")
@@ -3394,10 +3955,17 @@ def view_handicap(rules, handicap_type, state):
 
     out.append("")
     out.append("OMITS")
-    out.append("  Goody-hut weights, AI-only bonuses (iAI*), and the non-barbarian")
-    out.append("  handicap fields - production, growth, maintenance, war weariness.")
+    out.append("  AI-only bonuses (iAI*) and the non-barbarian handicap fields -")
+    out.append("  production, growth, maintenance, war weariness.")
     out.append("  Spawn counts are per-map-area rules, not schedules: this says what")
     out.append("  the rules are, not where or when anything will appear.")
+    # The cross-reference is the fix for a specific live failure: a trial read
+    # iBarbarianCreationTurnsElapsed off THIS block, concluded a goody hut was
+    # safe for 16 more turns, and lost the player's only unit to it. That field
+    # gates map spawns and nothing in the hut path, so the block above cannot
+    # answer a hut question and must say so rather than look like it can.
+    out.append("  Goody huts: the turn fields above DO NOT gate them - a hut can")
+    out.append("  produce hostiles on turn 1. Run `rules.py goody` for that table.")
     out.append("  " + MOD_WARNING)
     return "\n".join(out)
 
@@ -3413,7 +3981,8 @@ def build_parser():
     )
     parser.add_argument(
         "subject",
-        choices=("unit", "tech", "building", "promotion", "city", "handicap"),
+        choices=("unit", "tech", "building", "promotion", "city", "handicap",
+                 "goody"),
         help="what to look up",
     )
     # `state` is the only required positional and always comes last, so
@@ -3426,8 +3995,8 @@ def build_parser():
         "type_key", metavar="TYPE", nargs="?", default=None,
         help="e.g. UNIT_AXEMAN, TECH_MONARCHY, PROMOTION_COMBAT1, or a city "
              "name for `city`. Required for `unit`, `tech`, `building`, "
-             "`promotion` and `city`; `handicap` defaults to the state "
-             "file's own. `promotion` also accepts --for-unit ID instead.",
+             "`promotion` and `city`; `handicap` and `goody` default to the "
+             "state file's own. `promotion` also accepts --for-unit ID instead.",
     )
     parser.add_argument(
         "state",
@@ -3445,11 +4014,13 @@ def build_parser():
     )
     parser.add_argument(
         "--for-unit", type=int, default=None, metavar="ID",
-        help="`promotion` only, in place of TYPE: look up one of your units "
-             "by engine id (as `intel` prints it). Prints their combined "
-             "effect and each one's own detail - put this AFTER the state "
-             "file, since argparse cannot always resolve a value-taking "
-             "option sitting between TYPE and a required positional.",
+        help="one of your units, by engine id (as `intel` prints it). For "
+             "`promotion`, in place of TYPE: prints their combined effect and "
+             "each one's own detail. For `goody`, the unit popping the hut: "
+             "resolves its damage and hostile immunity from the state file "
+             "rather than from a type. Put this AFTER the state file, since "
+             "argparse cannot always resolve a value-taking option sitting "
+             "between TYPE and a required positional.",
     )
     parser.add_argument(
         "--eligible", action="store_true",
@@ -3457,20 +4028,73 @@ def build_parser():
              "take next, and why not for the rest. Off by default - most "
              "questions about a unit are answered by what it already has.",
     )
+    parser.add_argument(
+        "--popped-by", default=None, metavar="UNIT",
+        help="`goody` only: compute the table for this unit popping the hut, "
+             "e.g. UNIT_SCOUT. The Scout and the Explorer cannot draw a "
+             "hostile result at all, so the distribution genuinely differs "
+             "rather than merely being annotated. Put this AFTER the state "
+             "file, for the same argparse reason as --for-unit.",
+    )
+    parser.add_argument(
+        "--at", default=None, metavar="X,Y",
+        help="`goody` only: the tile of the hut being considered, as `intel` "
+             "and `render_map` print coordinates. This is the hut's own tile, "
+             "never the unit's - a unit standing on a hut has already popped "
+             "it. Decides the one-city hostile radius, which is otherwise "
+             "reported as a condition. Put this AFTER the state file.",
+    )
     parser.add_argument("--config", default=None, help=argparse.SUPPRESS)
     return parser
 
 
+def _parse_coordinate(raw):
+    """Parse an `X,Y` argument into a tuple, or raise a RulesError.
+
+    Its own function because the failure has to name the format: argparse's
+    own type= error prints the raw value and the callable's name, which tells
+    a caller who wrote `--at 62 28` nothing about the missing comma.
+    """
+    parts = raw.replace(" ", "").split(",")
+    if len(parts) != 2:
+        raise RulesError(
+            "--at takes a hut's coordinates as X,Y (e.g. --at 62,28), not %r"
+            % raw)
+    try:
+        return (int(parts[0]), int(parts[1]))
+    except ValueError:
+        raise RulesError(
+            "--at takes two whole numbers as X,Y (e.g. --at 62,28), not %r"
+            % raw)
+
+
 def main(argv=None):
-    args = build_parser().parse_args(argv)
+    # `--at 62 28` is the natural way to mistype `--at 62,28`, and argparse
+    # reports it as "unrecognized arguments: 28" - which names neither the flag
+    # nor the missing comma. Caught here because parse_args exits the process
+    # before any of our own validation runs.
+    parser = build_parser()
+    args, extra = parser.parse_known_args(argv)
+    if extra:
+        if args.at is not None and len(extra) == 1 and extra[0].lstrip("-").isdigit():
+            sys.stderr.write(
+                "--at takes X,Y as ONE argument with a comma and no space: "
+                "--at %s,%s\n" % (args.at, extra[0])
+            )
+            return 2
+        parser.error("unrecognized arguments: %s" % " ".join(extra))
 
     type_key = args.type_key
     state_path = args.state
 
-    if args.for_unit is not None and args.subject != "promotion":
-        sys.stderr.write("--for-unit only applies to `promotion`\n")
+    if args.for_unit is not None and args.subject not in ("promotion", "goody"):
+        sys.stderr.write("--for-unit only applies to `promotion` and `goody`\n")
         return 2
-    if args.for_unit is not None and type_key is not None:
+    # For `promotion` the id REPLACES the type; for `goody` the type is the
+    # handicap, which the id says nothing about, so the pair is legitimate
+    # there and only the unit-naming flags conflict.
+    if (args.for_unit is not None and type_key is not None
+            and args.subject == "promotion"):
         sys.stderr.write(
             "--for-unit already looks up a unit's promotions - it does not "
             "take a TYPE as well: %s\n" % type_key
@@ -3478,6 +4102,21 @@ def main(argv=None):
         return 2
     if args.eligible and args.for_unit is None:
         sys.stderr.write("--eligible only applies alongside --for-unit\n")
+        return 2
+    if args.popped_by is not None and args.subject != "goody":
+        sys.stderr.write("--popped-by only applies to `goody`\n")
+        return 2
+    if args.at is not None and args.subject != "goody":
+        sys.stderr.write("--at only applies to `goody`\n")
+        return 2
+    # Both name the popping unit, and --for-unit is strictly the better one.
+    # Silently letting one win would answer about a different unit than the
+    # caller named in the other.
+    if args.popped_by is not None and args.for_unit is not None:
+        sys.stderr.write(
+            "--popped-by and --for-unit both name the popping unit - pass "
+            "one. --for-unit ID is the stronger: it resolves the type too.\n"
+        )
         return 2
 
     # With TYPE optional, argparse fills right-to-left when it is omitted:
@@ -3543,6 +4182,10 @@ def main(argv=None):
             # No --show-known/--depth: `city` prints no tech tree, so neither
             # flag has anything to act on. Same shape as view_handicap.
             text = view_city(rules, type_key, state)
+        elif args.subject == "goody":
+            at = _parse_coordinate(args.at) if args.at is not None else None
+            text = view_goody(rules, type_key, state, args.popped_by,
+                              args.for_unit, at)
         else:
             text = view_handicap(rules, type_key, state)
     except RulesError as exc:
