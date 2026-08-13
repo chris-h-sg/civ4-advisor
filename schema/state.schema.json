@@ -244,6 +244,55 @@
                         "minimum": 1,
                         "default": 0,
                         "description": "How many promotion picks this unit's banked XP currently funds - what the UI's XP bar shows as multiple markers past the current level (e.g. a level-1 unit sitting on 6 XP has funded 2 more picks, since level 1->2 costs 2 and level 2->3 costs 5). This is an UPPER BOUND on picks available, not a guarantee: it answers whether the XP exists, but not whether an eligible promotion actually exists at each hypothetical level - that depends on this unit's specific promotion tree, unit-combat class and prerequisites (CyUnit.canAcquirePromotionAny), which this field does not evaluate. A unit can show promotionsAvailable > 0 while genuinely having nothing left it is eligible for. Computed from experience by walking the same level-cost formula CyUnit.experienceNeeded() uses (iLevel*iLevel + 1, then the player's getLevelExperienceModifier applied), because experienceNeeded() itself only answers for the unit's OWN current level - there is no engine call to ask about a hypothetical one. Formula sourced from CvGameUtils.py's getExperienceNeeded and cited in REFERENCES.md; this is the schema's second documented exception (after map.tiles' plotType) to 'export what the engine computes, never re-derive it' - justified the same way, because there is no engine getter to read instead. Omitted when zero, the common case."
+                    },
+                    "activity": {
+                        "type": "string",
+                        "enum": ["ACTIVITY_HOLD", "ACTIVITY_SLEEP", "ACTIVITY_HEAL", "ACTIVITY_SENTRY"],
+                        "description": "The unit's standing order (CySelectionGroup.getActivityType), as an ActivityTypes key. A SEPARATE MECHANISM from `mission` below, not covered by it: fortify, sleep, heal and sentry each set an activity and then delete their mission from the queue (CvSelectionGroup.cpp:1014-1056, every branch 'bDelete = true'), so by export time such a unit has an empty mission queue. Without this field a dug-in unit and an idle one are indistinguishable. Omitted at the default ACTIVITY_AWAKE - a unit under orders or simply idle. NOTE FORTIFY AND SLEEP BOTH REPORT ACTIVITY_SLEEP (CvSelectionGroup.cpp:1018-1029) - the engine has no separate fortify activity, so this field ALONE CANNOT tell a fortified unit from a sleeping one; use fortifyTurns for that. Activities out of scope for turns 0-50 (NO_ACTIVITY, and the air/naval/plunder ones) are omitted rather than given an invented name."
+                    },
+                    "fortifyTurns": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 5,
+                        "default": 0,
+                        "description": "Turns this unit has spent fortified (CyUnit.getFortifyTurns), 1-5. Omitted at 0, meaning not fortified - which is also how a SLEEPING unit is told apart from a fortified one, since both report activity ACTIVITY_SLEEP. This is a combat input, not just a flag: the engine's defence bonus is getFortifyTurns() * FORTIFY_MODIFIER_PER_TURN (CvUnit.cpp:8584), i.e. +5% per turn in this install's GlobalDefines.xml, capped by MAX_FORTIFY_TURNS at 5 turns / +25%. Exported as the raw turn count rather than the computed percentage, keeping the 'export the inputs, not the verdict' line - join it against the XML constants the same way as anything else. Read off the unit rather than its group, so it is still exported for a unit whose group is unavailable."
+                    },
+                    "mission": {
+                        "type": "object",
+                        "description": "What this unit has been ORDERED to do - the head of the engine's mission queue (CySelectionGroup.getMissionType/getMissionData1/getMissionData2 via CyUnit.getGroup). Omitted entirely when the unit has no orders queued, which is the common case for a unit awaiting instructions. This is the one activity fact no other field implies: a Worker halfway through a Farm and an idle Worker standing on the same tile are otherwise identical in this export, and a unit walking a multi-turn path looks the same as one standing still. HEAD ONLY, not the whole queue: the engine's queue can hold several shift-clicked missions and the game's own interface renders all but the first as '...' with no detail (CvMainInterface.py:2713-2737), so exporting the head matches both the display and the single-valued shape cities[].producing already uses. Which payload fields are present depends on the mission type, because the engine's iData1/iData2 pair means different things per mission - see each field below.",
+                        "properties": {
+                            "type": {
+                                "type": "string",
+                                "pattern": "^MISSION_[A-Z0-9_]+$",
+                                "description": "The mission's Type key from CIV4MissionInfos.xml (e.g. MISSION_BUILD, MISSION_MOVE_TO, MISSION_FORTIFY, MISSION_SENTRY, MISSION_HEAL, MISSION_SKIP). Always present. For most missions the type alone is the whole fact - fortify, sleep, heal and sentry carry no meaningful data payload."
+                            },
+                            "build": {
+                                "type": "string",
+                                "pattern": "^BUILD_[A-Z0-9_]+$",
+                                "description": "What is being built, as a BUILD_ Type key from CIV4BuildInfos.xml (e.g. BUILD_FARM, BUILD_ROAD, BUILD_MINE). Present only for build missions - those whose CIV4MissionInfos.xml entry has isBuild() true, in practice MISSION_BUILD. Joins against the XML for the improvement produced and its yields."
+                            },
+                            "turnsLeft": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "description": "Turns of work still remaining on a build mission, PROSPECTIVE: turnsLeft == 1 means the build completes during the turn this file is labelled for, unless the player cancels the order or re-tasks the unit first - the player holds the whole turn to intervene. turnsLeft == 3 means it ticks to 2 during this turn on the same condition. Present only alongside `build`. CORRECTED BY -1 FROM THE ENGINE'S RAW FIGURE for a worker that has already worked this turn, which is not a staleness fix of the units[].moves / units[].damage kind but an artifact of the engine's own arithmetic meeting our export timing. CvPlot::getBuildTurnsLeft (CvPlot.cpp:2441-2492) ends with an unconditional iTurnsLeft++, because the game's interface reads it MID-TURN while the player is deciding and before this turn's work has landed; to stay consistent it first subtracts a 'now' build rate, but only from workers that can still move ('if (pLoopUnit->canMove())', and workRate(false) repeats the same gate at CvUnit.cpp:7409-7415). Mid-turn the two halves cancel. At our export timing (onEndGameTurn) a worker that spent its turn building can no longer move, so the subtraction never happens and the trailing ++ double-counts the turn in progress. Confirmed in live play in both directions: a 5-turn Farm one turn in reported a raw 5 (true answer 4) and a build about to complete reported a raw 2 (true answer 1). The correction is gated on the engine's own canMove() discriminator rather than applied unconditionally, because a worker ordered to build but not yet acted this turn had its 'now' rate subtracted normally and is already correct. It is also skipped when the raw figure is 1, since getBuildTurnsLeft returns std::max(1, ...) and a floored 1 cannot be told from a genuine one - subtracting there would claim a finished build. See AdvisorStateWriter._buildTurnsLeftOvercount."
+                            },
+                            "destination": {
+                                "type": "object",
+                                "description": "The plot this unit has been ordered to move to. Present only for MISSION_MOVE_TO and MISSION_ROUTE_TO, whose iData1/iData2 pair is a destination plot (verified in the BTS SDK source, CvSelectionGroup.cpp:1577-1582 and :1431, not inferred from the mission's name). A unit with a destination is mid-path across multiple turns; without this field a multi-turn move is indistinguishable from a unit standing still. NOTE there is deliberately no turns-to-arrive companion to turnsLeft: the engine repaths every turn and caches no ETA, so no getMoveTurnsLeft exists to read, and deriving one would mean reimplementing pathfinding - out of scope. `y` here is inverted to match this schema's north-up convention exactly like every other exported coordinate.",
+                                "properties": {
+                                    "x": {"type": "integer", "minimum": 0},
+                                    "y": {"type": "integer", "minimum": 0}
+                                },
+                                "required": ["x", "y"],
+                                "additionalProperties": false
+                            },
+                            "targetUnitId": {
+                                "type": "integer",
+                                "description": "The unit this one has been ordered to move to (e.g. a Warrior escorting a Settler), joining against units[].id. Present only for MISSION_MOVE_TO_UNIT, AND only when the target is one of our own units. MISSION_MOVE_TO_UNIT's iData1/iData2 pair is a player ID and a unit ID, NOT a coordinate (CvSelectionGroup.cpp:1473) - which is why it gets its own field rather than being folded into `destination`, where it would export as a plausible but entirely wrong map position. When the target belongs to another player the field is omitted and only `type` is exported: foreignUnits[] deliberately carries no id at all, so there would be nothing to join against, and a stable rival unit ID is exactly the cross-turn memory the engine does not keep and this export does not invent."
+                            }
+                        },
+                        "required": ["type"],
+                        "additionalProperties": false
                     }
                 },
                 "required": ["id", "type", "x", "y", "moves"],

@@ -57,6 +57,15 @@ PROMOTIONS = ["PROMOTION_COMBAT1", "PROMOTION_COMBAT2", "PROMOTION_WOODSMAN"]
 BUILDINGS = ["BUILDING_PALACE", "BUILDING_BARRACKS"]
 PROJECTS = ["PROJECT_APOLLO_PROGRAM"]
 PROCESSES = ["PROCESS_WEALTH", "PROCESS_RESEARCH"]
+# Missions, in the three shapes the exporter has to tell apart: a build (isBuild,
+# data1 = BuildType), a destination pair (data1/data2 = plot x,y), and a
+# move-to-unit (data1/data2 = player ID, unit ID - NOT a coordinate). Index order
+# matters: MISSION_IS_BUILD below indexes into this.
+MISSIONS = ["MISSION_MOVE_TO", "MISSION_ROUTE_TO", "MISSION_MOVE_TO_UNIT",
+            "MISSION_BUILD", "MISSION_FORTIFY", "MISSION_SENTRY"]
+MISSION_IS_BUILD = [False, False, False, True, False, False]
+# Worker actions, indexed by the BuildType a build mission carries in data1.
+BUILDS = ["BUILD_FARM", "BUILD_ROAD", "BUILD_MINE"]
 GAME_OPTIONS = ["GAMEOPTION_NO_BARBARIANS", "GAMEOPTION_RAGING_BARBARIANS",
                 "GAMEOPTION_AGGRESSIVE_AI"]
 VICTORIES = ["VICTORY_CONQUEST", "VICTORY_DOMINATION", "VICTORY_CULTURAL"]
@@ -221,6 +230,21 @@ _forbid(BonusInfo, "CvBonusInfo has no reverse index in the Python API; sweep th
     getNumUnitsWithBonus getNumBuildingsWithBonus""")
 
 
+class MissionInfo(Info):
+    """A mission, plus the isBuild flag that decides how data1/data2 are read.
+
+    isBuild is the engine's own discriminator (CvMainInterface.py:2722 branches on
+    exactly this), so it is modelled rather than inferred from the type name.
+    """
+
+    def __init__(self, t, isBuild=False):
+        Info.__init__(self, t)
+        self._isBuild = isBuild
+
+    def isBuild(self):
+        return self._isBuild
+
+
 class BuildInfo(Info):
     """A unit or building info, carrying only its bonus prerequisites.
 
@@ -331,7 +355,7 @@ class Plot(object):
                  freshWater=False, river=False, feature=NO_FEATURE,
                  bonus=NO_BONUS, improvement=NO_IMPROVEMENT, route=NO_ROUTE,
                  owner=NO_PLAYER, yields=(1, 0, 0), none=False,
-                 isCity=False, stackedUnits=()):
+                 isCity=False, stackedUnits=(), buildTurnsLeft=3):
         self._x = x
         self._y = y
         self._terrain = terrain
@@ -355,6 +379,8 @@ class Plot(object):
         self._route = route
         self._owner = owner
         self._yields = yields
+        self._buildTurnsLeft = buildTurnsLeft
+        self.buildTurnsLeftArgs = []
         self._none = none
         self.revealedArgs = []
         self.visibleArgs = []
@@ -424,6 +450,10 @@ class Plot(object):
     def calculateYield(self, eYield, bDisplay):
         self.yieldArgs.append((eYield, bDisplay))
         return self._yields[eYield]
+
+    def getBuildTurnsLeft(self, build, iNowExtra, iThenExtra):
+        self.buildTurnsLeftArgs.append((build, iNowExtra, iThenExtra))
+        return self._buildTurnsLeft
 
     def getImprovementType(self):
         raise AssertionError("live improvement leaks through fog; use getRevealedImprovementType")
@@ -564,7 +594,8 @@ class Unit(object):
                  damage=0, dead=False, owner=PLAYER_ID, visualOwner=None,
                  visible=True, invisible=False, plot=None, experience=0,
                  promotions=(), level=1, hasMoved=False, hurt=None,
-                 alwaysHeal=False):
+                 alwaysHeal=False, missions=None, group=None, canMove=False,
+                 activity=0, fortifyTurns=0):
         self._id = unitId
         self._type = unitType
         self._x = x
@@ -592,6 +623,22 @@ class Unit(object):
         if self._hurt is None:
             self._hurt = damage > 0
         self._alwaysHeal = alwaysHeal
+        # An empty mission queue by default: most units at any moment are awaiting
+        # orders, and that is the case where `mission` must be omitted entirely.
+        # `group=` overrides the whole object, for the no-group/isNone edge cases.
+        self._group = group
+        if self._group is None:
+            self._group = SelectionGroup(missions or (), activity=activity)
+        # Turns spent fortified, 0-5. Together with the group's activity this is
+        # what separates a dug-in unit from a merely sleeping one: FORTIFY and
+        # SLEEP both set ACTIVITY_SLEEP, so only this count tells them apart.
+        self._fortifyTurns = fortifyTurns
+        # Defaults to False, which is the state at our export timing for a worker
+        # that spent its turn building - the case getBuildTurnsLeft overcounts by
+        # one. NOT the same predicate as hasMoved: a unit can have moves left
+        # without having moved, and it is canMove() the engine's own arithmetic
+        # branches on (CvPlot.cpp:2462).
+        self._canMove = canMove
         self.invisibleArgs = []
         self.hasPromotionArgs = []
 
@@ -612,6 +659,12 @@ class Unit(object):
 
     def hasMoved(self):
         return self._hasMoved
+
+    def canMove(self):
+        return self._canMove
+
+    def getFortifyTurns(self):
+        return self._fortifyTurns
 
     def isHurt(self):
         return self._hurt
@@ -659,6 +712,48 @@ class Unit(object):
 
     def isDead(self):
         return self._dead
+
+    def getGroup(self):
+        return self._group
+
+
+class SelectionGroup(object):
+    """A unit's selection group, carrying its mission queue.
+
+    `missions` is a list of (missionType, data1, data2) triples, head first. The
+    exporter must read only the head - a queue of several is exactly the case
+    where reading the wrong entry, or concatenating them, would go unnoticed.
+    """
+
+    def __init__(self, missions=(), none=False, activity=0):
+        self._missions = list(missions)
+        self._none = none
+        # ActivityTypes, defaulting to 0 = ACTIVITY_AWAKE, which is omitted.
+        self._activity = activity
+        self.missionTypeArgs = []
+        self.data1Args = []
+        self.data2Args = []
+
+    def isNone(self):
+        return self._none
+
+    def getActivityType(self):
+        return self._activity
+
+    def getLengthMissionQueue(self):
+        return len(self._missions)
+
+    def getMissionType(self, i):
+        self.missionTypeArgs.append(i)
+        return self._missions[i][0]
+
+    def getMissionData1(self, i):
+        self.data1Args.append(i)
+        return self._missions[i][1]
+
+    def getMissionData2(self, i):
+        self.data2Args.append(i)
+        return self._missions[i][2]
 
 
 class City(object):
@@ -1279,6 +1374,12 @@ class Gc(object):
         return BuildInfo(BUILDINGS[i],
                          prereqBonus=BUILDING_PREREQ_BONUS.get(i, NO_BONUS))
 
+    def getMissionInfo(self, i):
+        return MissionInfo(MISSIONS[i], isBuild=MISSION_IS_BUILD[i])
+
+    def getBuildInfo(self, i):
+        return Info(BUILDS[i])
+
     def getProjectInfo(self, i):
         return Info(PROJECTS[i])
 
@@ -1627,6 +1728,146 @@ class UnitTests(unittest.TestCase):
         # if it is touched. Seen live: a warrior that had moved reported 0.
         _, parsed = buildWith(units=[Unit(0)])
         self.assertNotIn("movesLeft", parsed["units"][0])
+
+    def test_unit_without_orders_omits_mission(self):
+        # Field-level omission at the default, same rule as damage: a unit
+        # awaiting orders is the common case, and an empty queue is not a mission.
+        _, parsed = buildWith(units=[Unit(0, missions=())])
+        self.assertNotIn("mission", parsed["units"][0])
+
+    def test_build_mission_exports_build_key_and_turns_left(self):
+        # MISSION_BUILD, data1 = BuildType. The raw plot figure is one too high for
+        # a worker that has already worked this turn (see the overcount tests
+        # below), so a raw 2 exports as 1.
+        plot = Plot(x=10, y=20, buildTurnsLeft=2)
+        _, parsed = buildWith(units=[Unit(0, missions=[(3, 0, 0)], plot=plot)])
+        self.assertEqual(parsed["units"][0]["mission"], {
+            "type": "MISSION_BUILD", "build": "BUILD_FARM", "turnsLeft": 1})
+        # Read with the engine's own (build, 0, 0) argument triple.
+        self.assertEqual(plot.buildTurnsLeftArgs, [(0, 0, 0)])
+
+    def test_build_turns_left_drops_the_double_counted_turn_in_progress(self):
+        # getBuildTurnsLeft ends with an unconditional iTurnsLeft++ because the UI
+        # reads it mid-turn, but only subtracts a "now" build rate from workers
+        # that canMove(). At our export timing a worker that spent its turn
+        # building cannot, so the turn in progress is counted twice. Confirmed
+        # live: a 5-turn Farm one turn in reported 5, true answer 4.
+        plot = Plot(x=10, y=20, buildTurnsLeft=5)
+        _, parsed = buildWith(units=[
+            Unit(0, missions=[(3, 0, 0)], plot=plot, canMove=False)])
+        self.assertEqual(parsed["units"][0]["mission"]["turnsLeft"], 4)
+
+    def test_build_turns_left_is_not_adjusted_for_a_worker_that_can_still_move(self):
+        # The other side of the engine's own discriminator: a worker ordered to
+        # build but not yet acted this turn DID have its "now" rate subtracted, so
+        # its figure is already right and subtracting would make it one too low.
+        plot = Plot(x=10, y=20, buildTurnsLeft=5)
+        _, parsed = buildWith(units=[
+            Unit(0, missions=[(3, 0, 0)], plot=plot, canMove=True)])
+        self.assertEqual(parsed["units"][0]["mission"]["turnsLeft"], 5)
+
+    def test_build_turns_left_of_one_is_never_reduced_to_zero(self):
+        # getBuildTurnsLeft returns std::max(1, ...), so a raw 1 has been through a
+        # floor and cannot be distinguished from a genuine 1. Subtracting there
+        # would claim a build had already finished.
+        plot = Plot(x=10, y=20, buildTurnsLeft=1)
+        _, parsed = buildWith(units=[
+            Unit(0, missions=[(3, 0, 0)], plot=plot, canMove=False)])
+        self.assertEqual(parsed["units"][0]["mission"]["turnsLeft"], 1)
+
+    def test_move_mission_exports_destination_with_y_inverted(self):
+        # data1/data2 are a destination plot for MISSION_MOVE_TO. The y must flip
+        # exactly like every other exported coordinate: a mirrored destination
+        # would read as a plausible tile the unit is NOT walking to.
+        _, parsed = buildWith(units=[Unit(0, missions=[(0, 7, 20)])])
+        self.assertEqual(parsed["units"][0]["mission"], {
+            "type": "MISSION_MOVE_TO", "destination": {"x": 7, "y": 31}})
+
+    def test_route_to_also_carries_a_destination(self):
+        _, parsed = buildWith(units=[Unit(0, missions=[(1, 3, 0)])])
+        self.assertEqual(parsed["units"][0]["mission"], {
+            "type": "MISSION_ROUTE_TO", "destination": {"x": 3, "y": 51}})
+
+    def test_move_to_unit_exports_target_id_never_a_destination(self):
+        # THE trap this whole shape exists to avoid: MISSION_MOVE_TO_UNIT's
+        # data1/data2 pair is (player ID, unit ID), not a coordinate. Exporting it
+        # as a destination would be silently, plausibly wrong.
+        _, parsed = buildWith(units=[Unit(0, missions=[(2, PLAYER_ID, 12)])])
+        mission = parsed["units"][0]["mission"]
+        self.assertEqual(mission, {
+            "type": "MISSION_MOVE_TO_UNIT", "targetUnitId": 12})
+        self.assertNotIn("destination", mission)
+
+    def test_move_to_a_rivals_unit_exports_type_only(self):
+        # foreignUnits[] carries no id at all, so a rival target has nothing to
+        # join against - and a stable rival unit ID is exactly the cross-turn
+        # memory the engine does not keep and this export must not invent.
+        rivalId = PLAYER_ID + 1
+        _, parsed = buildWith(units=[Unit(0, missions=[(2, rivalId, 12)])])
+        self.assertEqual(parsed["units"][0]["mission"],
+                         {"type": "MISSION_MOVE_TO_UNIT"})
+
+    def test_payload_free_missions_export_type_alone(self):
+        # Fortify, sentry, sleep and heal carry no meaningful data payload - the
+        # type IS the whole fact, and data1/data2 must not be invented into fields.
+        _, parsed = buildWith(units=[Unit(0, missions=[(4, 0, 0)])])
+        self.assertEqual(parsed["units"][0]["mission"], {"type": "MISSION_FORTIFY"})
+
+    def test_only_the_head_of_a_multi_mission_queue_is_exported(self):
+        # Shift-clicked orders queue up; the game's own UI shows the head with
+        # detail and the rest as "...". Exporting the head matches that, and this
+        # is the case where reading the wrong entry would go unnoticed.
+        group = SelectionGroup([(4, 0, 0), (3, 0, 0), (0, 5, 5)])
+        _, parsed = buildWith(units=[Unit(0, group=group)])
+        self.assertEqual(parsed["units"][0]["mission"], {"type": "MISSION_FORTIFY"})
+        # Index 0 and nothing else - never a walk over the whole queue.
+        self.assertEqual(group.missionTypeArgs, [0])
+
+    def test_an_awake_unfortified_unit_omits_activity_and_fortify_turns(self):
+        # Field omission at the default, same rule as damage: ACTIVITY_AWAKE with
+        # no fortification is the common case for a unit under orders or idle.
+        _, parsed = buildWith(units=[Unit(0, activity=0, fortifyTurns=0)])
+        unit = parsed["units"][0]
+        self.assertNotIn("activity", unit)
+        self.assertNotIn("fortifyTurns", unit)
+
+    def test_a_fortified_unit_is_distinguishable_from_a_sleeping_one(self):
+        # THE reason both fields exist. MISSION_FORTIFY and MISSION_SLEEP BOTH set
+        # ACTIVITY_SLEEP (CvSelectionGroup.cpp:1018-1029), so activity alone
+        # cannot tell them apart - only fortifyTurns > 0 does.
+        _, fortified = buildWith(units=[
+            Unit(0, activity=2, fortifyTurns=3)])
+        _, sleeping = buildWith(units=[Unit(0, activity=2, fortifyTurns=0)])
+        self.assertEqual(fortified["units"][0]["activity"], "ACTIVITY_SLEEP")
+        self.assertEqual(fortified["units"][0]["fortifyTurns"], 3)
+        self.assertEqual(sleeping["units"][0]["activity"], "ACTIVITY_SLEEP")
+        self.assertNotIn("fortifyTurns", sleeping["units"][0])
+
+    def test_heal_and_sentry_activities_are_named(self):
+        _, healing = buildWith(units=[Unit(0, activity=3)])
+        _, sentry = buildWith(units=[Unit(0, activity=4)])
+        self.assertEqual(healing["units"][0]["activity"], "ACTIVITY_HEAL")
+        self.assertEqual(sentry["units"][0]["activity"], "ACTIVITY_SENTRY")
+
+    def test_out_of_scope_activities_are_omitted_not_invented(self):
+        # NO_ACTIVITY (-1) and the air/naval/plunder activities are out of scope
+        # for turns 0-50; they fall through to omission rather than being given a
+        # made-up name.
+        _, parsed = buildWith(units=[Unit(0, activity=-1)])
+        self.assertNotIn("activity", parsed["units"][0])
+
+    def test_fortify_turns_survives_a_unit_with_no_group(self):
+        # fortifyTurns is read off the UNIT, not the group, so a null-backed group
+        # must not suppress it.
+        _, parsed = buildWith(units=[
+            Unit(0, group=SelectionGroup(none=True), fortifyTurns=5)])
+        unit = parsed["units"][0]
+        self.assertNotIn("activity", unit)
+        self.assertEqual(unit["fortifyTurns"], 5)
+
+    def test_a_unit_with_no_group_omits_mission(self):
+        _, parsed = buildWith(units=[Unit(0, group=SelectionGroup(none=True))])
+        self.assertNotIn("mission", parsed["units"][0])
 
     def test_fresh_unit_omits_level_experience_and_promotions(self):
         # Field-level omission at the documented default (level 1, 0 XP, no

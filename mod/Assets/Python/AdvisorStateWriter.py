@@ -252,6 +252,14 @@ def _invertY(state, mapHeight):
 
 	for unit in state['units']:
 		unit['y'] = flip(unit['y'])
+		# A mission destination is a plot coordinate and must flip with every other
+		# one. Missed here it would be the single worst place for the bug: a
+		# mirrored destination reads as a plausible tile the unit is NOT walking
+		# to, with the unit's own (correctly flipped) position beside it to make
+		# the pair look internally consistent.
+		mission = unit.get('mission')
+		if mission and 'destination' in mission:
+			mission['destination']['y'] = flip(mission['destination']['y'])
 	for city in state['cities']:
 		city['y'] = flip(city['y'])
 		for tile in city['workedTiles']:
@@ -738,7 +746,175 @@ def _buildUnit(ctx, unit):
 		row['promotions'] = promotions
 	if available:
 		row['promotionsAvailable'] = available
+	# What this unit has been ORDERED to do, which no other field implies - a Worker
+	# mid-Farm and an idle Worker standing on the same tile export identically
+	# without it. Omitted entirely when the queue is empty, the common case for a
+	# unit awaiting orders.
+	mission = _buildMission(ctx, unit)
+	if mission:
+		row['mission'] = mission
+	# The unit's standing ORDER, which is a separate mechanism from the mission
+	# queue above and not covered by it: fortify/sleep/heal/sentry set an activity
+	# and then DELETE their mission (CvSelectionGroup.cpp:1014-1056, every one
+	# `bDelete = true`), so by export time a fortified unit's queue is empty.
+	# Without these two fields a dug-in unit and an idle one are identical here.
+	_setActivity(ctx, row, unit)
 	return row
+
+
+## ActivityTypes (CvEnums.h:1334-1348) as exported keys. ACTIVITY_AWAKE is the
+## default and omitted; the numeric values are the enum's own ordering, which is
+## stable and marked "Exposed to Python" in the header. NO_ACTIVITY (-1) and the
+## air/naval/plunder activities are all out of scope for turns 0-50 and simply
+## fall through to omission rather than being invented into names.
+_ACTIVITY_TYPES = {
+	1: 'ACTIVITY_HOLD',
+	2: 'ACTIVITY_SLEEP',
+	3: 'ACTIVITY_HEAL',
+	4: 'ACTIVITY_SENTRY',
+}
+
+
+def _setActivity(ctx, row, unit):
+	'''Record the unit's standing order and accrued fortification.
+
+	Two fields rather than one, because the engine needs both to answer "is this
+	unit dug in": FORTIFY and SLEEP BOTH set ACTIVITY_SLEEP
+	(CvSelectionGroup.cpp:1018-1029), so activity alone cannot tell a fortified
+	unit from a sleeping one - only fortifyTurns > 0 separates them.
+
+	fortifyTurns is also a combat input in its own right, not just a flag: the
+	engine's defence bonus is getFortifyTurns() * FORTIFY_MODIFIER_PER_TURN
+	(CvUnit.cpp:8584), i.e. +5% per turn to a cap of 5 turns / +25% in this
+	install's GlobalDefines.xml. Exported as the raw turn count rather than the
+	percentage, keeping the "export inputs, not verdicts" line - the harness joins
+	it against the XML constant the same way it does everything else.
+
+	Both fields are omitted at their default (awake, unfortified), the same
+	field-omission rule the rest of units[] follows.'''
+	group = unit.getGroup()
+	if group is not None and not group.isNone():
+		activity = _ACTIVITY_TYPES.get(group.getActivityType())
+		if activity:
+			row['activity'] = activity
+	fortifyTurns = unit.getFortifyTurns()
+	if fortifyTurns:
+		row['fortifyTurns'] = fortifyTurns
+
+
+def _buildMission(ctx, unit):
+	'''The head of this unit's mission queue, or None when it has no orders.
+
+	HEAD ONLY, not the whole queue. The engine's queue can hold several missions
+	(shift-clicked orders), and the game's own interface renders the rest as "..."
+	with no detail - see CvMainInterface.py:2713-2737. Exporting the head matches
+	both that display and the shape cities already use for `producing`, and a
+	backlog is vanishingly rare in turns 0-50. Purely additive to widen later.
+
+	The payload fields depend on the mission, because iData1/iData2 mean different
+	things per mission type and there is no generic reading of them. Verified in
+	the BTS SDK source (CvSelectionGroup.cpp) rather than assumed - a uniform
+	"export data1 and data2" would be silently wrong for MISSION_MOVE_TO_UNIT,
+	whose pair is a player/unit ID, not a coordinate.'''
+	group = unit.getGroup()
+	if group is None or group.isNone():
+		return None
+	if group.getLengthMissionQueue() <= 0:
+		return None
+	missionType = group.getMissionType(0)
+	if missionType < 0:
+		return None
+	info = ctx.gc.getMissionInfo(missionType)
+	mission = {'type': info.getType()}
+	data1 = group.getMissionData1(0)
+	data2 = group.getMissionData2(0)
+	if info.isBuild():
+		_setBuildMission(ctx, mission, unit, data1)
+	elif info.getType() in _DESTINATION_MISSIONS:
+		# iData1/iData2 are the destination plot (CvSelectionGroup.cpp:1577-1582,
+		# groupPathTo(iData1, iData2, ...), and the done-check at :1431 is
+		# at(iData1, iData2)). Deliberately no turns-to-arrive companion to
+		# turnsLeft below: the engine repaths every turn and caches no ETA, so
+		# there is no getMoveTurnsLeft to read, and deriving one would mean
+		# reimplementing pathfinding - explicitly out of scope.
+		mission['destination'] = {'x': data1, 'y': data2}
+	elif info.getType() == 'MISSION_MOVE_TO_UNIT':
+		# NOT a coordinate: iData1 is a player ID and iData2 a unit ID
+		# (CvSelectionGroup.cpp:1473, GET_PLAYER(iData1).getUnit(iData2)).
+		# Exported only when the target is OUR unit, where it joins against
+		# units[].id. A rival's target is dropped rather than exported: foreign
+		# units carry no id at all (they are visibility-gated and forgotten by
+		# design), so there would be nothing to join it against, and a stable
+		# rival unit ID is precisely the memory the engine does not keep.
+		if data1 == ctx.playerId:
+			mission['targetUnitId'] = data2
+	return mission
+
+
+def _setBuildMission(ctx, mission, unit, buildType):
+	'''Fill in the BUILD_ key and turns remaining for a build mission.
+
+	turnsLeft starts as the game's own figure, read the way the interface reads it
+	(CvMainInterface.py:2725): plot().getBuildTurnsLeft(build, 0, 0). It then gets
+	a -1 correction for a worker that has already worked this turn - see
+	_buildTurnsLeftOvercount for the whole derivation, which is an export-timing
+	artifact of the engine's own arithmetic rather than a staleness bug of the
+	kind `moves` and `damage` had.
+
+	The corrected number is PROSPECTIVE: turnsLeft == 1 means "completes during
+	the turn this file is labelled for, unless the player cancels or re-orders the
+	unit first" - the player retains the whole turn to intervene.'''
+	mission['build'] = ctx.gc.getBuildInfo(buildType).getType()
+	plot = unit.plot()
+	if plot is None or plot.isNone():
+		return
+	turnsLeft = plot.getBuildTurnsLeft(buildType, 0, 0)
+	mission['turnsLeft'] = turnsLeft - _buildTurnsLeftOvercount(unit, turnsLeft)
+
+
+def _buildTurnsLeftOvercount(unit, turnsLeft):
+	'''1 when getBuildTurnsLeft has counted the turn in progress twice, else 0.
+
+	CvPlot::getBuildTurnsLeft (CvPlot.cpp:2441-2492, verified against the SDK
+	source and then confirmed in live play) ends with an unconditional
+	`iTurnsLeft++`, because the interface reads it MID-TURN, while the player is
+	deciding and before this turn's work has landed. To stay consistent it first
+	subtracts a "now" build rate from the work remaining - but only from workers
+	that can still move:
+
+		if (pLoopUnit->canMove()) iNowBuildRate += pLoopUnit->workRate(false);
+
+	(workRate(false) states the same gate a second time, returning 0 when
+	!canMove() - CvUnit.cpp:7409-7415.)
+
+	Mid-turn both halves fire and cancel out. At OUR export timing they do not: we
+	run from onEndGameTurn, by which point a worker that spent its turn building
+	can no longer move, so iNowBuildRate stays 0, this turn's work is never
+	subtracted, and the trailing ++ adds a turn on top of a figure that already
+	included it. The result is exactly one too high. Confirmed live in both
+	directions: a 5-turn Farm one turn in reported 5 (true answer 4), and a build
+	about to finish reported 2 (true answer 1).
+
+	Gated on canMove() rather than applied unconditionally, because it is the
+	engine's own discriminator and there is a real case on the other side of it: a
+	worker ORDERED to build but not yet acted this turn (just arrived, or idle
+	when the order was given) still can move, so its "now" rate IS subtracted and
+	its figure is already correct - subtracting there would make it one too low.
+
+	The turnsLeft > 1 guard is not defensive padding. getBuildTurnsLeft returns
+	std::max(1, iTurnsLeft), so a raw 1 has been through a floor and cannot be
+	told apart from a genuine 1; subtracting there could yield 0, claiming a build
+	already finished.'''
+	if turnsLeft > 1 and not unit.canMove():
+		return 1
+	return 0
+
+
+## Missions whose iData1/iData2 pair is a destination PLOT rather than anything
+## else. Kept as an explicit whitelist, not a prefix match on the type name:
+## MISSION_MOVE_TO_UNIT reads as a move by name while storing a player/unit ID
+## pair, so a name-based test would export an ID pair as a coordinate.
+_DESTINATION_MISSIONS = ('MISSION_MOVE_TO', 'MISSION_ROUTE_TO')
 
 
 def _promotionProgress(ctx, unit):

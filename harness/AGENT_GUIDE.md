@@ -12,7 +12,7 @@ Files are numbered for the turn **about to be played**, so a run starts at `turn
 
 `schema/state.schema.json` describes every field, with the caveats. Read it when a field's exact meaning matters.
 
-## The five things that will burn you
+## The six things that will burn you
 
 **1. Only the latest turn is now.** Every earlier file is honest evidence *about the past* — turn 14's file is exactly what the player saw on turn 14. Reason across turns freely; that's why they're kept. Just never restate a past observation as current: "a Roman Archer was at (69,31) on t26", not "Rome has an Archer at (69,31)".
 
@@ -33,6 +33,18 @@ Files are numbered for the turn **about to be played**, so a run starts at `turn
 | any cost, prereq, or turns-to-complete number | `rules.py <subcommand>` for it |
 
 `rules.py` resolves the right file tree, walks prerequisites transitively, and prices everything for this game's actual setup — use it first. When it doesn't cover something, grep the install directly and **say out loud that you had to** — that's the signal for what to add to `rules.py` next. The install holds ~18 copies of each file: take `<install>/Beyond the Sword/Assets/XML/...`, falling back to `<install>/Assets/XML/...` — an expansion only ships the files it *changes*, so resources (`CIV4BonusInfos.xml`) live only in the base tree. Install path is in `config.local.json`; don't `find`, it is slow and hits the mod copies. Use large context windows: `PrereqTech` sits ~90 lines into a unit block.
+
+**6. A unit's orders live in *two* fields, and neither implies the other.** `mission` is an active task (build, move); `activity` is a standing posture (fortify, sleep, heal, sentry). **A fortified unit has no `mission`** — the engine deletes it once the activity is set — so a missing `mission` never means "idle". Check both before saying a unit is doing nothing.
+
+| field | the trap |
+|---|---|
+| `mission` absent | **No orders queued — not "finished".** A Worker on a tile with no `mission` is awaiting instructions; don't read it as "the improvement is done" (a trial did, and was wrong). |
+| `mission.turnsLeft` | **Counts the turn you're advising on.** `1` = completes this turn unless the player intervenes, *not* "one more turn after this one". |
+| `mission.destination` | **Where, never when.** No arrival turn is exported and none can be derived — terrain costs vary and the engine repaths every turn. "Heading for (62,28)", not "arrives in 3 turns". |
+| `activity` | **`ACTIVITY_SLEEP` means fortified *or* sleeping** — there is no separate fortify activity. Only `fortifyTurns > 0` tells them apart. Absent = awake. |
+| `fortifyTurns` | A defence bonus, not just a flag: **+5%/turn, capped at +25%**. Absent = 0. |
+
+`mission.turnsLeft` is the **only** source for worker-build timing — `rules.py` prices city production and has no worker-action build times.
 
 **Before reporting something as a gap, confirm it's actually missing.** Check the file you're already holding open before concluding a tool doesn't cover it — a past trial reported the beakers-per-turn change as a possible schema gap when reading the previous turn file would have answered it outright.
 

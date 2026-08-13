@@ -1,6 +1,6 @@
 # Roadmap
 
-**The single roadmap for the project, covering `mod/`, `harness/` and `samples/`.** Anything unbuilt lives here; the other READMEs describe what exists and why it is shaped the way it is. When an item lands, delete it from here and write the reasoning into the relevant README — this file is a queue, not a history.
+**The single roadmap for the project, covering `mod/`, `harness/` and `samples/`.** Anything unbuilt lives here; the other READMEs describe what exists and why it is shaped the way it is. When an item lands, delete it from here and write the reasoning into the relevant README — this file is a queue, not a history, and git holds whatever the deletion drops.
 
 Two sources feed it: the design-review items recorded while building each tool, and findings from **agent trials** — a fresh agent given the guide and a sample (or a live game) and asked a real question, then asked where a tool would have helped. Trial counts below are that evidence, and they are the strongest thing on this page. An item asked for by 7 of 10 agents is better evidenced than anything anyone predicted in advance.
 
@@ -21,11 +21,11 @@ Every item carries a **`Target:`** line naming the files it will have to edit. T
 | `same-turn-round-trips` | Correctness — schema + mod (design first) | 1 trial, sharpest finding on the page | Recorded, **not scheduled** — no affordable design yet |
 | `goody-hut-outcomes` | Lane C — `rules.py` (**serial**) | Agent-asked, 1 trial — cost a unit and ~10 turns | Ready; **data verified, 25% on Monarch** |
 | `rules-improvement` | Lane C — `rules.py` (**serial**) | Agent-asked, 1 trial — the only flatly false number | Ready; data verified on disk |
-| `worker-mission-export` | Lane F — `mod/` | Agent-asked + player-observed, same gap | Ready; **API verified, not blocked** |
 | `trial-per-turn-checklist` | Lane E — trial docs | Player-observed ×2, plus the agent's own B5 lapse | Ready, costs nothing |
 | `bearings-by-default` | Cross-tool — all three | Agent's own #1, and player-observed independently | Ready; needs a scope call (prose only) |
 | `city-approach-report` | Lane A — `run_history.py` | 4 of 6 `rules.py` trials; 2 wrote their own BFS | Ready, unblocked |
 | `per-city-production-history` | Lane A — `run_history.py` | 4 of 6 trials read raw JSON for it | Ready, unblocked |
+| `garrison-posture` | Lane A — `run_history.py` | Follows increment ⑨; no tool reads the new fields | Ready, small |
 | `coastal-undetermined-wording` | Lane B — `render_map.py` | Player-observed; the output was already right | Ready; wording only, will break one test assertion |
 | `multi-site-comparison` | Lane B — `render_map.py` | Both trial rounds; one diffed 10 runs by eye | **Reframed** — the gap is the trigger, not the table |
 | `unit-animal-combat` | Lane C — `rules.py` (**serial**) | 1 trial, the one unconfident answer it gave | Ready, nearly free |
@@ -41,14 +41,13 @@ Every item carries a **`Target:`** line naming the files it will have to edit. T
 
 Grouped by `Target:`, so what can run concurrently is visible without reading the prose.
 
-- **Lane A — `harness/run_history.py`.** `city-approach-report`, `per-city-production-history`. Both land in the same module and both touch `intel`; **treat as serial with each other**, though the collision is far smaller than Lane C's.
+- **Lane A — `harness/run_history.py`.** `city-approach-report`, `per-city-production-history`, `garrison-posture`. All land in the same module and all touch `intel`; **treat as serial with each other**, though the collision is far smaller than Lane C's. The last two both extend the garrison block, so one agent should take them together.
 - **Lane B — `harness/render_map.py`.** `coastal-undetermined-wording`, `multi-site-comparison`. Both land in the site report, so treat as serial with each other; the wording fix is small enough to take first in the same sitting. Parallel-safe against every other lane.
 - **Lane C — `harness/rules.py` — SERIAL.** `goody-hut-outcomes`, `rules-improvement`, `unit-animal-combat`, `rules-lookup-gaps`. `rules.py` is a single ~3300-line module and every one of these adds lookups into it and its tests. **Do not assign these to two agents at once.** The natural move is one agent taking the whole lane, since `unit-animal-combat` is nearly free once the file is open and `goody-hut-outcomes` extends a subcommand that already parses the right file. This is now the fullest lane on the page.
 - **Lane D — `samples/`.** `varied-setup-samples`. Requires actual play; collides with nothing.
 - **Lane E — trial/advisor documentation.** `trial-protocol`, `trial-per-turn-checklist`. Touches only `trial-template/`; parallel-safe against every code lane. The two are close enough in subject that one agent should take both.
-- **Lane F — `mod/`.** `worker-mission-export`. Different language (Python 2.4), different tests, its own schema increment; collides with no harness lane.
 - **Cross-tool — `bearings-by-default`.** Touches `render_map.py`, `run_history.py` and `rules.py`, so it **collides with Lanes A, B and C at once**. Run it alone, or accept a rebase. It is the one item that cannot be parallelized with anything.
-- **Unlaned — `same-turn-round-trips`.** Would cross `mod/` and `schema/`, colliding only with Lane F, but it has no design yet.
+- **Unlaned — `same-turn-round-trips`.** Would cross `mod/` and `schema/`, colliding with no active lane, but it has no design yet.
 
 Every lane also touches `harness/README.md` or a sibling README on landing (this file's own rule: delete the item, write the reasoning into the README). **That is the real contention point** — the prose files, not the code. Expect to rebase documentation edits even when code lanes are disjoint.
 
@@ -66,22 +65,6 @@ This is a sharper case of the same root cause already named in `run_history.py`'
 
 ---
 
-## `mod/` — the export
-
-### `worker-mission-export` — a worker's current job is the one thing the export can't see
-
-**Lane F.** **Target:** `mod/Assets/Python/AdvisorStateWriter.py`, `schema/state.schema.json`, `mod/tests/test_state_writer.py`, `CLAUDE.md` (a schema-increment bullet), `REFERENCES.md` (the API verification). Hot-reloadable — the extraction lives in `AdvisorStateWriter`, not `CvCustomEventManager`.
-
-**Both reporters found this independently**, which no other item on the page can say: the Ramesses agent asked for it (A2), and the player listed "cannot see what worker is working on" without having read the agent's report.
-
-Cities carry `producing`/`production`/`productionNeeded`/`productionPerTurn`. Units carry nothing equivalent, so a Worker's current job is invisible. At t19 the agent stated the Worker "finished the Farm" purely because it appeared idle on the tile — it had not, and the agent only learned so when the player said. **Workers are the one actor whose current activity is unmodelled**, and it is the same class of fact the city block already handles well.
-
-**The API is verified present, not assumed** — this was expected to be blocked and is not. The game's own interface reads exactly this at `Beyond the Sword/Assets/Python/Screens/CvMainInterface.py:2715-2725`: `pSelectedGroup.getLengthMissionQueue()`, `getMissionType(i)`, `getMissionData1(i)` (the `BuildType` when `gc.getMissionInfo(...).isBuild()`), and `pSelectedGroup.plot().getBuildTurnsLeft(build, 0, 0)` for the remaining turns. All reachable from `CyUnit.getGroup()`.
-
-Two things to settle while building it. **The mission queue can hold more than one entry** — the game shows the first with turns and the rest as `...` — so decide whether to export the head or the queue. And **`getBuildTurnsLeft` may sidestep the staleness problem** the player reported ("worker actions complete after export"): that is the same `doTurn()` mutation-order issue already solved twice, for `moves` and `damage` (see `REFERENCES.md`), but here the engine may hand over the post-turn figure directly rather than needing a formula reconstructed the way `_healRate` was. Check before writing arithmetic.
-
----
-
 ## `harness/` — tools
 
 `harness/README.md`'s own "To build, in this order" list is folded in here. What survives of it is the item set below, not its ordering — see **Sequence rationale** at the bottom, which is the single place order is stated.
@@ -95,6 +78,14 @@ Two things to settle while building it. **The mission queue can hold more than o
 The specific failure: `intel` correctly refuses to judge whether an empty city is in danger and points at `--view military`; `military` renders a symbol grid and cannot answer it either, so the agent eyeballs a corridor off the grid — the derivation the guide says is unreliable.
 
 Wanted is presentation, not a verdict: per city, distance to the nearest unowned land tile, how many reachable unowned land tiles lie within N walk, and whether a land route exists at all. The walk-distance machinery already exists in `run_history.py` and `State.land_distance`. **Hold the line `intel` already holds** — report the approach, never call a city safe or unsafe.
+
+### `garrison-posture` — `intel` shows what is in a city, never whether it is dug in
+
+**Lane A.** **Target:** `harness/run_history.py` (`intel`'s garrison block), `harness/tests/test_run_history.py`, `harness/AGENT_GUIDE.md`, `harness/README.md`.
+
+Increment ⑨ exports `units[].activity` and `units[].fortifyTurns`; **no harness tool reads either** (checked, not assumed), so the guide has to send the agent to raw JSON. `intel`'s garrison listing already prints `[NON-COMBAT]` and promotion tags — posture belongs on the same line, since a Warrior at `fortifyTurns: 5` carries +25% defence over one that just walked in.
+
+Small, and it shares the garrison block with `per-city-production-history`. **Presentation only** — print the count, never a "this city is defended" verdict, per the line `intel` already holds.
 
 ### `per-city-production-history` — per-city production over the run
 
@@ -222,7 +213,7 @@ The last one has a cheap tool half worth pairing with the prose: a line in `run_
 
 **Lane E.** **Target:** `trial-template/CLAUDE.md` (the session brief the trial deploys), and probably `harness/README.md`'s trial section for the reasoning. *Uncertain* whether any of this belongs in `harness/AGENT_GUIDE.md`: the protocol is aimed at the **player**, not the agent, and the guide is the agent's file — so the honest answer is likely "no", but that is a call to make while writing it.
 
-**The meta-finding, and the one with no obvious owner.** The mod-side gaps in the (now-resolved) `doTurn()` mutation-order audit (see `REFERENCES.md`), `same-turn-round-trips`, and the now-built increment ⑦ all surfaced *only* because the player narrated something the agent could not see — "it's actually healed", "here's the 60 gold", "it got two promotions". In a run where the player did not narrate, those would have silently produced worse advice with nothing in the output able to catch it.
+**The meta-finding, and the one with no obvious owner.** The mod-side gaps in the (now-resolved) `doTurn()` mutation-order audit (see `REFERENCES.md`), `same-turn-round-trips`, the now-built increment ⑦, and increment ⑧'s one-too-high `turnsLeft` all surfaced *only* because the player narrated or checked something the agent could not see — "it's actually healed", "here's the 60 gold", "it got two promotions", "that number is wrong against the UI". In a run where the player did not, those would have silently produced worse advice with nothing in the output able to catch it. The `turnsLeft` case is the sharpest: the value was wrong, plausible, and agreed with by a passing test suite.
 
 That is the compass failure mode again: wrong-but-plausible, self-consistent, invisible from inside. Trials are currently the only detector for this class of problem, and they fire only when the player happens to mention the right thing.
 
@@ -272,8 +263,6 @@ Also worth recording: across two live trials (Cowork and Claude Code, 25 turns e
 **Lane E first — `trial-protocol` and `trial-per-turn-checklist`.** Both cost nothing, both pay off on the very next trial, and the checklist addresses more separate observations than any other item here. Doing them first also means the next trial generates better evidence for everything below.
 
 **Then Lane C, as one agent taking the whole lane.** `goody-hut-outcomes` leads it: it is the only queued item with a demonstrated unit loss behind it, the data is verified, and it extends a subcommand that already parses the right file. `rules-improvement` follows — the only gap that produced a flatly false number, and it absorbs the buildable-now question that `render_map --view worker` currently punts. Then `unit-animal-combat` (nearly free once the file is open) and `rules-lookup-gaps`. **These four are serial with each other by construction**; do not split them across agents.
-
-**Lane F — `worker-mission-export` — can run concurrently with all of the above** and is the only mod-side item queued. It is the one item both reporters found independently, and its API is verified rather than assumed, so it is unblocked in the strong sense.
 
 **`bearings-by-default` needs its own window.** It touches all three tools and therefore collides with Lanes A, B and C at once. It is the highest-frequency usability item on the page — a translation step removed from every turn — but it cannot be parallelized, so it wants a slot where nothing else is running. Settle the prose-only scope question before starting.
 
