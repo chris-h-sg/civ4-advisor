@@ -1771,7 +1771,8 @@ class WorkerRenderer(OwnEmpireRenderer):
     Deliberately stops short of saying whether you CAN build a given improvement:
     that needs the bonus -> build -> tech chain out of the game's XML, which is
     the rules-lookup tool's job and would make this tool depend on a Civ IV
-    install. This view shows you every candidate; you check the XML.
+    install. This view locates the candidate tiles; `rules.py improvement --at`
+    finishes the question for any one of them.
     """
 
     name = "worker"
@@ -1782,8 +1783,8 @@ class WorkerRenderer(OwnEmpireRenderer):
     cell_width = 4
     shows = ("own_cities", "own_units", "resource", "worked")
     omits = (
-        ("which improvement a resource wants, and the tech for it",
-         "CIV4BonusInfos.xml + CIV4BuildInfos.xml in the game's XML"),
+        ("which improvement a tile wants, what it would yield, and the tech "
+         "for it", "rules.py improvement --at X,Y"),
         ("per-tile yield numbers", "--view yields"),
         ("rival cities, territory, and the fog that hides rival units",
          "--view military"),

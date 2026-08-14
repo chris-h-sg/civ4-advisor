@@ -14,7 +14,7 @@ Hooks into the game's event system and writes a snapshot of player-visible game 
 
 ## Structure
 
-- `civ4-advisor.ini` — mod definition file, kept minimal (just `Name`/`Description`) so unset flags fall back to engine defaults. The engine rewrites this file with every flag spelled out whenever the mod is loaded in-game — expected and harmless. Restore it to the minimal two-line version before committing.
+- `civ4-advisor.ini` — mod definition file. Committed in the **expanded** form the engine writes, every flag spelled out at its default. Don't revert it to the minimal `Name`/`Description` version: the engine rewrites it on every load, so the revert only makes the file show as modified again. The one value that matters is `AllowPublicMaps = 1` — setting it to `0` blocks "Play Now"/"Custom Game" by leaving no map scripts available. See root `CLAUDE.md`.
 - `Assets/Python/EntryPoints/CvEventInterface.py` — copied from the base BTS install; only the event-manager import/instantiation at the top is changed, to point at our own `CvCustomEventManager` instead of the base `CvEventManager`.
 - `Assets/Python/CvCustomEventManager.py` — our actual logic. Subclasses the base game's `CvEventManager` (imported, not copied) and overrides only the methods we need, calling the superclass method first in each to preserve base behavior.
 - `Assets/Python/AdvisorStateWriter.py` — all state extraction, plus the hand-rolled JSON serializer and atomic file writer (no `json` module in Python 2.4). Everything schema-related lives here rather than in the event manager because this module is re-read from disk on every export, so edits take effect next turn without restarting the game (see "Editing while the game runs" below).

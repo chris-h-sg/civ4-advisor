@@ -2,15 +2,15 @@
 
 **The single roadmap for the project, covering `mod/`, `harness/` and `samples/`.** Anything unbuilt lives here; the other READMEs describe what exists and why it is shaped the way it is. When an item lands, delete it from here and write the reasoning into the relevant README — this file is a queue, not a history, and git holds whatever the deletion drops.
 
-Two sources feed it: the design-review items recorded while building each tool, and findings from **agent trials** — a fresh agent given the guide and a sample (or a live game) and asked a real question, then asked where a tool would have helped. Trial counts below are that evidence, and they are the strongest thing on this page. An item asked for by 7 of 10 agents is better evidenced than anything anyone predicted in advance.
+Two sources feed it: the design-review items recorded while building each tool, and findings from **agent trials** — a fresh agent given the guide and a sample (or a live game) and asked a real question, then asked where a tool would have helped. Trial counts below are that evidence, and they are the strongest thing on this page — better than anything predicted in advance.
 
 **Trial evidence comes in two kinds, and they are not equally reliable.** *Agent-asked* is what a trial reported when asked where a tool would have helped. *Player-observed* is what the human running the trial noticed the agent getting wrong — and the agent did not report, because it never noticed. The second kind is rarer and worth more: it is the only detector for the wrong-but-plausible class, which by construction never appears in an agent's own gap report. Items below name which kind they carry. See `trial-protocol`, and the **Findings** section for observations that are not build items at all.
 
 **Read the source before queueing a gap.** A trial reporting something missing is evidence that it was not *found*, which is not the same as it not existing — `coastal-undetermined-wording` was drafted as a missing feature before anyone checked, and the capability was already there and already correct. `AGENT_GUIDE.md` gives the advising agent this rule ("before reporting something as a gap, confirm it's actually missing"); it applies with more force here, where the output is a build item rather than a sentence.
 
-**Items are identified by slug, not by number.** Numbers were a fossil of insertion order: they implied a sequence they did not carry, and every landed item punched a hole in the series that a cross-reference could not survive. A slug says what an item *is*, stays the same when its neighbours are deleted, and reads in a sentence ("I'm taking `city-approach-report`"). Ordering is a separate concern and lives in **Sequence rationale** at the bottom.
+**Items are identified by slug, not by number** — a slug survives its neighbours being deleted, where a numbered series does not. Ordering is a separate concern and lives in **Sequence rationale** at the bottom.
 
-Every item carries a **`Target:`** line naming the files it will have to edit. That is what makes a collision visible before two agents pick up work: read the targets, not the prose. Items are grouped into **lanes** below by those targets, and one lane is explicitly serial.
+Every item carries a **`Target:`** line naming the files it will have to edit. That is what makes a collision visible before two agents pick up work: read the targets, not the prose. Items are grouped into **lanes** below by those targets, and each lane says whether its items can run concurrently.
 
 ---
 
@@ -19,14 +19,13 @@ Every item carries a **`Target:`** line naming the files it will have to edit. T
 | Slug | Lane / target | Evidence | Status |
 | --- | --- | --- | --- |
 | `same-turn-round-trips` | Correctness — schema + mod (design first) | 1 trial, sharpest finding on the page | Recorded, **not scheduled** — no affordable design yet |
-| `rules-improvement` | Lane C — `rules.py` (**serial**) | Agent-asked, 1 trial — the only flatly false number | Ready; data verified on disk |
 | `trial-per-turn-checklist` | Lane E — trial docs | Player-observed ×2, plus the agent's own B5 lapse | Ready, costs nothing |
 | `bearings-by-default` | Cross-tool — all three | Agent's own #1, and player-observed independently | Ready; needs a scope call (prose only) |
 | `city-approach-report` | Lane A — `run_history.py` | 4 of 6 `rules.py` trials; 2 wrote their own BFS | Ready, unblocked |
 | `garrison-posture` | Lane A — `run_history.py` | Follows increment ⑨; no tool reads the new fields | Ready, small |
 | `coastal-undetermined-wording` | Lane B — `render_map.py` | Player-observed; the output was already right | Ready; wording only, will break one test assertion |
 | `multi-site-comparison` | Lane B — `render_map.py` | Both trial rounds; one diffed 10 runs by eye | **Reframed** — the gap is the trigger, not the table |
-| `rules-lookup-gaps` | Lane C — `rules.py` (**serial**) | Seven sub-gaps, 1–2 of 4 trials each | Ready — **not one item**, see its note |
+| `rules-lookup-gaps` | Lane C — `rules.py` | Seven sub-gaps, 1–2 of 4 trials each | Ready — **not one item**, see its note |
 | `varied-setup-samples` | Lane D — `samples/` (capture) | Coverage holes identified, not trial-driven | Opportunistic — needs a game played |
 | `trial-protocol` | Lane E — trial docs | The meta-finding behind three landed items | Ready, costs nothing |
 
@@ -40,7 +39,7 @@ Grouped by `Target:`, so what can run concurrently is visible without reading th
 
 - **Lane A — `harness/run_history.py`.** `city-approach-report`, `garrison-posture`. Both land in the same module and both touch `intel`; **treat as serial with each other**, though the collision is far smaller than Lane C's. `garrison-posture` extends the same garrison block that `per-city-production-history` (landed) has already rewritten, so read the current block before starting.
 - **Lane B — `harness/render_map.py`.** `coastal-undetermined-wording`, `multi-site-comparison`. Both land in the site report, so treat as serial with each other; the wording fix is small enough to take first in the same sitting. Parallel-safe against every other lane.
-- **Lane C — `harness/rules.py` — SERIAL.** `rules-improvement`, `rules-lookup-gaps`. `rules.py` is a single ~3600-line module and both of these add lookups into it and its tests. **Do not assign these to two agents at once.** The natural move is one agent taking the whole lane. `goody-hut-outcomes` has landed out of this lane (see `harness/README.md`), which is why the module grew — expect the `handicap`/`goody` region to have moved.
+- **Lane C — `harness/rules.py`.** `rules-lookup-gaps` is the only item left in it. `rules.py` is a single ~5600-line module, so anything landing here is serial with it by construction — if a second Lane C item ever appears, do not assign the two concurrently.
 - **Lane D — `samples/`.** `varied-setup-samples`. Requires actual play; collides with nothing.
 - **Lane E — trial/advisor documentation.** `trial-protocol`, `trial-per-turn-checklist`. Touches only `trial-template/`; parallel-safe against every code lane. The two are close enough in subject that one agent should take both.
 - **Cross-tool — `bearings-by-default`.** Touches `render_map.py`, `run_history.py` and `rules.py`, so it **collides with Lanes A, B and C at once**. Run it alone, or accept a rebase. It is the one item that cannot be parallelized with anything.
@@ -64,8 +63,6 @@ This is a sharper case of the same root cause already named in `run_history.py`'
 
 ## `harness/` — tools
 
-`harness/README.md`'s own "To build, in this order" list is folded in here. What survives of it is the item set below, not its ordering — see **Sequence rationale** at the bottom, which is the single place order is stated.
-
 ### `city-approach-report` — the best-evidenced gap in the folder
 
 **Lane A.** **Target:** `harness/run_history.py`, `harness/tests/test_run_history.py`, `harness/AGENT_GUIDE.md`, `harness/README.md`. **Not** in scope against `harness/render_map.py`. An earlier draft said `State.land_distance` lives there and is imported here; that is wrong (checked while landing `per-city-production-history`) — `run_history.py` has its own `land_path`/`land_distances_from`, already used by `intel`. The walk machinery is local, so this does not collide with Lane B.
@@ -74,7 +71,7 @@ This is a sharper case of the same root cause already named in `run_history.py`'
 
 The specific failure: `intel` correctly refuses to judge whether an empty city is in danger and points at `--view military`; `military` renders a symbol grid and cannot answer it either, so the agent eyeballs a corridor off the grid — the derivation the guide says is unreliable.
 
-Wanted is presentation, not a verdict: per city, distance to the nearest unowned land tile, how many reachable unowned land tiles lie within N walk, and whether a land route exists at all. The walk-distance machinery already exists in `run_history.py` and `State.land_distance`. **Hold the line `intel` already holds** — report the approach, never call a city safe or unsafe.
+Wanted is presentation, not a verdict: per city, distance to the nearest unowned land tile, how many reachable unowned land tiles lie within N walk, and whether a land route exists at all. The walk machinery is already local to `run_history.py` (see the target line above). **Hold the line `intel` already holds** — report the approach, never call a city safe or unsafe.
 
 ### `garrison-posture` — `intel` shows what is in a city, never whether it is dug in
 
@@ -116,23 +113,11 @@ It outlived the cheap presentation fixes it was once grouped with (`--site-only`
 
 **Reframed by the Ramesses trial, and worth reading before building it.** The player observed that the agent *"does comparative analysis of city sites when asked, has been very thorough considering tiles and strategic value vs rivals, produces a clear table — but only when asked."* So the agent already produces a good multi-site comparison on request, by hand, and the thing that fails is that nobody asks. Building the table buys a tidier version of something that works and leaves the actual failure untouched; the trigger belongs in `trial-per-turn-checklist`. **That is an argument about sequencing, not a cancellation** — the tool still removes hand-derivation and the wrap-handling risk that comes with it — but this item should follow the checklist rather than precede it.
 
-### `rules-improvement` — no improvement-yield model
-
-**Lane C (serial).** **Target:** `harness/rules.py` (new subcommand), `harness/tests/test_rules.py`, `harness/AGENT_GUIDE.md` (rule 5's trigger table gains a row), `harness/README.md`. Reads `CIV4ImprovementInfos.xml` and `CIV4BuildInfos.xml`; the latter is also wanted by `rules-lookup-gaps`'s worker-build-times bullet, so **one of the two should build the file reader and the other use it**.
-
-**The only gap in the Ramesses trial that produced a flatly false number.** A Worker completed a Farm on a Corn tile; asked what it yielded, the agent had no call to make, extrapolated from memory, invented a Despotism yield penalty (a Civ3 mechanic that does not exist in Civ4) and reported 4 food. The answer was 5, and the player corrected it.
-
-`rules.py` covers `unit | tech | building | promotion | city | handicap` — nothing for improvements or builds. So `AGENT_GUIDE.md`'s rule 5 ("check the XML before stating a rule — don't recall one from memory") **had no landing place for this question**, and the fallback was exactly the memory-recall the rule forbids. That is the tooling's failure rather than the agent's.
-
-**The data is on disk and structured** (verified): `<YieldChanges>` for the base improvement, `<BonusTypeStructs>` for the per-resource bonus — Farm-on-Corn is **+2 food from the Corn struct**, which is precisely the term memory dropped — `<TechYieldChanges>` for later upgrades (Farm +1 food at Biology), and `bRequiresFlatlands`/`bHillsMakesValid` plus the terrain/feature structs for legality.
-
-With an `--on X,Y` argument against a state file this also answers **"can I build this here, right now"**, which is where it absorbs the trial's separate complaint about recommending a mine on a forested hill: legal only after the forest is chopped, which needs Bronze Working. The agent had already run `rules.py tech TECH_BRONZE_WORKING`, seen `remove FEATURE_FOREST`, and failed to join the two facts — and `render_map --view worker` explicitly punts that follow-up to the XML in its own OMITS block, stopping one field short of actionable after doing the hard part of locating the tiles.
-
 ### `rules-lookup-gaps` — smaller `rules.py` gaps
 
-**Lane C (serial).** **Target:** `harness/rules.py`, `harness/tests/test_rules.py`, `harness/AGENT_GUIDE.md`, `harness/README.md`. The worker-build-times sub-item reads `CIV4BuildInfos.xml` from the game install, which `rules.py` already opens (`BUILD_FILE`) — no new data source, and nothing in this repo. The turns-to-complete sub-item is **partly answered**: `per-city-production-history` (landed) put the ETA on `intel`, reimplementing the arithmetic locally rather than importing from `rules.py` to keep the lanes decoupled (reasoning in `harness/README.md`). What remains is the `rules.py city` side — an accepted duplication of one small formula, not worth coupling the modules to remove.
+**Lane C.** **Target:** `harness/rules.py`, `harness/tests/test_rules.py`, `harness/AGENT_GUIDE.md`, `harness/README.md`. The worker-build-times sub-item reads `CIV4BuildInfos.xml` from the game install, which `rules.py` already opens (`BUILD_FILE`) — no new data source, and nothing in this repo. The turns-to-complete sub-item is **partly answered**: `per-city-production-history` (landed) put the ETA on `intel`, reimplementing the arithmetic locally rather than importing from `rules.py` to keep the lanes decoupled (reasoning in `harness/README.md`). What remains is the `rules.py city` side — an accepted duplication of one small formula, not worth coupling the modules to remove.
 
-- **Worker action build times.** No build-time data for worker actions, so the live trial's road-versus-pasture-first answer was general BTS knowledge rather than tool-verified — flagged by the agent itself against the guide's own rule 5. **Cheaper than it sounds and not a mod change**: the data is in `CIV4BuildInfos.xml`, already on disk. A missing lookup in an existing tool, independent of everything else here. **Two traps found while auditing the unit block:** `<iTime>` appears more than once per `BuildInfo`, the extra occurrences belonging to nested `<FeatureStructs>` (clearing forest before the improvement), so a flat `findall` returns the wrong number; and turning `iTime` into turns needs the worker's `iWorkRate` (100 on `UNIT_WORKER`, and the Indian Fast Worker differs) scaled by the game speed's `iBuildPercent` — `rules.py` reads none of these today.
+- **Worker action build times.** No build-time data for worker actions, so the live trial's road-versus-pasture-first answer was general BTS knowledge rather than tool-verified — flagged by the agent itself against the guide's own rule 5. **Cheaper than it sounds and not a mod change**: the data is in `CIV4BuildInfos.xml`, already on disk. A missing lookup in an existing tool, independent of everything else here. **Two traps found while auditing the unit block:** `<iTime>` appears more than once per `BuildInfo`, the extra occurrences belonging to nested `<FeatureStructs>` (clearing forest before the improvement), so a flat `findall` returns the wrong number; and turning `iTime` into turns needs the worker's `iWorkRate` (100 on `UNIT_WORKER`, and the Indian Fast Worker differs) scaled by the game speed's `iBuildPercent` — `rules.py` reads none of these today. **Now has a waiting consumer:** `rules-improvement` (landed) shipped a tile view whose OMITS block promises exactly this number, and states the additive rule — a feature-clearing build costs the improvement’s `iTime` PLUS the nested clearing `iTime`, charged as one worker order (Mine 400 + forest 300 = 700), which is what the UI does when you click mine on a forested hill. The `improvement --at` view is where the figure belongs; parsing already reads the nested structs, so the trap above is handled and what remains is the `iWorkRate`×`iBuildPercent` arithmetic.
 - **The tech↔map resource join, positive direction — 2 of 4 trials.** `rules.py tech TECH_MASONRY` prints `resources usable BONUS_STONE` while the player already has stone inside their borders; one trial called it "a decisive fact printed nowhere". The `unit` view does this join; the `tech` view does not.
 - **Turns-to-complete on what a city is currently building — 2 of 4.** The arithmetic already exists in `rules.py building`; `cities[].producing` plus `production`/`productionNeeded` is joined to it nowhere.
 - **The research-switch rule — 1 of 4, but a rule-5 violation with no fallback.** Deciding whether to abandon a tech at 4/124 required knowing Civ IV banks partial research per tech; the agent asserted it from background knowledge and flagged that as exactly what the guide forbids. Nothing in any tool covers it.
@@ -231,11 +216,11 @@ Also worth recording: across two live trials (Cowork and Claude Code, 25 turns e
 
 **Lane E first — `trial-protocol` and `trial-per-turn-checklist`.** Both cost nothing, both pay off on the very next trial, and the checklist addresses more separate observations than any other item here. Doing them first also means the next trial generates better evidence for everything below.
 
-**Then Lane C, as one agent taking the whole lane.** `rules-improvement` leads it now that `goody-hut-outcomes` has landed — the only gap that produced a flatly false number, and it absorbs the buildable-now question that `render_map --view worker` currently punts. Then `rules-lookup-gaps`, whose seven sub-bullets are **not one item**: four are genuine lookups, two (the research- and production-switch rules) are prose assertions about engine behaviour with no XML field behind them, and the happiness/health view carries an unverified precondition. **All of these are serial with each other by construction**; do not split them across agents.
+**Then Lane C — `rules-lookup-gaps`**, whose seven sub-bullets are **not one item**: four are genuine lookups, two (the research- and production-switch rules) are prose assertions about engine behaviour with no XML field behind them, and the happiness/health view carries an unverified precondition. **All of these are serial with each other by construction**; do not split them across agents.
 
 **`bearings-by-default` needs its own window.** It touches all three tools and therefore collides with Lanes A, B and C at once. It is the highest-frequency usability item on the page — a translation step removed from every turn — but it cannot be parallelized, so it wants a slot where nothing else is running. Settle the prose-only scope question before starting.
 
-**`city-approach-report`** is now the one substantial harness build left — 4-of-6 trial evidence, unblocked, and cleanly Lane A (see its target line for the corrected `land_distance` claim, which removes the suspected Lane B collision).
+**`city-approach-report`** is now the one substantial harness build left — 4-of-6 trial evidence, unblocked, and cleanly Lane A.
 
 **`multi-site-comparison` now follows `trial-per-turn-checklist`** rather than standing alone — the trial evidence says the missing thing is the trigger, not the table. It still needs its interface decision.
 

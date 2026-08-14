@@ -278,8 +278,151 @@ def xml_root(tmp_path):
         """<BonusInfo><Type>BONUS_PLAIN</Type>
             <TechReveal>NONE</TechReveal>
             <TechCityTrade>TECH_ROOT_A</TechCityTrade></BonusInfo>""",
+        # Shaped like BONUS_CORN: a bare +1 food of its own, and separately a
+        # +2 on the farm improvement. The pair is the whole point - reporting
+        # one and not the other is the bug this file exists to pin down.
+        """<BonusInfo><Type>BONUS_TESTCORN</Type>
+            <TechReveal>NONE</TechReveal>
+            <TechCityTrade>TECH_ROOT_A</TechCityTrade>
+            <YieldChanges>
+              <iYieldChange>1</iYieldChange>
+              <iYieldChange>0</iYieldChange>
+              <iYieldChange>0</iYieldChange>
+            </YieldChanges></BonusInfo>""",
     ])
     (vanilla / "Terrain" / "CIV4BonusInfos.xml").write_text(bonuses, encoding="latin-1")
+
+    # Terrain, features and the per-yield table. Numbers match the real files
+    # for the cases under test: grass 2 food, hills -1 food/+1 hammer, the
+    # city floor at 2/1/1.
+    terrains = "<Civ4TerrainInfos><TerrainInfos>%s</TerrainInfos></Civ4TerrainInfos>" % "".join([
+        """<TerrainInfo><Type>TERRAIN_TESTGRASS</Type>
+             <Yields><iYield>2</iYield><iYield>0</iYield><iYield>0</iYield></Yields>
+             <RiverYieldChange>
+               <iYield>0</iYield><iYield>0</iYield><iYield>1</iYield>
+             </RiverYieldChange></TerrainInfo>""",
+        # No <Yields> at all, exactly as desert and snow are written.
+        """<TerrainInfo><Type>TERRAIN_TESTDESERT</Type></TerrainInfo>""",
+        # Carries commerce of its own, so a tile can reach Financial's
+        # 2-commerce threshold without needing two river-shaped terms.
+        """<TerrainInfo><Type>TERRAIN_TESTCOAST</Type>
+             <Yields><iYield>1</iYield><iYield>0</iYield><iYield>2</iYield></Yields>
+           </TerrainInfo>""",
+    ])
+    (root / "Terrain" / "CIV4TerrainInfos.xml").write_text(terrains, encoding="latin-1")
+
+    features = "<Civ4FeatureInfos><FeatureInfos>%s</FeatureInfos></Civ4FeatureInfos>" % "".join([
+        """<FeatureInfo><Type>FEATURE_FOREST</Type>
+             <YieldChanges>
+               <iYieldChange>0</iYieldChange>
+               <iYieldChange>1</iYieldChange>
+               <iYieldChange>0</iYieldChange>
+             </YieldChanges></FeatureInfo>""",
+        """<FeatureInfo><Type>FEATURE_TESTJUNGLE</Type>
+             <YieldChanges>
+               <iYieldChange>-1</iYieldChange>
+               <iYieldChange>0</iYieldChange>
+               <iYieldChange>0</iYieldChange>
+             </YieldChanges></FeatureInfo>""",
+    ])
+    (root / "Terrain" / "CIV4FeatureInfos.xml").write_text(features, encoding="latin-1")
+
+    yields = "<Civ4YieldInfos><YieldInfos>%s</YieldInfos></Civ4YieldInfos>" % "".join([
+        """<YieldInfo><Type>YIELD_FOOD</Type><iHillsChange>-1</iHillsChange>
+             <iPeakChange>0</iPeakChange><iLakeChange>1</iLakeChange>
+             <iMinCity>2</iMinCity></YieldInfo>""",
+        """<YieldInfo><Type>YIELD_PRODUCTION</Type><iHillsChange>1</iHillsChange>
+             <iPeakChange>0</iPeakChange><iLakeChange>0</iLakeChange>
+             <iMinCity>1</iMinCity></YieldInfo>""",
+        """<YieldInfo><Type>YIELD_COMMERCE</Type><iHillsChange>0</iHillsChange>
+             <iPeakChange>0</iPeakChange><iLakeChange>0</iLakeChange>
+             <iMinCity>1</iMinCity></YieldInfo>""",
+    ])
+    (root / "Terrain" / "CIV4YieldInfos.xml").write_text(yields, encoding="latin-1")
+
+    # Shaped like the real IMPROVEMENT_FARM: no flat yield of its own, the
+    # +1 irrigated, a bonus struct that BOTH adds yield and makes the tile
+    # valid, and a late tech yield. Every one of those four is a term that
+    # was dropped by some intermediate version of the parser.
+    improvements = "<Civ4ImprovementInfos><ImprovementInfos>%s</ImprovementInfos></Civ4ImprovementInfos>" % "".join([
+        """<ImprovementInfo>
+             <Type>IMPROVEMENT_TESTFARM</Type>
+             <PrereqNatureYields>
+               <iYield>1</iYield><iYield>0</iYield><iYield>0</iYield>
+             </PrereqNatureYields>
+             <IrrigatedYieldChange>
+               <iYield>1</iYield><iYield>0</iYield><iYield>0</iYield>
+             </IrrigatedYieldChange>
+             <bRequiresFlatlands>1</bRequiresFlatlands>
+             <bFreshWaterMakesValid>1</bFreshWaterMakesValid>
+             <bRequiresIrrigation>1</bRequiresIrrigation>
+             <TerrainMakesValids>
+               <TerrainMakesValid>
+                 <TerrainType>TERRAIN_TESTGRASS</TerrainType>
+                 <bMakesValid>1</bMakesValid>
+               </TerrainMakesValid>
+             </TerrainMakesValids>
+             <BonusTypeStructs>
+               <BonusTypeStruct>
+                 <BonusType>BONUS_TESTCORN</BonusType>
+                 <bBonusMakesValid>1</bBonusMakesValid>
+                 <!-- Paired with bBonusMakesValid on every struct in both
+                      real trees (checked); bBonusTrade is what actually
+                      connects the resource to the trade network. -->
+                 <bBonusTrade>1</bBonusTrade>
+                 <YieldChanges>
+                   <iYieldChange>2</iYieldChange>
+                   <iYieldChange>0</iYieldChange>
+                   <iYieldChange>0</iYieldChange>
+                 </YieldChanges>
+               </BonusTypeStruct>
+             </BonusTypeStructs>
+             <TechYieldChanges>
+               <TechYieldChange>
+                 <PrereqTech>TECH_SIMPLE</PrereqTech>
+                 <TechYields>
+                   <iYield>1</iYield><iYield>0</iYield><iYield>0</iYield>
+                 </TechYields>
+               </TechYieldChange>
+             </TechYieldChanges>
+           </ImprovementInfo>""",
+        """<ImprovementInfo>
+             <Type>IMPROVEMENT_TESTMINE</Type>
+             <YieldChanges>
+               <iYieldChange>0</iYieldChange>
+               <iYieldChange>2</iYieldChange>
+               <iYieldChange>0</iYieldChange>
+             </YieldChanges>
+             <bHillsMakesValid>1</bHillsMakesValid>
+           </ImprovementInfo>""",
+    ])
+    (root / "Terrain" / "CIV4ImprovementInfos.xml").write_text(
+        improvements, encoding="latin-1")
+
+    # Financial, as the only trait with a yield effect, plus a leader carrying
+    # it. The state file exports a leader and no traits, so this join is the
+    # only route to "is this player FIN".
+    (vanilla / "Civilizations").mkdir(parents=True, exist_ok=True)
+    traits = "<Civ4TraitInfos><TraitInfos>%s</TraitInfos></Civ4TraitInfos>" % """
+        <TraitInfo><Type>TRAIT_TESTFIN</Type>
+          <ExtraYieldThresholds>
+            <iExtraYieldThreshold>0</iExtraYieldThreshold>
+            <iExtraYieldThreshold>0</iExtraYieldThreshold>
+            <iExtraYieldThreshold>2</iExtraYieldThreshold>
+          </ExtraYieldThresholds></TraitInfo>"""
+    (vanilla / "Civilizations" / "CIV4TraitInfos.xml").write_text(
+        traits, encoding="latin-1")
+
+    (root / "Civilizations").mkdir(parents=True, exist_ok=True)
+    leaders = "<Civ4LeaderHeadInfos><LeaderHeadInfos>%s</LeaderHeadInfos></Civ4LeaderHeadInfos>" % "".join([
+        """<LeaderHeadInfo><Type>LEADER_TESTFIN</Type>
+             <Traits><Trait><TraitType>TRAIT_TESTFIN</TraitType></Trait></Traits>
+           </LeaderHeadInfo>""",
+        """<LeaderHeadInfo><Type>LEADER_TESTPLAIN</Type><Traits/>
+           </LeaderHeadInfo>""",
+    ])
+    (root / "Civilizations" / "CIV4LeaderHeadInfos.xml").write_text(
+        leaders, encoding="latin-1")
 
     # A file present in BOTH trees, to prove BTS wins.
     for tree, marker in ((root, "BTS"), (vanilla, "VANILLA")):
@@ -291,7 +434,8 @@ def xml_root(tmp_path):
             encoding="latin-1",
         )
 
-    builds = "<Civ4BuildInfos><BuildInfos>%s</BuildInfos></Civ4BuildInfos>" % """
+    builds = "<Civ4BuildInfos><BuildInfos>%s</BuildInfos></Civ4BuildInfos>" % "".join([
+        """
         <BuildInfo>
           <Type>BUILD_TESTMINE</Type>
           <PrereqTech>TECH_ROOT_A</PrereqTech>
@@ -304,7 +448,17 @@ def xml_root(tmp_path):
               <bRemove>1</bRemove>
             </FeatureStruct>
           </FeatureStructs>
-        </BuildInfo>"""
+        </BuildInfo>""",
+        # The improvement's tech lives HERE, not on the ImprovementInfo -
+        # every stock ImprovementInfo has an empty <PrereqTech>.
+        """
+        <BuildInfo>
+          <Type>BUILD_TESTFARM</Type>
+          <PrereqTech>TECH_ROOT_A</PrereqTech>
+          <ImprovementType>IMPROVEMENT_TESTFARM</ImprovementType>
+          <FeatureStructs/>
+        </BuildInfo>""",
+    ])
     (root / "Units" / "CIV4BuildInfos.xml").write_text(builds, encoding="latin-1")
 
     buildings = "<Civ4BuildingInfos><BuildingInfos>%s</BuildingInfos></Civ4BuildingInfos>" % "".join([
@@ -708,7 +862,8 @@ def make_state(tmp_path, known=(), handicap="HANDICAP_HARD",
                world="WORLDSIZE_STANDARD", speed="GAMESPEED_NORMAL", turn=34,
                rate=13, tiles=(), research=None, cities=None, wonders=None,
                civilization=None, units=None, options=(),
-               map_width=40, map_height=20, wrap_x=True):
+               map_width=40, map_height=20, wrap_x=True,
+               leader="LEADER_TEST", contacts=None, player_id=0):
     # Map dimensions default to a wrapping cylinder, matching the real setup -
     # `goody`'s distance check folds x around the map, and a non-wrapping
     # fixture would never exercise that path.
@@ -718,11 +873,14 @@ def make_state(tmp_path, known=(), handicap="HANDICAP_HARD",
                  "gameSpeed": speed, "options": list(options),
                  "mapWidth": map_width, "mapHeight": map_height,
                  "wrapX": wrap_x, "wrapY": False},
-        "player": {"leader": "LEADER_TEST", "knownTechs": list(known),
+        "player": {"leader": leader, "knownTechs": list(known),
+                   "id": player_id,
                    "beakersPerTurn": rate,
                    "research": research or {}},
         "map": {"tiles": list(tiles)},
     }
+    if contacts is not None:
+        state["contacts"] = list(contacts)
     if civilization:
         state["player"]["civilization"] = civilization
     if cities is not None:
@@ -3669,3 +3827,630 @@ def test_nothing_is_available_without_its_tech_on_any_sample_turn(sample):
                 checked += 1
 
     assert checked, "no available rows were checked in %s" % sample
+
+
+# ---------------------------------------------------------------------------
+# Improvements - the yield model
+#
+# The headline case is grassland Corn, which the Ramesses trial got wrong: the
+# agent had no lookup, extrapolated from memory, invented a Despotism yield
+# penalty (a Civ3 mechanic absent from Civ4) and reported 4 food. The answer
+# is 5. All three of the walkthrough's numbers are asserted here because they
+# decompose differently and an implementation can get one right by luck.
+# ---------------------------------------------------------------------------
+
+
+def _grass_corn(**extra):
+    tile = {"x": 5, "y": 5, "terrain": "TERRAIN_TESTGRASS",
+            "bonus": "BONUS_TESTCORN"}
+    tile.update(extra)
+    return tile
+
+
+def test_grass_corn_unimproved_is_three_food(xml_root, tmp_path):
+    """2 from grassland, +1 from the resource itself."""
+    _path, state = make_state(tmp_path, tiles=[_grass_corn()])
+    r = build_rules(xml_root, state)
+    assert rules.nature_yield(r, _grass_corn(), state=state) == [3, 0, 0]
+
+
+def test_grass_corn_farmed_without_fresh_water_is_five_food(xml_root, tmp_path):
+    """THE regression. 2 grass + 1 corn + 2 farm-on-corn = 5, not 4.
+
+    The dropped term is the improvement's per-resource BonusTypeStruct, which
+    is the one an agent reasoning from memory does not know is separate from
+    the resource's own yield.
+    """
+    tile = _grass_corn()
+    _path, state = make_state(tmp_path, tiles=[tile])
+    r = build_rules(xml_root, state)
+    total, terms = rules.improvement_yield(
+        r, tile, "IMPROVEMENT_TESTFARM", set(), (), state)
+    assert total == [5, 0, 0]
+    # The decomposition must actually show all three terms - a total that is
+    # right by cancelling errors would still mislead the reader.
+    labels = [name for name, _values in terms]
+    assert "TERRAIN_TESTGRASS" in labels
+    assert "BONUS_TESTCORN" in labels
+    assert any("on BONUS_TESTCORN" in name for name in labels)
+
+
+def test_grass_corn_farmed_with_fresh_water_is_six_food(xml_root, tmp_path):
+    """The +1 is IrrigatedYieldChange - the farm has no flat yield at all."""
+    tile = _grass_corn(freshWater=True)
+    _path, state = make_state(tmp_path, tiles=[tile])
+    r = build_rules(xml_root, state)
+    total, _terms = rules.improvement_yield(
+        r, tile, "IMPROVEMENT_TESTFARM", set(), (), state)
+    assert total == [6, 0, 0]
+
+
+def test_the_farm_has_no_flat_yield_of_its_own(xml_root, tmp_path):
+    """Guards the nested-container bug directly.
+
+    <YieldChanges> appears inside every BonusTypeStruct as well as at the top
+    level of an ImprovementInfo. A non-anchored search matches the Corn
+    struct's +2 first and reports it as the farm's own flat yield, which
+    double-counts to 6 food on a dry Corn tile and 4 on bare grassland.
+    """
+    _path, state = make_state(tmp_path)
+    r = build_rules(xml_root, state)
+    assert not r.improvements["IMPROVEMENT_TESTFARM"]["yields"]
+    assert r.improvements["IMPROVEMENT_TESTFARM"]["irrigated"] == [1, 0, 0]
+
+
+def test_the_improvement_tech_comes_from_the_build_not_the_improvement(
+        xml_root, tmp_path):
+    """Every stock ImprovementInfo has an empty <PrereqTech>.
+
+    Reading it returns None, which renders as "no tech needed" and is wrong
+    for almost every improvement in the game. A raw scan of the block is
+    worse still: it reaches into <TechYieldChanges> and returns the LATE tech
+    (Biology for a Farm) as though it were the unlock.
+    """
+    _path, state = make_state(tmp_path)
+    r = build_rules(xml_root, state)
+    assert r.improvements["IMPROVEMENT_TESTFARM"]["tech"] is None
+    build_key, tech = rules.build_for(r, "IMPROVEMENT_TESTFARM")
+    assert build_key == "BUILD_TESTFARM"
+    assert tech == "TECH_ROOT_A"
+
+
+def test_a_resource_bypasses_the_terrain_restrictions(xml_root, tmp_path):
+    """bBonusMakesValid is an early return ABOVE every other gate.
+
+    The farm requires flatland and irrigation. Corn makes it valid, so a
+    corn tile on hills with no fresh water is still legal - and getting this
+    wrong is not academic, since resource tiles are exactly the ones worth
+    asking about.
+    """
+    tile = _grass_corn(plotType="PLOT_HILLS")
+    _path, state = make_state(tmp_path, tiles=[tile])
+    r = build_rules(xml_root, state)
+    assert rules.can_have_improvement(
+        r, tile, "IMPROVEMENT_TESTFARM", set()) is None
+
+
+def test_a_dry_tile_without_a_resource_fails_the_irrigation_gate(
+        xml_root, tmp_path):
+    tile = {"x": 5, "y": 5, "terrain": "TERRAIN_TESTGRASS"}
+    _path, state = make_state(tmp_path, tiles=[tile])
+    r = build_rules(xml_root, state)
+    why = rules.can_have_improvement(r, tile, "IMPROVEMENT_TESTFARM", set())
+    assert why and "irrigation" in why
+
+
+def test_the_prereq_nature_yield_gate_stops_a_farm_on_desert(xml_root, tmp_path):
+    """PrereqNatureYields is tested against the BARE tile, not the improved one.
+
+    Desert makes 0 food, the farm needs 1, so fresh water does not rescue it -
+    the irrigated +1 is applied after this gate, not before.
+    """
+    tile = {"x": 5, "y": 5, "terrain": "TERRAIN_TESTDESERT", "freshWater": True}
+    _path, state = make_state(tmp_path, tiles=[tile])
+    r = build_rules(xml_root, state)
+    why = rules.can_have_improvement(r, tile, "IMPROVEMENT_TESTFARM", set())
+    assert why and "bare tile" in why
+
+
+def test_a_forest_does_not_block_a_mine_but_does_gate_it_on_a_tech(
+        xml_root, tmp_path):
+    """The trial's second wrong answer, and it is a REQUIREMENT not a refusal.
+
+    canHaveImprovement never rejects for a feature; the mine is legal on a
+    forested hill. What the forest costs is the per-feature tech inside
+    BUILD_TESTMINE that clears it. The agent had seen both facts separately
+    and joined neither.
+    """
+    tile = {"x": 5, "y": 5, "terrain": "TERRAIN_TESTGRASS",
+            "plotType": "PLOT_HILLS", "feature": "FEATURE_FOREST"}
+    _path, state = make_state(tmp_path, tiles=[tile])
+    r = build_rules(xml_root, state)
+    assert rules.can_have_improvement(
+        r, tile, "IMPROVEMENT_TESTMINE", set()) is None
+    build_key, tech, feature = rules.clearing_requirement(
+        r, tile, "IMPROVEMENT_TESTMINE")
+    assert (build_key, tech, feature) == (
+        "BUILD_TESTMINE", "TECH_SIMPLE", "FEATURE_FOREST")
+
+
+def test_a_cleared_feature_does_not_contribute_its_yield(xml_root, tmp_path):
+    """The forest's +1 hammer is gone once the mine stands on the tile."""
+    tile = {"x": 5, "y": 5, "terrain": "TERRAIN_TESTGRASS",
+            "plotType": "PLOT_HILLS", "feature": "FEATURE_FOREST"}
+    _path, state = make_state(tmp_path, tiles=[tile])
+    r = build_rules(xml_root, state)
+    total, terms = rules.improvement_yield(
+        r, tile, "IMPROVEMENT_TESTMINE", set(), (), state)
+    assert "FEATURE_FOREST" not in [name for name, _v in terms]
+    # grass 2 food, hills -1 food +1 hammer, mine +2 hammers
+    assert total == [1, 3, 0]
+
+
+def test_a_forest_suppresses_the_river_commerce_and_chopping_restores_it(
+        xml_root, tmp_path):
+    """Forest and jungle carry NO RiverYieldChange, and that is not a no-op.
+
+    `calculateNatureYield` takes the river change from the FEATURE when one
+    is present and from the terrain otherwise - they shadow rather than
+    stack. Forest has none, so a forested riverside tile gets zero river
+    commerce, and any build that clears the forest hands it back.
+
+    Confirmed in the live sample before being asserted here: the baseline's
+    forested riverside grassland exports `yields: [2,1,0]` - a river tile
+    with no commerce at all.
+
+    Worth pinning because the restored commerce arrives from a term the
+    improvement itself does not produce. A Farm makes no commerce, yet
+    farming this tile is +1 commerce; anyone reading the improvement's own
+    yields to sanity-check that number would conclude the tool was wrong.
+    """
+    wooded = {"x": 5, "y": 5, "terrain": "TERRAIN_TESTGRASS", "river": True,
+              "feature": "FEATURE_FOREST"}
+    bare = {"x": 6, "y": 6, "terrain": "TERRAIN_TESTGRASS", "river": True}
+    _path, state = make_state(tmp_path, tiles=[wooded, bare])
+    r = build_rules(xml_root, state)
+
+    # The terrain's +1 commerce is shadowed away by the forest...
+    assert rules.nature_yield(r, wooded, state=state) == [2, 1, 0]
+    # ...and present on the identical tile without one.
+    assert rules.nature_yield(r, bare, state=state) == [2, 0, 1]
+
+    # A build that clears the forest restores it. The mine contributes only
+    # hammers, so the commerce here can ONLY have come from the river.
+    total, terms = rules.improvement_yield(
+        r, wooded, "IMPROVEMENT_TESTMINE", set(), (), state)
+    assert total[2] == 1
+    assert ("river", [0, 0, 1]) in terms
+
+
+def test_a_late_tech_yield_only_counts_once_known(xml_root, tmp_path):
+    tile = _grass_corn(freshWater=True)
+    _path, state = make_state(tmp_path, tiles=[tile])
+    r = build_rules(xml_root, state)
+    without, _ = rules.improvement_yield(
+        r, tile, "IMPROVEMENT_TESTFARM", set(), (), state)
+    with_tech, _ = rules.improvement_yield(
+        r, tile, "IMPROVEMENT_TESTFARM", {"TECH_SIMPLE"}, (), state)
+    assert with_tech[0] == without[0] + 1
+
+
+def test_financial_applies_only_above_its_threshold(xml_root, tmp_path):
+    """FIN is +1 commerce on a tile ALREADY making 2, read from the XML.
+
+    Asserted in both directions - a blanket +1 would pass a one-sided test.
+    The river tile alone makes 1 commerce, which is below the threshold.
+    """
+    river = {"x": 5, "y": 5, "terrain": "TERRAIN_TESTGRASS", "river": True}
+    _path, state = make_state(tmp_path, tiles=[river])
+    r = build_rules(xml_root, state)
+    fin = ("TRAIT_TESTFIN",)
+    below, _ = rules.improvement_yield(
+        r, river, "IMPROVEMENT_TESTMINE", set(), fin, state)
+    assert below[2] == 1, "1 commerce is below the threshold - no bonus"
+
+    # A terrain carrying 2 commerce of its own, which is exactly the
+    # threshold - the boundary is where an off-by-one would hide.
+    rich = {"x": 6, "y": 6, "terrain": "TERRAIN_TESTCOAST"}
+    _path, richer = make_state(tmp_path, tiles=[rich], turn=35)
+    plain, _ = rules.improvement_yield(
+        r, rich, "IMPROVEMENT_TESTMINE", set(), (), richer)
+    boosted, _ = rules.improvement_yield(
+        r, rich, "IMPROVEMENT_TESTMINE", set(), fin, richer)
+    assert plain[2] >= 2, "fixture must reach the threshold to test the bonus"
+    assert boosted[2] == plain[2] + 1
+
+
+def test_traits_are_resolved_through_the_leader(xml_root, tmp_path):
+    """`player.traits` does not exist in the schema - only `player.leader`."""
+    _path, state = make_state(tmp_path, leader="LEADER_TESTFIN")
+    r = build_rules(xml_root, state)
+    assert rules.player_traits(r, state) == ("TRAIT_TESTFIN",)
+    _path, plain = make_state(tmp_path, leader="LEADER_TESTPLAIN", turn=35)
+    assert rules.player_traits(r, plain) == ()
+
+
+def test_an_unmet_owner_yields_no_traits_and_says_so(xml_root, tmp_path):
+    """An unmet rival's traits are genuinely unknown, not empty.
+
+    The distinction matters: computing their tile as though they were
+    traitless is a guess dressed as an answer.
+    """
+    _path, state = make_state(tmp_path, contacts=[])
+    r = build_rules(xml_root, state)
+    traits, known = rules.owner_traits(r, state, 7)
+    assert traits == () and known is False
+
+
+def test_a_met_rivals_traits_come_from_contacts(xml_root, tmp_path):
+    _path, state = make_state(
+        tmp_path, contacts=[{"playerId": 7, "leader": "LEADER_TESTFIN"}])
+    r = build_rules(xml_root, state)
+    traits, known = rules.owner_traits(r, state, 7)
+    assert traits == ("TRAIT_TESTFIN",) and known is True
+
+
+def test_a_peak_yields_nothing_whatever_is_under_it(xml_root, tmp_path):
+    """calculateNatureYield returns 0 for an impassable plot before anything
+    else. Dropping this clause was worth 76 wrong tiles in the sample sweep.
+    """
+    tile = {"x": 5, "y": 5, "terrain": "TERRAIN_TESTGRASS",
+            "plotType": "PLOT_PEAK"}
+    _path, state = make_state(tmp_path, tiles=[tile])
+    r = build_rules(xml_root, state)
+    assert rules.nature_yield(r, tile, state=state) == [0, 0, 0]
+
+
+def test_the_peak_zero_holds_in_the_view_not_just_nature_yield(
+        xml_root, tmp_path):
+    """The impassable early-out must be in BOTH accumulators.
+
+    `nature_yield` and `improvement_yield` add up their terms independently,
+    and the sample sweep only ever compares the first. So the view went on
+    printing a peak's terrain yield - `2 food, 1 commerce` against the
+    engine's `[0,0,0]` - with the sweep fully green. Caught by reading real
+    output, which is why this asserts through the view rather than the
+    function.
+    """
+    tile = {"x": 5, "y": 5, "terrain": "TERRAIN_TESTGRASS",
+            "plotType": "PLOT_PEAK", "river": True}
+    _path, state = make_state(tmp_path, tiles=[tile])
+    r = build_rules(xml_root, state)
+    total, _terms = rules.nature_terms(r, tile, state)
+    assert total == [0, 0, 0]
+    text = rules.view_improvement(r, None, state, (5, 5))
+    assert "NOW           nothing" in text
+    assert "impassable" in text
+
+
+def test_deep_ocean_is_read_from_the_export_not_re_derived(xml_root, tmp_path):
+    """`isPotentialCityWork` is not reconstructible from `map.tiles`.
+
+    The engine tests every plot in the 21-tile cross including unrevealed
+    ones; the export holds only revealed tiles. On the baseline sample two
+    ocean tiles with identical revealed surroundings (zero land, differing
+    only in how many neighbours are unrevealed) yield [0,0,0] and [1,0,1].
+    So the tile's own exported yield settles it - guessing was wrong on 24
+    tiles in one direction and 609 in the other.
+    """
+    barren = {"x": 5, "y": 5, "terrain": "TERRAIN_TESTCOAST",
+              "plotType": "PLOT_OCEAN", "yields": [0, 0, 0]}
+    coastal = {"x": 6, "y": 6, "terrain": "TERRAIN_TESTCOAST",
+               "plotType": "PLOT_OCEAN", "yields": [1, 0, 2]}
+    _path, state = make_state(tmp_path, tiles=[barren, coastal])
+    r = build_rules(xml_root, state)
+    assert rules.nature_terms(r, barren, state)[0] == [0, 0, 0]
+    assert rules.nature_terms(r, coastal, state)[0] == [1, 0, 2]
+
+
+def test_a_goody_hut_is_not_treated_as_an_improvement_on_the_tile(
+        xml_root, tmp_path):
+    """A hut IS an ImprovementInfo, and emphatically not one for this view.
+
+    Running it through improvement_yield clears the tile's feature - huts do
+    not set bRequiresFeature - so a forested hut tile lost the forest's
+    hammer and reported 1/1/0 against the engine's 1/2/0.
+    """
+    tile = {"x": 5, "y": 5, "terrain": "TERRAIN_TESTGRASS",
+            "feature": "FEATURE_FOREST",
+            "improvement": "IMPROVEMENT_GOODY_HUT"}
+    _path, state = make_state(tmp_path, tiles=[tile])
+    r = build_rules(xml_root, state)
+    text = rules.view_improvement(r, None, state, (5, 5))
+    # 2 food from grass, 1 hammer from the forest that is still standing.
+    assert "2 food, 1 hammers" in text
+
+
+def test_a_city_centre_is_floored_at_two_one_one(xml_root, tmp_path):
+    """iMinCity, found by sweeping the sample rather than from the XML.
+
+    A city on a tile that would otherwise make less still shows 2/1/1,
+    which is why a city on plains reads [2,1,1] and not [1,1,0].
+    """
+    tile = {"x": 5, "y": 5, "terrain": "TERRAIN_TESTDESERT"}
+    _path, state = make_state(
+        tmp_path, tiles=[tile], cities=[make_city(x=5, y=5)])
+    r = build_rules(xml_root, state)
+    assert rules.nature_yield(r, tile, state=state) == [2, 1, 1]
+
+
+def test_a_never_scouted_tile_is_refused_rather_than_guessed(xml_root, tmp_path):
+    """`map.tiles` holds every tile ever revealed, so absence means unscouted.
+
+    Answering anything at all here - even the terrain - would be inventing
+    information the player has never seen.
+    """
+    _path, state = make_state(tmp_path, tiles=[])
+    r = build_rules(xml_root, state)
+    with pytest.raises(rules.RulesError) as excinfo:
+        rules.view_improvement(r, None, state, (5, 5))
+    assert "never been scouted" in str(excinfo.value)
+
+
+def test_a_fogged_tile_is_answered_with_a_staleness_note(xml_root, tmp_path):
+    """Fogged is remembered, not unknown - the player HAS seen this terrain."""
+    tile = _grass_corn(visibleNow=False)
+    _path, state = make_state(tmp_path, tiles=[tile])
+    r = build_rules(xml_root, state)
+    text = rules.view_improvement(r, None, state, (5, 5))
+    assert "NOT VISIBLE NOW" in text
+    assert "5 food" in text
+
+
+def test_the_tile_view_shows_a_total_and_its_decomposition(xml_root, tmp_path):
+    """Both, per the brief: the working AND a clearly marked total.
+
+    A bare number cannot be checked by the reader, which is how an invented
+    term survived in the first place.
+    """
+    _path, state = make_state(tmp_path, tiles=[_grass_corn()],
+                              known=("TECH_ROOT_A",))
+    r = build_rules(xml_root, state)
+    text = rules.view_improvement(r, None, state, (5, 5))
+    assert "IMPROVEMENT_TESTFARM" in text and "5 food" in text
+    assert "+2 IMPROVEMENT_TESTFARM on BONUS_TESTCORN" in text
+    # The status quo, against which the improvement's change is measured.
+    assert "NOW" in text and "3 food" in text
+    assert "(+2 food)" in text
+
+
+# ---------------------------------------------------------------------------
+# canBuild's own gates - beyond "can the tile hold this"
+#
+# canHaveImprovement answers whether a tile COULD carry an improvement.
+# CvPlot::canBuild wraps it with gates that have nothing to do with terrain,
+# and both of the ones below produced a confident "you can build this" on a
+# tile where the game refuses. That is the worst failure mode available here:
+# the reader has no way to doubt it.
+# ---------------------------------------------------------------------------
+
+
+def test_an_improvement_already_on_the_tile_is_not_offered_again(
+        xml_root, tmp_path):
+    tile = _grass_corn(improvement="IMPROVEMENT_TESTFARM")
+    _path, state = make_state(tmp_path, tiles=[tile])
+    r = build_rules(xml_root, state)
+    # The tile can still HOLD it - that is not the question canBuild asks.
+    assert rules.can_have_improvement(
+        r, tile, "IMPROVEMENT_TESTFARM", set()) is None
+    why = rules.build_blocker(r, tile, "IMPROVEMENT_TESTFARM", state)
+    assert why and "already built" in why
+    # It appears in the header as what is standing there, never as an option.
+    text = rules.view_improvement(r, None, state, (5, 5))
+    assert "has IMPROVEMENT_TESTFARM" in text
+    assert "IF YOU BUILD" not in text
+    assert "NOTHING TO ADD" in text
+
+
+def test_a_foreign_tile_offers_nothing_and_says_why(xml_root, tmp_path):
+    """Culture, not terrain. The tile may be excellent and simply not yours.
+
+    Reported as ownership rather than as "nothing can be built here", which
+    reads as a property of the ground and is the wrong conclusion to draw.
+    """
+    tile = _grass_corn(owner=7, freshWater=True)
+    _path, state = make_state(
+        tmp_path, tiles=[tile], player_id=0,
+        contacts=[{"playerId": 7, "leader": "LEADER_TESTPLAIN"}])
+    r = build_rules(xml_root, state)
+    why = rules.build_blocker(r, tile, "IMPROVEMENT_TESTFARM", state)
+    assert why and "borders" in why
+    text = rules.view_improvement(r, None, state, (5, 5))
+    assert "NOTHING BUILDABLE" in text and "borders" in text
+
+
+def test_our_own_tile_is_not_treated_as_foreign(xml_root, tmp_path):
+    tile = _grass_corn(owner=0, freshWater=True)
+    _path, state = make_state(tmp_path, tiles=[tile], player_id=0)
+    r = build_rules(xml_root, state)
+    assert rules.build_blocker(r, tile, "IMPROVEMENT_TESTFARM", state) is None
+
+
+def test_now_reports_the_improved_yield_on_an_improved_tile(xml_root, tmp_path):
+    """`NOW` must mean what the tile yields TODAY.
+
+    Reporting the bare-terrain figure understates the status quo and makes
+    every alternative look better than it is - which on an already-working
+    tile is exactly the shape of bad advice. The delta is measured against
+    this, so getting it wrong corrupts every row below it too.
+    """
+    tile = _grass_corn(improvement="IMPROVEMENT_TESTFARM")
+    _path, state = make_state(tmp_path, tiles=[tile])
+    r = build_rules(xml_root, state)
+    text = rules.view_improvement(r, None, state, (5, 5))
+    now = [line for line in text.splitlines() if line.startswith("NOW")][0]
+    assert "5 food" in now, now
+    # Swapping the farm for the mine costs the farm's food rather than
+    # appearing as a free gain.
+    mine = [line for line in text.splitlines()
+            if "IMPROVEMENT_TESTMINE" in line and "(" in line]
+    if mine:
+        assert "-" in mine[0].split("(")[-1]
+
+
+# ---------------------------------------------------------------------------
+# Resource connection
+#
+# On a resource tile the yield columns are nearly beside the point: one
+# improvement puts the resource into your trade network and the rest leave it
+# out, and a rival option can win on raw yield while costing you the resource
+# entirely. `bBonusTrade` is the engine's own gate for this
+# (CvPlot::updatePlotGroupBonus), so this is a lookup rather than a judgement.
+# ---------------------------------------------------------------------------
+
+
+def test_the_connecting_improvement_is_read_from_bonus_trade(
+        xml_root, tmp_path):
+    _path, state = make_state(tmp_path)
+    r = build_rules(xml_root, state)
+    assert rules.connecting_improvement(
+        r, "BONUS_TESTCORN") == "IMPROVEMENT_TESTFARM"
+    assert rules.connecting_improvement(r, "BONUS_PLAIN") is None
+    assert rules.connecting_improvement(r, "") is None
+
+
+def test_the_connector_is_flagged_and_listed_first(xml_root, tmp_path):
+    """Ordering, not ranking.
+
+    It is NOT a claim that the connector yields most - a Mine on Gems is
+    -1 hammer - but that it is the only option that connects the resource at
+    all. That is a different kind of fact and the one a reader scanning the
+    list needs first.
+    """
+    _path, state = make_state(tmp_path, tiles=[_grass_corn(freshWater=True)],
+                              known=("TECH_ROOT_A",))
+    r = build_rules(xml_root, state)
+    text = rules.view_improvement(r, None, state, (5, 5))
+    assert "BONUS_TESTCORN is CONNECTED by IMPROVEMENT_TESTFARM" in text
+    assert "<- CONNECTS BONUS_TESTCORN" in text
+    body = text.split("IF YOU BUILD")[1]
+    rows = [line for line in body.splitlines()
+            if line.startswith("  IMPROVEMENT_")]
+    assert rows and "IMPROVEMENT_TESTFARM" in rows[0], rows
+
+
+def test_a_non_connecting_option_says_it_leaves_the_resource_unconnected(
+        xml_root, tmp_path):
+    """The cost no yield column shows.
+
+    Losing a strategic resource is not a yield trade - it can remove a whole
+    unit line from what the empire can build - so it is stated on the row
+    rather than left to be inferred from the connector's absence.
+    """
+    # On HILLS, so the mine is legal and there is a non-connecting row to
+    # check. The corn's bBonusMakesValid keeps the farm legal here too
+    # despite bRequiresFlatlands, so both options appear.
+    tile = _grass_corn(plotType="PLOT_HILLS")
+    _path, state = make_state(tmp_path, tiles=[tile],
+                              known=("TECH_ROOT_A", "TECH_SIMPLE"))
+    r = build_rules(xml_root, state)
+    text = rules.view_improvement(r, None, state, (5, 5))
+    assert "IMPROVEMENT_TESTMINE" in text
+    assert "leaves   BONUS_TESTCORN unconnected" in text
+
+
+def test_replacing_the_connector_is_reported_as_a_loss(xml_root, tmp_path):
+    """Stronger wording when the resource is connected RIGHT NOW.
+
+    "leaves it unconnected" understates replacing a Pasture that is already
+    feeding horses into the empire - that is an active loss, not a
+    forgone gain.
+    """
+    tile = _grass_corn(improvement="IMPROVEMENT_TESTFARM", freshWater=True)
+    _path, state = make_state(tmp_path, tiles=[tile],
+                              known=("TECH_ROOT_A", "TECH_SIMPLE"))
+    r = build_rules(xml_root, state)
+    text = rules.view_improvement(r, None, state, (5, 5))
+    assert "already built" in text
+    if "IF YOU BUILD" in text:
+        assert "LOSES    BONUS_TESTCORN" in text
+
+
+def test_the_city_trade_tech_is_surfaced_separately(xml_root, tmp_path):
+    """A SECOND tech gate, checked by the engine before the improvement.
+
+    Distinct from the build's own prereq and easy to miss because nothing
+    else in the view mentions it. It is the whole of the player's stated
+    exception: a Plantation on Spices connects it, but Calendar may be far
+    enough off that the tile is better used otherwise in the meantime.
+    """
+    # TECH_ROOT_A is BONUS_TESTCORN's TechCityTrade. Not known here.
+    _path, state = make_state(tmp_path, tiles=[_grass_corn(freshWater=True)],
+                              known=())
+    r = build_rules(xml_root, state)
+    text = rules.view_improvement(r, None, state, (5, 5))
+    assert "TECH_ROOT_A" in text and "before any city can work it" in text
+    # Known, so the line goes away rather than nagging.
+    _path, later = make_state(
+        tmp_path, tiles=[_grass_corn(freshWater=True)], turn=35,
+        known=("TECH_ROOT_A",))
+    assert "before any city can work it" not in rules.view_improvement(
+        r, None, later, (5, 5))
+
+
+@pytest.mark.parametrize("sample", sorted(
+    os.path.basename(p) for p in
+    (os.listdir(SAMPLES) if os.path.isdir(SAMPLES) else [])
+    if os.path.isdir(os.path.join(SAMPLES, p))
+))
+def test_tile_yields_match_the_engine_on_every_sample_tile(sample):
+    """The whole yield model, checked against the engine's own numbers.
+
+    Every other test in this file asserts behaviour the author reasoned out.
+    This one asserts agreement with `map.tiles[].yields` - what the game
+    itself computed and displayed - across every tile of every turn. It is
+    the only check here that can catch a clause missing from the port
+    entirely, and it earned that reputation: it found the impassable
+    early-out (peaks reading terrain yield instead of [0,0,0]), the
+    `iMinCity` city-centre floor, and the goody-hut-is-not-an-improvement
+    case, all of which had passed the hand-written tests.
+
+    Committed rather than left as scratch scaffolding because three separate
+    code comments cite its counts as their justification. A one-off sweep
+    that cannot be re-run is evidence nobody can check.
+
+    Deliberately routed through the VIEW's code path (`nature_terms` /
+    `improvement_yield`), not `nature_yield`. The two used to be separate
+    accumulators and a fix applied to one missed the other; sweeping the
+    path the view actually takes is what makes that class of divergence
+    visible. See improvement_yield's INVARIANT comment.
+    """
+    try:
+        xml_root = rules.resolve_xml_root()
+    except rules.RulesError as exc:
+        pytest.skip("no Civ IV install: %s" % exc)
+
+    folder = os.path.join(SAMPLES, sample)
+    turns = sorted(f for f in os.listdir(folder) if f.startswith("turn_"))
+    if not turns:
+        pytest.skip("%s has no turn files" % sample)
+
+    checked = 0
+    for name in turns:
+        with open(os.path.join(folder, name), encoding="utf-8") as handle:
+            state = json.load(handle)
+        r = rules.Rules(xml_root, state.get("game") or {})
+        known = rules.effective_known(state)
+        traits = rules.player_traits(r, state)
+        for tile in (state.get("map") or {}).get("tiles") or []:
+            expected = tile.get("yields")
+            if expected is None:
+                continue
+            existing = tile.get("improvement")
+            if existing in rules.NOT_REAL_IMPROVEMENTS:
+                existing = None
+            if existing and existing in r.improvements:
+                got, _terms = rules.improvement_yield(
+                    r, tile, existing, known, traits, state)
+            else:
+                got, _terms = rules.nature_terms(r, tile, state, traits)
+            assert got == expected, (
+                "%s/%s (%s,%s) %s%s: engine says %s, we compute %s"
+                % (sample, name, tile.get("x"), tile.get("y"),
+                   tile.get("terrain"),
+                   " + " + existing if existing else "",
+                   expected, got)
+            )
+            checked += 1
+
+    assert checked, "no tiles were checked in %s" % sample

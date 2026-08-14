@@ -31,6 +31,7 @@ Files are numbered for the turn **about to be played**, so a run starts at `turn
 | "this city can build Z" | `rules.py city NAME` |
 | "promotion P does..." | `rules.py promotion P` |
 | "popping that hut is safe / risky" | `rules.py goody --for-unit ID --at X,Y` — **never** `rules.py handicap` |
+| "a Farm/Mine there gives N" / "the worker should build W here" | `rules.py improvement --at X,Y` |
 | any cost, prereq, or turns-to-complete number | `rules.py <subcommand>` for it |
 
 `rules.py` resolves the right file tree, walks prerequisites transitively, and prices everything for this game's actual setup — use it first. When it doesn't cover something, grep the install directly and **say out loud that you had to** — that's the signal for what to add to `rules.py` next. The install holds ~18 copies of each file: take `<install>/Beyond the Sword/Assets/XML/...`, falling back to `<install>/Assets/XML/...` — an expansion only ships the files it *changes*, so resources (`CIV4BonusInfos.xml`) live only in the base tree. Install path is in `config.local.json`; don't `find`, it is slow and hits the mod copies. Use large context windows: `PrereqTech` sits ~90 lines into a unit block.
@@ -45,7 +46,7 @@ Files are numbered for the turn **about to be played**, so a run starts at `turn
 | `activity` | **`ACTIVITY_SLEEP` means fortified *or* sleeping** — there is no separate fortify activity. Only `fortifyTurns > 0` tells them apart. Absent = awake. |
 | `fortifyTurns` | A defence bonus, not just a flag: **+5%/turn, capped at +25%**. Absent = 0. |
 
-`mission.turnsLeft` is the **only** source for worker-build timing — `rules.py` prices city production and has no worker-action build times.
+`mission.turnsLeft` is the **only** source for worker-build timing — `rules.py` prices city production and has no worker-action build times. For a build not yet started you have no number at all; a build that clears a feature first costs the improvement's time **plus** the clearing time, so treat it as materially slower than a bare one.
 
 **Before reporting something as a gap, confirm it's actually missing.** Check the file you're already holding open before concluding a tool doesn't cover it — a past trial reported the beakers-per-turn change as a possible schema gap when reading the previous turn file would have answered it outright.
 
@@ -122,9 +123,10 @@ The tool **exits non-zero on a run that isn't one continuous game**. That's a re
 ### `rules.py` — anything about the game's rules
 
 ```
-python harness/rules.py unit|tech|building|promotion|city|handicap|goody [TYPE] <state.json> [--show-known] [--depth N]
+python harness/rules.py unit|tech|building|promotion|city|handicap|goody|improvement [TYPE] <state.json> [--show-known] [--depth N]
 python harness/rules.py promotion <state.json> --for-unit ID [--eligible]
 python harness/rules.py goody <state.json> [--for-unit ID | --popped-by UNIT_SCOUT] [--at X,Y]
+python harness/rules.py improvement <state.json> --at X,Y
 ```
 
 **The state file is required, and not a formality:** game speed, world size and difficulty multiply tech costs, so a raw XML cost is 1.0–4.5× wrong. Pass the turn you're advising on and every number is priced for the real game.
@@ -139,6 +141,8 @@ python harness/rules.py goody <state.json> [--for-unit ID | --popped-by UNIT_SCO
 | `city Lisbon` | What this city can build **right now**, and what is blocking the rest. Takes a city name, not a TYPE. |
 | `handicap` | The barbarian and animal rules for this game's difficulty. Type defaults to the state file's own. **Its turn fields do not gate goody huts** — for those use `goody`. |
 | `goody` | What a goody hut can produce, and how likely a hostile result is. Type defaults to the state file's own; `--for-unit ID --at X,Y` decides every gate. |
+| `improvement --at X,Y` | What one tile yields now, and what **every** improvement would make it — each with its arithmetic shown, the change against the bare tile, and any tech still in the way. |
+| `improvement IMPROVEMENT_FARM` | The improvement in the abstract: its yields, its per-resource bonuses, and where it is legal. Use `--at` instead whenever you have a tile in mind. |
 
 **Reach for `city` before advising on production** — what to build next, or whether to switch. It is the only call that answers *what the options are*; the others answer questions about an option you have already named. Guessing type names to find out what exists is the failure it replaces.
 
@@ -155,6 +159,16 @@ It lists what is available now **and** what is one tech away, each blocked row c
 **Never answer a goody-hut question from `handicap`.** Its `iBarbarianCreationTurnsElapsed` looks like it settles the matter and does not — it bounds *map spawns* only, and **a hut can turn hostile on turn 1**. Reading it as a safety window killed a live trial's only unit. Run `goody`, and pass `--for-unit ID --at X,Y` (the popping unit and the hut's tile, both already in the state file) to turn the range into one number. `--at` is the **hut's** tile, never the unit's; the tool lists the revealed ones if you don't name one, and the figures then assume the hut is popped from where that unit stands now.
 
 **The Scout and the Explorer cannot draw a hostile result at all**, on any difficulty or turn — so which unit you send changes the answer completely, and if a Scout can reach the hut the risk is zero rather than merely lower.
+
+**Never state a tile yield from memory — run `improvement --at X,Y`, and quote the decomposition.** A trial reasoned a Farm on Corn from background knowledge, invented a Despotism yield penalty (**Civ3**, not Civ4) and answered 4. It is 5 — a resource pays **twice**, once bare and again for the improvement on it. An invented term is visible in the working and plausible in a bare number.
+
+`--at` lists every improvement legal on the tile with its total, its working, and the change against leaving the tile alone. Rows are self-explaining; these three are the judgements they don't make for you:
+
+- **`<- CONNECTS X` usually settles a resource tile.** Only that improvement trades the resource; a lost strategic one can cost you a whole unit line, which no yield column shows. It is listed first as **ordering, not ranking** — a Mine on Gems is −1 hammer. **The exception is `and needs TECH_X before any city can work it`**: Wine needs Monarchy, Spices and Dye need Calendar, and while that tech is far off something non-connecting is a legitimate call.
+- **A feature is a tech gate, not a refusal.** A Mine on a forested hill is legal and the forest goes with it, but `needs ... to clear ... first` names a *separate* tech — Bronze Working for forest, Iron Working for jungle. A trial had both halves on screen from separate calls and recommended the mine anyway.
+- **`NOW` includes what is already built**, so every change figure is the cost of *replacing* it, not a gain over bare ground.
+
+Two readings that look like tool bugs and are not: `+1 commerce` from a Farm on a wooded river tile is the river, restored by the chop (the `commerce  1 river` line); and `NOTHING BUILDABLE` on foreign soil is culture, not bad ground — the tile may be excellent and simply not yours. `NOT VISIBLE NOW` is remembered terrain and fine to plan on, since terrain and resources don't change; a tile **absent** from `map.tiles` was never scouted and is refused outright — don't infer it from neighbours.
 
 **Guessed a type name and got an error? Read the suggestions, don't fall back to grep.** Unique units are civ-prefixed and inconsistently so — the Praetorian is `UNIT_ROME_PRAETORIAN`, not `UNIT_PRAETORIAN`.
 

@@ -1593,9 +1593,15 @@ def test_worker_lists_only_unimproved_resources_inside_a_city_radius():
 
 
 def test_worker_does_not_claim_to_know_the_tech_tree():
-    """The bonus -> build -> tech chain is the rules-lookup tool's job."""
+    """The bonus -> build -> tech chain is the rules-lookup tool's job.
+
+    The OMITS entry used to send the reader to the raw XML. It now names
+    `rules.py improvement --at`, which answers the whole question - the
+    assertion is still that this view refuses to, not where it points.
+    """
     text = render_map.render(state(40), "worker")
-    assert "CIV4BonusInfos.xml" in text and "CIV4BuildInfos.xml" in text
+    assert "rules.py improvement --at" in text
+    assert "CIV4BonusInfos.xml" not in text
 
 
 # -- geometry -------------------------------------------------------------

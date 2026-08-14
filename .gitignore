@@ -17,3 +17,9 @@ mod/civ4-advisor.ini.bak
 
 # temp folder for the agent to make notes
 temp/
+
+# Claude Code session scratch. `.claude/skills/` IS committed (project skills
+# are part of the repo); everything else here is per-machine or per-session -
+# worktrees hold a full checkout including the gitignored config.local.json.
+.claude/*
+!.claude/skills/

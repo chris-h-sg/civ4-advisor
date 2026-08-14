@@ -13,7 +13,7 @@ Current scope is limited to advice-only for the first 50 turns of a game. See [`
 
 `mod/` exports per-turn state to a JSON file, verified working in-game. The full state schema is specified in [`schema/`](schema/) (JSON Schema + synthetic example) and **mod-side extraction is complete against it** — every section is built, so live output validates against the whole document.
 
-`harness/` has its three planned tools: `render_map.py` (spatial views), `run_history.py` (reasoning across turns) and `rules.py` (lookups against the game's XML, priced for the actual game). The advising agent's instructions are [`harness/AGENT_GUIDE.md`](harness/AGENT_GUIDE.md).
+`harness/` has its three planned tools — `render_map.py` (spatial views), `run_history.py` (reasoning across turns) and `rules.py` (lookups against the game's XML, priced for the actual game) — plus `bearing.py`, which agent trials asked for. The advising agent's instructions are [`harness/AGENT_GUIDE.md`](harness/AGENT_GUIDE.md).
 
 What is still outstanding is queued in [`ROADMAP.md`](ROADMAP.md), most of it evidenced by agent trials rather than predicted.
 

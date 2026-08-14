@@ -43,6 +43,7 @@ Run it directly with the system Python; stdlib only, no setup:
 """
 
 import argparse
+import bisect
 import json
 import math
 import os
@@ -81,6 +82,13 @@ BUILDING_CLASS_FILE = os.path.join("Buildings", "CIV4BuildingClassInfos.xml")
 COMMERCE_FILE = os.path.join("GameInfo", "CIV4CommerceInfo.xml")
 YIELD_FILE = os.path.join("Terrain", "CIV4YieldInfos.xml")
 IMPROVEMENT_FILE = os.path.join("Terrain", "CIV4ImprovementInfos.xml")
+TERRAIN_FILE = os.path.join("Terrain", "CIV4TerrainInfos.xml")
+FEATURE_FILE = os.path.join("Terrain", "CIV4FeatureInfos.xml")
+# Vanilla-only on the measured install, like CIV4BonusInfos.xml. Reached only
+# for Financial: the state file exports `player.leader` but no traits, so the
+# leader -> trait -> yield-threshold join happens here rather than being read.
+TRAIT_FILE = os.path.join("Civilizations", "CIV4TraitInfos.xml")
+LEADER_FILE = os.path.join("Civilizations", "CIV4LeaderHeadInfos.xml")
 PROJECT_FILE = os.path.join("GameInfo", "CIV4ProjectInfo.xml")
 RELIGION_FILE = os.path.join("GameInfo", "CIV4ReligionInfo.xml")
 # Maps each civ to the unit/building types that replace a class for them only.
@@ -322,12 +330,21 @@ def _list_tag(block, container, item="PrereqTech"):
 
 
 def iter_blocks(text, tag):
-    """Yield (type_key, block_text, line_number) for each <tag> element."""
+    """Yield (type_key, block_text, line_number) for each <tag> element.
+
+    The line number is found by bisecting a precomputed newline index rather
+    than by counting newlines from the start of the file per block, which is
+    quadratic in file size and was the single largest cost in startup: on the
+    1.1MB CIV4BuildingInfos.xml the counting alone measured 159ms against
+    31ms for the whole parse. Every subcommand pays this on every
+    invocation, and the tool is run once per turn.
+    """
+    newlines = [match.start() for match in re.finditer("\n", text)]
     for match in re.finditer(r"<%s>.*?</%s>" % (tag, tag), text, re.S):
         block = match.group(0)
         type_key = _tag(block, "Type")
         if type_key:
-            yield type_key, block, text[: match.start()].count("\n") + 1
+            yield type_key, block, bisect.bisect_right(newlines, match.start()) + 1
 
 
 def parse_techs(text):
@@ -802,6 +819,61 @@ def _yield_list(block, container, order):
     return labelled
 
 
+def _without_nested(block, *containers):
+    """`block` with the named container blocks removed entirely.
+
+    Needed because these files nest a container under the SAME name inside a
+    child struct. An ImprovementInfo's own <YieldChanges> and the <YieldChanges>
+    inside each of its <BonusTypeStruct>s are indistinguishable to a
+    non-anchored search, and re.S makes the first match win regardless of
+    depth - so reading a Farm's own yields returns the Corn struct's +2 food
+    instead of the correct "Farm has no flat yield of its own".
+
+    That is not a hypothetical: it produced 6 food for a farmed Corn tile
+    during development, one short of the 4 the original trial reported and
+    equally wrong. Strip the children, then scan.
+    """
+    for container in containers:
+        block = re.sub(r"<%s>.*?</%s>" % (container, container), "", block, flags=re.S)
+    return block
+
+
+def _yield_triplet(block, container, item=r"iYield(?:Change)?"):
+    """A [food, production, commerce] triplet from `container`, or None.
+
+    The three yields are a POSITIONAL array here, same as the commerce arrays
+    _yield_list handles, but the terrain/feature/improvement files want the
+    zeroes kept: the arithmetic adds triplets together, and a labelled
+    sparse list would have to be re-densified at every call site.
+
+    None rather than [0,0,0] when the container is absent, because that
+    distinction is real in these files - CIV4TerrainInfos omits <Yields>
+    entirely for desert and snow, and the caller needs to know it read
+    "nothing here" rather than "explicitly zero" when reconciling against
+    a source that lists the field.
+
+    The inner tag is NOT the same across files and this bit three times
+    during development: <Yields> holds <iYield>, <YieldChanges> holds
+    <iYieldChange>, and Financial's <ExtraYieldThresholds> holds
+    <iExtraYieldThreshold>. Guessing wrong returns None rather than raising,
+    so the symptom is a silently missing term - a jungle that fails to
+    subtract its food, or a Financial leader who gets no commerce - not an
+    error. Hence `item` is an explicit parameter for anything unusual rather
+    than an ever-widening default pattern.
+    """
+    match = re.search(r"<%s>(.*?)</%s>" % (container, container), block, re.S)
+    if not match:
+        return None
+    body = match.group(1)
+    values = re.findall(r"<%s>(-?\d+)</%s>" % (item, item), body)
+    if not values:
+        return None
+    triplet = [int(raw) for raw in values[:3]]
+    while len(triplet) < 3:
+        triplet.append(0)
+    return triplet
+
+
 def parse_buildings(text, commerce_order=(), yield_order=()):
     """Buildings and wonders - one file, one block shape, different behaviour.
 
@@ -975,8 +1047,241 @@ def parse_bonuses(text):
             "line": line,
             "reveal": _tag(block, "TechReveal"),
             "city_trade": _tag(block, "TechCityTrade"),
+            # The resource's own contribution to the BARE tile, before any
+            # improvement - Corn's +1 food is here, its +2-with-a-Farm is in
+            # the Farm's BonusTypeStructs. `improvement --at` needs both and
+            # they are easy to conflate: the trial that prompted this item
+            # reported 4 food for a farmed Corn tile, which is what dropping
+            # one of the two terms produces.
+            "yields": _yield_triplet(block, "YieldChanges"),
         }
     return bonuses
+
+
+def parse_terrains(text):
+    """Terrain base yields, plus the river yield change it carries.
+
+    <Yields> is ABSENT rather than zeroed on desert, snow and the three
+    non-terrain entries, so `yields` is None for those and the caller treats
+    it as all-zero. Hills and peaks are not terrains at all - they are a
+    plotType - so their hammer does not come from this file; see
+    parse_yield_info.
+
+    <HillsYieldChange> is deliberately NOT read, here or in parse_features.
+    calculateNatureYield does consult it (shadowed by the feature's own when
+    one is present, exactly like the river term), but it is EMPTY on every
+    terrain and every feature in both trees - checked, not assumed - so
+    reading it would add an accumulator branch no stock data can reach and
+    no test could cover. A mod that sets it would need the branch restored
+    alongside the field.
+    """
+    terrains = {}
+    for key, block, line in iter_blocks(text, "TerrainInfo"):
+        terrains[key] = {
+            "type": key,
+            "line": line,
+            "yields": _yield_triplet(block, "Yields"),
+            "river": _yield_triplet(block, "RiverYieldChange"),
+        }
+    return terrains
+
+
+def parse_features(text):
+    """Feature yield CHANGES, applied on top of the terrain's own yields.
+
+    Jungle is -1 food, forest +1 production, flood plains +3 food. The river
+    and hills changes shadow the terrain's when a feature is present rather
+    than stacking with them - see nature_yield, which mirrors the engine's
+    own ternary.
+    """
+    features = {}
+    for key, block, line in iter_blocks(text, "FeatureInfo"):
+        features[key] = {
+            "type": key,
+            "line": line,
+            "yields": _yield_triplet(block, "YieldChanges"),
+            "river": _yield_triplet(block, "RiverYieldChange"),
+            "no_improvement": _int_tag(block, "bNoImprovement") == 1,
+        }
+    return features
+
+
+def parse_yield_info(text):
+    """Where the hills hammer actually comes from.
+
+    Not obvious, and worth stating because looking for it in CIV4TerrainInfos
+    finds nothing: TERRAIN_HILL exists there but carries no <Yields>, since
+    hills are a plotType layered over a real terrain. The hills and lake
+    changes are per-YIELD properties and live here instead, as does the
+    city-centre floor.
+
+    <iPeakChange> is deliberately not read: it is 0 for all three yields,
+    and a peak short-circuits to [0,0,0] via _impassable before any
+    accumulation, so the column is unreachable twice over. Reading it would
+    make `_yield_change_for(rules, y, "peak")` look available and correct
+    while silently contributing nothing.
+    """
+    info = {}
+    for key, block, line in iter_blocks(text, "YieldInfo"):
+        info[key] = {
+            "type": key,
+            "line": line,
+            "hills": _int_tag(block, "iHillsChange"),
+            "lake": _int_tag(block, "iLakeChange"),
+            # The floor under a city-centre tile: 2 food / 1 hammer /
+            # 1 commerce. See _city_floor.
+            "min_city": _int_tag(block, "iMinCity"),
+        }
+    return info
+
+
+def parse_traits(text):
+    """Leader traits, only for the yield effect Financial has.
+
+    <ExtraYieldThresholds> is a positional triplet like every other yield
+    array: Financial's entry is 2 in the COMMERCE slot, meaning "a tile
+    already producing 2+ commerce gets +1". Read rather than hardcoded
+    because the threshold and the column are both data - hardcoding "+1
+    commerce on 2+" bakes in a rule the file is entitled to change.
+    """
+    traits = {}
+    for key, block, line in iter_blocks(text, "TraitInfo"):
+        traits[key] = {
+            "type": key,
+            "line": line,
+            "yield_thresholds": _yield_triplet(
+                block, "ExtraYieldThresholds", "iExtraYieldThreshold"),
+        }
+    return traits
+
+
+def parse_leaders(text):
+    """Leader -> trait keys. The state file exports `player.leader` and no
+    traits at all, so this join is the only route to "is this player FIN".
+    """
+    leaders = {}
+    for key, block, line in iter_blocks(text, "LeaderHeadInfo"):
+        leaders[key] = {
+            "type": key,
+            "line": line,
+            "traits": re.findall(r"<TraitType>(\w+)</TraitType>", block),
+        }
+    return leaders
+
+
+def parse_improvements(text):
+    """Improvements, in full - yields, legality flags and per-resource structs.
+
+    Replaces a parse_simple stub that read only type/line/tech, which is why
+    `rules.py` could say a Farm needs Agriculture and nothing whatsoever
+    about what one produces.
+
+    The three yield sources are separate and all three are needed to get
+    Farm-on-Corn right:
+      * `yields`        - the improvement's own flat change. Farm has NONE.
+      * `irrigated`     - added when the tile is irrigated. Farm's +1 food.
+      * bonus structs   - per-resource. Corn's +2 food on a Farm.
+    Dropping the third is the documented failure this item exists to fix.
+
+    `bonus_makes_valid` is not merely a legality flag: in canHaveImprovement
+    it is an early `return true` ABOVE the flatlands, irrigation and
+    nature-yield gates, so a resource that validates an improvement bypasses
+    all of them. That is why a Farm is legal on dry Corn, and on hill Corn
+    despite bRequiresFlatlands.
+
+    Two flags are deliberately NOT read. `bCarriesIrrigation` matters only
+    for the irrigation CHAIN, which is out of scope (see the view's OMITS).
+    `bGoody` would duplicate NOT_REAL_IMPROVEMENTS, and having both a flag
+    and a named list with only the list live is worse than either alone -
+    the flag reads as the thing keeping huts out of the view, and is not.
+    """
+    improvements = {}
+    for key, block, line in iter_blocks(text, "ImprovementInfo"):
+        bonus_structs = {}
+        structs = re.search(r"<BonusTypeStructs>(.*?)</BonusTypeStructs>",
+                            block, re.S)
+        if structs:
+            for struct in re.finditer(r"<BonusTypeStruct>(.*?)</BonusTypeStruct>",
+                                      structs.group(1), re.S):
+                body = struct.group(1)
+                bonus_type = _tag(body, "BonusType")
+                if not bonus_type:
+                    continue
+                bonus_structs[bonus_type] = {
+                    "bonus": bonus_type,
+                    "makes_valid": _int_tag(body, "bBonusMakesValid") == 1,
+                    "trade": _int_tag(body, "bBonusTrade") == 1,
+                    "yields": _yield_triplet(body, "YieldChanges"),
+                }
+
+        terrain_valid = {}
+        for struct in re.finditer(r"<TerrainMakesValid>(.*?)</TerrainMakesValid>",
+                                  block, re.S):
+            body = struct.group(1)
+            name = _tag(body, "TerrainType")
+            if name:
+                terrain_valid[name] = _int_tag(body, "bMakesValid") == 1
+
+        feature_valid = {}
+        for struct in re.finditer(r"<FeatureMakesValid>(.*?)</FeatureMakesValid>",
+                                  block, re.S):
+            body = struct.group(1)
+            name = _tag(body, "FeatureType")
+            if name:
+                feature_valid[name] = _int_tag(body, "bMakesValid") == 1
+
+        tech_yields = []
+        for struct in re.finditer(r"<TechYieldChange>(.*?)</TechYieldChange>",
+                                  block, re.S):
+            body = struct.group(1)
+            tech = _tag(body, "PrereqTech")
+            if tech:
+                tech_yields.append({
+                    "tech": tech,
+                    "yields": _yield_triplet(body, "TechYields"),
+                })
+
+        # The improvement's OWN fields only - see _without_nested. Both
+        # BonusTypeStructs and TechYieldChanges contain same-named yield
+        # containers, and both are parsed separately above.
+        own = _without_nested(block, "BonusTypeStructs", "TechYieldChanges")
+
+        improvements[key] = {
+            "type": key,
+            "line": line,
+            # ALWAYS None in the stock files, and kept only so a mod that
+            # sets it is not silently ignored. The tech that unlocks an
+            # improvement lives on its BUILD, not here - see build_for.
+            #
+            # Read from `own` rather than `block` because each
+            # <TechYieldChange> carries its own <PrereqTech>: a raw scan
+            # returns TECH_BIOLOGY for a Farm (its late +1 food) and reads
+            # exactly like a real answer, which is worse than the None it
+            # actually is.
+            "tech": _tag(own, "PrereqTech"),
+            "yields": _yield_triplet(own, "YieldChanges"),
+            "irrigated": _yield_triplet(own, "IrrigatedYieldChange"),
+            "prereq_nature": _yield_triplet(own, "PrereqNatureYields"),
+            "tech_yields": tech_yields,
+            "bonus_structs": bonus_structs,
+            "terrain_valid": terrain_valid,
+            "feature_valid": feature_valid,
+            "requires_flatlands": _int_tag(block, "bRequiresFlatlands") == 1,
+            "hills_makes_valid": _int_tag(block, "bHillsMakesValid") == 1,
+            "fresh_water_makes_valid": _int_tag(block, "bFreshWaterMakesValid") == 1,
+            "no_fresh_water": _int_tag(block, "bNoFreshWater") == 1,
+            "river_side_makes_valid": _int_tag(block, "bRiverSideMakesValid") == 1,
+            "requires_river_side": _int_tag(block, "bRequiresRiverSide") == 1,
+            "requires_irrigation": _int_tag(block, "bRequiresIrrigation") == 1,
+            "requires_feature": _int_tag(block, "bRequiresFeature") == 1,
+            "water": _int_tag(block, "bWater") == 1,
+            # canBuild gates on both: a tile already carrying this (or
+            # something that upgrades into it) refuses, and foreign culture
+            # refuses everything except bOutsideBorders. See build_blocker.
+            "upgrade": _tag(own, "ImprovementUpgrade"),
+            "outside_borders": _int_tag(own, "bOutsideBorders") == 1,
+        }
+    return improvements
 
 
 def parse_percent_table(text, tag, field="iResearchPercent"):
@@ -1129,8 +1434,12 @@ class Rules(object):
             PROJECT_FILE, "projects",
             lambda text: parse_simple(text, "ProjectInfo", "TechPrereq"))
         self.improvements = self._load(
-            IMPROVEMENT_FILE, "improvements",
-            lambda text: parse_simple(text, "ImprovementInfo", "PrereqTech"))
+            IMPROVEMENT_FILE, "improvements", parse_improvements)
+        self.terrains = self._load(TERRAIN_FILE, "terrains", parse_terrains)
+        self.features = self._load(FEATURE_FILE, "features", parse_features)
+        self.yield_info = self._load(YIELD_FILE, None, parse_yield_info)
+        self.traits = self._load(TRAIT_FILE, "traits", parse_traits)
+        self.leaders = self._load(LEADER_FILE, "leaders", parse_leaders)
         self.civilizations = self._load(
             CIVILIZATION_FILE, "civilizations", parse_civilizations)
         self.goodies = self._load(GOODY_FILE, "goodies", parse_goodies)
@@ -1564,9 +1873,13 @@ def load_state(path):
             state = json.loads(handle.read().decode("utf-8"))
     except ValueError as exc:
         raise RulesError("state file is not valid JSON: %s" % exc)
-    # This tool never reads a coordinate, but a stale file should fail the
-    # same way every other harness entry point does rather than silently
-    # succeeding against the wrong schema version. Kept in sync with
+    # This tool DOES read coordinates - `goody --at` and `improvement --at`
+    # both take one - so the y-axis inversion in schemaVersion 2 bites here
+    # exactly as it does in render_map: a v1 file would silently answer
+    # about the tile mirrored north-south. It would matter even if nothing
+    # here read a coordinate, since a stale file should fail the same way at
+    # every harness entry point rather than succeed against the wrong
+    # schema. Kept in sync with
     # render_map.py's and run_history.py's copies rather than imported, since
     # these are deliberately standalone scripts. See CLAUDE.md and
     # AdvisorStateWriter._invertY for what changed 1 -> 2.
@@ -1665,6 +1978,658 @@ def _resource_status(rules, bonus_type, state, known):
     if len(visible) > 3:
         lines.append("  ... and %d more" % (len(visible) - 3))
     return lines
+
+
+# ---------------------------------------------------------------------------
+# Tile yields and improvement legality
+#
+# Both functions below are transcriptions of BTS source, in source order,
+# rather than reconstructions from observed behaviour. The install ships
+# CvGameCoreDLL.dll as a compiled binary and no source; the two mods that
+# bundle their own SDK copy (RFC, The Road to War) hold `canHaveImprovement`
+# BYTE-IDENTICALLY, which is what licenses treating it as unmodified base
+# code. `calculateNatureYield` differs between them in one place - RFC adds
+# an Inca branch on the isImpassable early-out - so the impassable case
+# follows the common remainder rather than either copy. See REFERENCES.md.
+# ---------------------------------------------------------------------------
+
+# Entries in CIV4ImprovementInfos.xml that are not improvements in any sense
+# a player would recognise: engine-internal markers for a worked plot, the
+# rubble left by a razed city, and a goody hut. A MODELLING fact, not a
+# scope choice - a tile carrying one of these is bare ground as far as
+# yields go, and running a hut through improvement_yield "clears" the forest
+# under it and loses its hammer.
+NOT_REAL_IMPROVEMENTS = frozenset((
+    "IMPROVEMENT_LAND_WORKED",
+    "IMPROVEMENT_WATER_WORKED",
+    "IMPROVEMENT_CITY_RUINS",
+    "IMPROVEMENT_GOODY_HUT",
+))
+
+# Real improvements the tile view does not offer, because they are outside
+# turns 0-50. Purely a SCOPE choice and the one likely future edit here:
+# widening the window means deleting from this list, which must stay safe to
+# do. Keeping it separate from NOT_REAL_IMPROVEMENTS is what makes it safe -
+# the two sets happen to be disjoint today, and fusing them would mean a
+# scope edit in the candidate list silently changed how an existing
+# improvement on a tile is valued. Watermill would in any case need cardinal
+# river geometry the export does not carry.
+OUT_OF_SCOPE_IMPROVEMENTS = frozenset((
+    "IMPROVEMENT_LUMBERMILL",
+    "IMPROVEMENT_WINDMILL",
+    "IMPROVEMENT_WATERMILL",
+    "IMPROVEMENT_FORT",
+    "IMPROVEMENT_WELL",
+    "IMPROVEMENT_OFFSHORE_PLATFORM",
+    "IMPROVEMENT_FOREST_PRESERVE",
+))
+
+
+def workable_improvements(rules):
+    """Improvements the tile view will consider, in a stable order.
+
+    Only those a worker action actually builds: an ImprovementInfo with no
+    BuildInfo pointing at it cannot be ordered, whatever its flags say.
+
+    Excludes rather than includes, so a mod's new improvement shows up by
+    default: a tool that silently omits something buildable is the failure
+    mode this whole subcommand exists to fix, and one extra row is a far
+    cheaper mistake than one missing.
+    """
+    buildable = set(build.get("improvement")
+                    for build in rules.builds.values()
+                    if build.get("improvement"))
+    return tuple(sorted(key for key in rules.improvements
+                        if key in buildable
+                        and key not in NOT_REAL_IMPROVEMENTS
+                        and key not in OUT_OF_SCOPE_IMPROVEMENTS))
+
+# How each yield column is NAMED to a reader. Not an XML order - the game
+# calls the middle column "production" and every player calls it hammers -
+# so this has no source to be read from. It is positionally locked to
+# `Rules.yield_order`, which IS read from CIV4YieldInfos.xml; index into
+# both with the same integer and never hardcode the type keys beside it
+# (an earlier version did, duplicating a list the Rules object already
+# holds - see parse_ordered_types on why guessing a positional order is a
+# silent mistranslation rather than an error).
+YIELD_LABELS = ("food", "hammers", "commerce")
+
+
+def _triplet(values=None):
+    """A mutable [food, production, commerce], defaulting to zeroes."""
+    if not values:
+        return [0, 0, 0]
+    return [values[0], values[1], values[2]]
+
+
+def _add(into, values):
+    if values:
+        for index in range(3):
+            into[index] += values[index]
+    return into
+
+
+def _yield_change_for(rules, yield_key, field):
+    """One column of the per-yield table: hills, lake or the city floor."""
+    entry = rules.yield_info.get(yield_key)
+    return entry.get(field, 0) if entry else 0
+
+
+def _city_floor(rules, tile, state, values):
+    """Raise a city-centre tile to iMinCity, as calculateYield's `bCity` clause.
+
+    The city centre is worked for free and never yields less than 2/1/1
+    whatever sits under it, which is why a city on plains reads [2,1,1] and
+    not the [1,1,0] the terrain alone gives. Found by sweeping the sample
+    against the engine rather than from the XML: 69 tiles disagreed and
+    every one of them was a city centre. That sweep is now a committed test
+    (test_tile_yields_match_the_engine_on_every_sample_tile), so removing
+    this floor fails a check rather than merely contradicting a comment.
+
+    Only the floor is modelled. iCityChange and the population terms are all
+    zero in the stock files, so they would be untestable code.
+    """
+    if not _is_city_tile(tile, state):
+        return values
+    floored = list(values)
+    for index, yield_key in enumerate(rules.yield_order):
+        floored[index] = max(floored[index],
+                             _yield_change_for(rules, yield_key, "min_city"))
+    return floored
+
+
+def _is_city_tile(tile, state):
+    """Is one of our cities standing on this tile?
+
+    Only our own: `cities` is the section carrying coordinates. A rival city
+    sits in `foreignCities`, which carries x/y too, so both are checked -
+    the floor is a property of the tile, not of who owns it.
+    """
+    x, y = tile.get("x"), tile.get("y")
+    for section in ("cities", "foreignCities"):
+        for city in state.get(section) or []:
+            if city.get("x") == x and city.get("y") == y:
+                return True
+    return False
+
+
+def nature_yield(rules, tile, state=None):
+    """The tile's yield BEFORE any improvement, as CvPlot::calculateNatureYield.
+
+    Delegates to improvement_yield with no improvement rather than repeating
+    the accumulation. That is not tidiness: the two used to add up the same
+    terrain/hills/bonus/feature/river terms independently, and a peak fix
+    applied to this one left the view - which goes through the other - still
+    printing 2 food for a plot the engine reports as [0,0,0]. One
+    accumulator means one place for such a clause to be missing from.
+
+    Kept as a named function because the question it answers is distinct and
+    has one production caller: `PrereqNatureYields` is tested against the
+    BARE tile, which is what stops Farms on desert.
+
+    The C++ signature also carries a bIgnoreFeature flag. It is not
+    reproduced here - nothing in scope passes it, and an unused parameter
+    that mirrors a source signature reads as supported when it is untested.
+    """
+    return nature_terms(rules, tile, state)[0]
+
+
+def _potential_city_work(tile):
+    """Could any city ever work this tile? (`CvPlot::updatePotentialCityWork`)
+
+    False only for deep ocean: a plot with no land anywhere in its 21-tile
+    city cross yields [0,0,0] whatever its terrain says, because no city can
+    ever be founded in range to work it. `calculateYield` returns 0 outright
+    for such a plot, which is why the map shows open sea as barren.
+
+    **Read from the export, not re-derived, because it is NOT derivable.**
+    Two attempts failed in opposite directions and the reason is fundamental:
+    the engine tests every plot in the cross, including ones the player has
+    never revealed, while `map.tiles` holds only revealed tiles. Measured on
+    the baseline sample, (82,37) with 11 unrevealed / 10 water / 0 land
+    yields [0,0,0] and (72,40) with 13 unrevealed / 8 water / 0 land yields
+    [1,0,1] - identical in every fact the export carries. Treating unrevealed
+    as water was wrong on 24 tiles, as land on 609.
+
+    So the tile's own exported `yields` settles it, which is the engine's
+    answer rather than a reconstruction of it. That costs nothing here: this
+    function exists to explain a zero the export already states, and water
+    tiles carry no improvement decision in scope beyond the two boat builds,
+    which need a resource that deep ocean does not have.
+    """
+    if tile.get("plotType") != "PLOT_OCEAN":
+        return True
+    exported = tile.get("yields")
+    if exported is not None and not any(exported):
+        return False
+    return True
+
+
+def _impassable(tile):
+    """Peaks and ice - nothing can be built on them.
+
+    The engine asks CvPlot::isImpassable, which is terrain-or-feature
+    impassability. Only these two matter in scope and both are checkable
+    from the export.
+    """
+    if tile.get("plotType") == "PLOT_PEAK":
+        return True
+    return (tile.get("feature") or "") == "FEATURE_ICE"
+
+
+def can_have_improvement(rules, tile, improvement_type, known):
+    """Why this improvement cannot go on this tile, or None if it can.
+
+    A transcription of CvPlot::canHaveImprovement in SOURCE ORDER, which is
+    load-bearing rather than stylistic: the bonus check is an early
+    `return true` sitting ABOVE the flatlands, irrigation and nature-yield
+    gates. That single ordering fact is why a Farm is legal on dry Corn and
+    on hill Corn, and reordering these clauses to read more naturally would
+    silently produce the wrong answer on exactly the tiles worth asking about.
+
+    Returns a reason string (the caller renders it) or None for "legal".
+    The tech gate is checked by the caller, not here - the engine keeps it in
+    canBuild rather than canHaveImprovement, and the two answer different
+    questions: "could this ever sit here" versus "may I order it now".
+    """
+    improvement = rules.improvements.get(improvement_type)
+    if improvement is None:
+        raise RulesError("no such improvement: %s" % improvement_type)
+
+    if _impassable(tile):
+        return "impassable terrain"
+
+    is_water = tile.get("plotType") == "PLOT_OCEAN"
+    if improvement.get("water") != is_water:
+        return "water improvement on land" if improvement.get("water") \
+            else "land improvement on water"
+
+    feature_key = tile.get("feature") or ""
+    feature = rules.features.get(feature_key)
+    if feature and feature.get("no_improvement"):
+        return "%s allows no improvements" % _plain(feature_key)
+
+    # THE EARLY RETURN. Everything below is bypassed when the tile's resource
+    # validates the improvement, which is the Farm-on-dry-Corn case.
+    bonus_key = tile.get("bonus") or ""
+    if bonus_key:
+        struct = improvement.get("bonus_structs", {}).get(bonus_key)
+        if struct and struct.get("makes_valid"):
+            return None
+
+    if improvement.get("no_fresh_water") and tile.get("freshWater"):
+        return "not on fresh water"
+    if improvement.get("requires_flatlands") and tile.get("plotType") == "PLOT_HILLS":
+        return "needs flatland, this is hills"
+    if improvement.get("requires_feature") and not feature_key:
+        return "needs a feature on the tile"
+
+    valid = False
+    if improvement.get("hills_makes_valid") and tile.get("plotType") == "PLOT_HILLS":
+        valid = True
+    if improvement.get("fresh_water_makes_valid") and tile.get("freshWater"):
+        valid = True
+    # bRiverSideMakesValid is a river-CROSSING test on cardinal neighbours;
+    # the export carries `river` as a plain boolean by design, so this is the
+    # looser "on a river" reading. It can only ever admit a tile the engine
+    # would also admit for some other reason in scope, and the one improvement
+    # that REQUIRES riverside (Watermill) is excluded - see OMITS.
+    if improvement.get("river_side_makes_valid") and tile.get("river"):
+        valid = True
+    if improvement.get("terrain_valid", {}).get(tile.get("terrain") or ""):
+        valid = True
+    if feature_key and improvement.get("feature_valid", {}).get(feature_key):
+        valid = True
+    if not valid:
+        # Deliberately does NOT blame the feature, even when one is present.
+        # A feature never causes this branch: canHaveImprovement consults it
+        # only through FeatureMakesValid, which can add validity and never
+        # remove it. An earlier version reported "blocked by Forest" here and
+        # was wrong twice over - the forest is not what invalidated the tile,
+        # and a Mine on a forested hill is legal anyway (it needs the
+        # chopping tech, which clearing_requirement reports separately).
+        return "not valid on %s" % _plain(tile.get("terrain") or "this terrain")
+
+    if improvement.get("requires_river_side") and not tile.get("river"):
+        return "needs to be beside a river"
+
+    nature = nature_yield(rules, tile)
+    prereq = improvement.get("prereq_nature")
+    if prereq:
+        for index in range(3):
+            if nature[index] < prereq[index]:
+                return "needs %d %s from the bare tile, it makes %d" % (
+                    prereq[index], YIELD_LABELS[index], nature[index])
+
+    # No irrigation CHAINING: the engine's isIrrigationAvailable also follows
+    # a carried chain from an adjacent irrigated tile, which is a midgame
+    # concern and deliberately out of scope. Fresh water on the tile itself is
+    # the early-game answer. Named in OMITS so the narrowing is visible.
+    if improvement.get("requires_irrigation") and not tile.get("freshWater"):
+        return "needs irrigation - no fresh water on this tile"
+
+    return None
+
+
+def build_blocker(rules, tile, improvement_type, state):
+    """Why this cannot be ORDERED here, beyond the tile being able to hold it.
+
+    canHaveImprovement answers "could this ever sit here"; CvPlot::canBuild
+    wraps it with gates that have nothing to do with terrain, and two of them
+    bite in ordinary play:
+
+      * the tile already carries this improvement, or one that upgrades into
+        the same thing (a Cottage where a Hamlet stands);
+      * the tile is inside another team's borders, where you may build
+        nothing at all bar the few bOutsideBorders improvements.
+
+    Both were missing at first, and both produced a confident "you can build
+    this" on a tile where the game will not let you - the worse failure of the
+    two available, since the reader has no way to doubt it.
+    """
+    if improvement_type is None:
+        return None
+    existing = tile.get("improvement")
+    if existing:
+        if existing == improvement_type:
+            return "already built here"
+        if _upgrades_to_same(rules, existing, improvement_type):
+            return "%s here already becomes this" % existing
+
+    owner = tile.get("owner")
+    player_id = (state.get("player") or {}).get("id")
+    if owner is not None and player_id is not None and owner != player_id:
+        improvement = rules.improvements.get(improvement_type) or {}
+        if not improvement.get("outside_borders"):
+            return "inside %s's borders" % _owner_label(state, owner)
+    return None
+
+
+def _upgrades_to_same(rules, existing, wanted):
+    """Do these two improvements share a final upgrade target?
+
+    The Cottage line is the case in scope: a Cottage cannot be built where a
+    Hamlet stands, because both end at Town. Mirrors canBuild's
+    finalImprovementUpgrade comparison.
+    """
+    final = _final_upgrade(rules, existing)
+    return final is not None and final == _final_upgrade(rules, wanted)
+
+
+def _final_upgrade(rules, improvement_type):
+    """Follow <ImprovementUpgrade> to the end of the chain.
+
+    Cottage -> Hamlet -> Village -> Town. `seen` guards a cycle the stock
+    files do not contain but a mod could; the loop is iterative, so it takes
+    no accumulator parameter.
+    """
+    seen = set()
+    current = improvement_type
+    while current and current not in seen:
+        seen.add(current)
+        nxt = (rules.improvements.get(current) or {}).get("upgrade")
+        if not nxt:
+            return current
+        current = nxt
+    return current
+
+
+def connecting_improvement(rules, bonus_type, tile=None):
+    """The improvement that puts this resource into your trade network.
+
+    `bBonusTrade` on the improvement's own BonusTypeStruct, which is the
+    engine's gate in `CvPlot::updatePlotGroupBonus`: a resource joins the
+    plot group's bonus count only if the tile is a city OR carries an
+    improvement whose `isImprovementBonusTrade` names it. So this is not a
+    "which is best" judgement - it is the one improvement that connects the
+    resource at all, and every other option on a resource tile leaves it
+    unconnected.
+
+    Exactly one per bonus across all 32 in the stock files, with one pair -
+    Oil takes WELL on land and OFFSHORE_PLATFORM at sea - which `tile`
+    disambiguates when supplied. `bBonusMakesValid` and `bBonusTrade` are
+    identical on every struct in both trees (checked), so the connecting
+    improvement is always also a legal one.
+    """
+    if not bonus_type:
+        return None
+    matches = []
+    for key in sorted(rules.improvements):
+        struct = (rules.improvements[key].get("bonus_structs")
+                  or {}).get(bonus_type)
+        if struct and struct.get("trade"):
+            matches.append(key)
+    if len(matches) > 1 and tile is not None:
+        water = tile.get("plotType") == "PLOT_OCEAN"
+        matches = [key for key in matches
+                   if bool(rules.improvements[key].get("water")) == water]
+    return matches[0] if len(matches) == 1 else None
+
+
+def bonus_trade_tech(rules, bonus_type):
+    """The tech that lets a CITY work this resource, if it is not yet known.
+
+    A second, separate gate from the build's own tech and easy to miss
+    because nothing else in the view mentions it: `updatePlotGroupBonus`
+    checks `TechCityTrade` before it checks the improvement. Copper needs
+    Bronze Working to be revealed at all and Mining to be mined; Horse needs
+    Animal Husbandry for both. Returns the type key or None.
+    """
+    entry = rules.bonuses.get(bonus_type or "")
+    tech = entry.get("city_trade") if entry else None
+    return tech if tech and tech != "NONE" else None
+
+
+def build_for(rules, improvement_type):
+    """The worker action that produces this improvement, and its tech.
+
+    The tech gate is NOT on the improvement - every ImprovementInfo in the
+    stock files has an empty <PrereqTech>, and Agriculture/Mining/Pottery are
+    attached to BUILD_FARM/BUILD_MINE/BUILD_COTTAGE instead. Reading the
+    improvement's own field yields None, which reads as "no tech needed" and
+    is wrong for almost every improvement in the game.
+
+    Returns (build_key, tech) or (None, None).
+    """
+    for build_key, build in sorted(rules.builds.items()):
+        if build.get("improvement") == improvement_type:
+            return build_key, build.get("tech")
+    return None, None
+
+
+def clearing_requirement(rules, tile, improvement_type):
+    """The build that removes a feature standing on this tile, and its tech.
+
+    A feature is NOT an obstacle to legality - verified against the source,
+    against an expectation that said otherwise. `canHaveImprovement` never
+    consults the feature except via FeatureMakesValid and bRequiresFeature,
+    so a Mine on a forested hill is perfectly legal; what the forest costs is
+    a separate per-feature TECH inside the build, because clearing it is part
+    of performing the build. That is why this returns a REQUIREMENT rather
+    than a refusal, and why it is reported alongside a legal verdict.
+
+    This is the join the trial missed: the agent had already run
+    `rules.py tech TECH_BRONZE_WORKING`, seen `remove FEATURE_FOREST`, and
+    still recommended a mine on a forested hill. Both facts were on screen in
+    different places and nothing put them together.
+
+    Returns (build_type, tech, feature) or None. Walks the nested
+    FeatureStructs parse_builds already reads rather than the top-level
+    PrereqTech - the per-feature tech is the one that gates this tile.
+    """
+    feature_key = tile.get("feature") or ""
+    if not feature_key:
+        return None
+    improvement = rules.improvements.get(improvement_type) or {}
+    # An improvement that REQUIRES the feature obviously does not clear it.
+    if improvement.get("requires_feature"):
+        return None
+    for build_key, build in sorted(rules.builds.items()):
+        if build.get("improvement") != improvement_type:
+            continue
+        for entry in build.get("features") or []:
+            if entry.get("feature") == feature_key and entry.get("remove"):
+                return (build_key, entry.get("tech"), feature_key)
+    return None
+
+
+def nature_terms(rules, tile, state=None, traits=()):
+    """The unimproved tile's yield, decomposed the same way as an improved one.
+
+    Passes improvement_type=None rather than naming some harmless
+    improvement and filtering its terms back out - that earlier trick broke
+    the moment a test fixture had no IMPROVEMENT_FARM in it. The bare tile
+    is a case the accumulator handles, not a special one.
+    """
+    return improvement_yield(rules, tile, None, known=set(), traits=traits,
+                             state=state)
+
+
+def improvement_yield(rules, tile, improvement_type, known, traits=(),
+                      state=None):
+    """The tile's yield WITH this improvement, and the terms that make it up.
+
+    Returns (total, terms) where terms is a list of (label, triplet) in the
+    order the game applies them, so the caller can print the decomposition
+    that would have exposed the invented Despotism penalty in the trial.
+
+    Every term is data-driven. In particular the resource contributes TWICE
+    and through different files - once bare (BonusInfo.YieldChange, Corn's
+    +1 food) and once as a reward for this specific improvement
+    (ImprovementInfo.BonusTypeStructs, Corn's +2 on a Farm). Reporting only
+    one of the two is precisely the 4-instead-of-5 error.
+    """
+    # None means "the bare tile" - see nature_terms. An empty dict rather
+    # than a guard at every use: none of the improvement fields below are
+    # present, so each term falls away on its own.
+    if improvement_type is None:
+        improvement = {}
+    else:
+        improvement = rules.improvements.get(improvement_type)
+        if improvement is None:
+            raise RulesError("no such improvement: %s" % improvement_type)
+
+    terms = []
+    total = _triplet()
+
+    # INVARIANT: this is the ONLY tile-yield accumulator, and every
+    # whole-tile early-out belongs at the top of it. `nature_yield` and
+    # `nature_terms` are projections of this function, not parallel
+    # implementations - so a clause added here is inherited by all three.
+    #
+    # Keep it that way. There were once two accumulators, and a peak fix
+    # applied to one left the view - which reached the other - printing
+    # 2 food for a plot the engine reports as [0,0,0]. If a future
+    # calculateYield clause seems to need adding "in both places", that is
+    # the signal a second accumulator has crept back in, not a reason to
+    # write the clause twice.
+    if _impassable(tile):
+        return [0, 0, 0], [("impassable", [0, 0, 0])]
+    # Not a computed term but an ORACLE READ: deep ocean is underivable from
+    # `map.tiles` (see _potential_city_work), so this one clause trusts the
+    # export where every other term here is calculated.
+    if state is not None and not _potential_city_work(tile):
+        return [0, 0, 0], [("open sea - no city can reach it", [0, 0, 0])]
+
+    terrain_key = tile.get("terrain") or ""
+    terrain = rules.terrains.get(terrain_key)
+    base = _triplet(terrain.get("yields") if terrain else None)
+    terms.append((_plain(terrain_key), list(base)))
+    _add(total, base)
+
+    plot_type = tile.get("plotType")
+    for index, yield_key in enumerate(rules.yield_order):
+        step = _triplet()
+        if plot_type == "PLOT_HILLS":
+            step[index] += _yield_change_for(rules, yield_key, "hills")
+        if tile.get("lake"):
+            step[index] += _yield_change_for(rules, yield_key, "lake")
+        if any(step):
+            label = "hills" if plot_type == "PLOT_HILLS" else "lake"
+            terms.append((label, step))
+            _add(total, step)
+
+    bonus_key = tile.get("bonus") or ""
+    bonus = rules.bonuses.get(bonus_key)
+    if bonus and bonus.get("yields") and any(bonus["yields"]):
+        terms.append((_plain(bonus_key), list(bonus["yields"])))
+        _add(total, bonus["yields"])
+
+    feature_key = tile.get("feature") or ""
+    feature = rules.features.get(feature_key)
+    # An improvement that does not REQUIRE the feature clears it first, so its
+    # yield change is gone by the time the improvement stands. Only the
+    # feature-requiring improvements (all excluded from scope) keep it - as
+    # does the bare tile, which clears nothing.
+    keeps_feature = (improvement_type is None
+                     or improvement.get("requires_feature"))
+    if feature and keeps_feature and feature.get("yields") and any(feature["yields"]):
+        terms.append((_plain(feature_key), list(feature["yields"])))
+        _add(total, feature["yields"])
+
+    if tile.get("river"):
+        source = feature if (feature and keeps_feature) else terrain
+        river = source.get("river") if source else None
+        if river and any(river):
+            terms.append(("river", list(river)))
+            _add(total, river)
+
+    own = improvement.get("yields")
+    if own and any(own):
+        terms.append((_plain(improvement_type), list(own)))
+        _add(total, own)
+
+    struct = improvement.get("bonus_structs", {}).get(bonus_key)
+    if struct and struct.get("yields") and any(struct["yields"]):
+        terms.append(("%s on %s" % (_plain(improvement_type), _plain(bonus_key)),
+                      list(struct["yields"])))
+        _add(total, struct["yields"])
+
+    if improvement.get("irrigated") and tile.get("freshWater") \
+            and any(improvement["irrigated"]):
+        terms.append(("fresh water", list(improvement["irrigated"])))
+        _add(total, improvement["irrigated"])
+
+    for entry in improvement.get("tech_yields") or []:
+        if entry.get("tech") in known and entry.get("yields") \
+                and any(entry["yields"]):
+            terms.append((_plain(entry["tech"]), list(entry["yields"])))
+            _add(total, entry["yields"])
+
+    total = [max(0, value) for value in total]
+
+    # Order matters and follows calculateYield: the city floor is applied
+    # BEFORE the trait threshold, so a Financial leader's city centre can be
+    # lifted to 1 commerce by the floor and then cleared by the threshold.
+    if state is not None:
+        floored = _city_floor(rules, tile, state, total)
+        if floored != total:
+            step = [floored[i] - total[i] for i in range(3)]
+            terms.append(("city centre minimum", step))
+            total = floored
+
+    # Financial last, and tested against the running total: the threshold is
+    # "this tile already makes 2+ commerce", which is only decidable once
+    # every other term has landed.
+    for trait_key in traits:
+        trait = rules.traits.get(trait_key)
+        thresholds = trait.get("yield_thresholds") if trait else None
+        if not thresholds:
+            continue
+        step = _triplet()
+        for index in range(3):
+            if thresholds[index] and total[index] >= thresholds[index]:
+                step[index] += 1
+        if any(step):
+            terms.append((_plain(trait_key), step))
+            total = [total[i] + step[i] for i in range(3)]
+
+    return total, terms
+
+
+def player_traits(rules, state):
+    """The active player's traits, via the leader the state file exports.
+
+    `player.traits` does not exist in the schema - only `player.leader` - so
+    this join through CIV4LeaderHeadInfos is the only route. Returns () when
+    the leader is unknown rather than guessing, which makes a missing trait
+    file show up as "no Financial bonus" rather than a crash.
+    """
+    leader_key = ((state.get("player") or {}).get("leader")) or ""
+    leader = rules.leaders.get(leader_key)
+    return tuple(leader.get("traits") or ()) if leader else ()
+
+
+def owner_traits(rules, state, owner_id):
+    """Traits for whoever owns a tile - ours or a rival's.
+
+    A rival's leader is only knowable if we have MET them: `contacts` carries
+    the leader for each met civ. An unmet owner returns () with a False
+    second element, so the caller can say "traits unknown" rather than
+    quietly computing the tile as though the owner were traitless.
+    """
+    player = state.get("player") or {}
+    if owner_id is None or owner_id == player.get("id"):
+        return player_traits(rules, state), True
+    for contact in state.get("contacts") or []:
+        if contact.get("playerId") == owner_id:
+            leader = rules.leaders.get(contact.get("leader") or "")
+            return (tuple(leader.get("traits") or ()) if leader else ()), True
+    return (), False
+
+
+def find_tile(state, x, y):
+    """The exported tile at (x, y), or None if it was never revealed.
+
+    None is the honest answer for a never-scouted tile rather than an error
+    case to paper over: `map.tiles` contains every tile the player has EVER
+    revealed, so absence means the player has genuinely never seen it. A
+    fogged tile is present (with visibleNow false) and is answerable.
+    """
+    for tile in (state.get("map") or {}).get("tiles") or []:
+        if tile.get("x") == x and tile.get("y") == y:
+            return tile
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -3970,6 +4935,399 @@ def view_handicap(rules, handicap_type, state):
     return "\n".join(out)
 
 
+def _format_terms(terms):
+    """The decomposition, as `2 grass +1 corn +2 farm-on-corn` per column.
+
+    Printed alongside the total rather than instead of it. The trial this
+    item exists to fix reported a bare wrong number with no working shown,
+    and a bare RIGHT number is not much better - the reader cannot tell a
+    correct answer from a plausible one. The terms are what make the
+    invented Despotism penalty visible as an extra line that is not there.
+    """
+    lines = []
+    for index, label in enumerate(YIELD_LABELS):
+        parts = [(name, values[index]) for name, values in terms if values[index]]
+        if not parts:
+            continue
+        rendered = []
+        for position, (name, value) in enumerate(parts):
+            if position == 0:
+                rendered.append("%d %s" % (value, name))
+            else:
+                rendered.append("%s%d %s" % ("+" if value > 0 else "-",
+                                             abs(value), name))
+        lines.append((label, " ".join(rendered)))
+    return lines
+
+
+def _yield_total(values):
+    """`3 food, 2 hammers` - zero columns dropped, all-zero rendered once."""
+    parts = ["%d %s" % (value, YIELD_LABELS[index])
+             for index, value in enumerate(values) if value]
+    return ", ".join(parts) if parts else "nothing"
+
+
+def view_improvement(rules, improvement_type, state, at=None):
+    """What an improvement yields - in the abstract, or on one named tile.
+
+    Two modes through one path deliberately. The static mode answers "what
+    does a Farm do", which is the lookup `rules.py` never had; `--at X,Y`
+    answers "what would it do HERE, and may I build it", which is the
+    question the trial actually asked. Sharing the arithmetic is the point:
+    a static table that disagreed with the tile answer would be worse than
+    having neither.
+    """
+    known = effective_known(state)
+    if at is not None:
+        return _view_tile(rules, at, state, known, improvement_type)
+    if not improvement_type:
+        raise RulesError(
+            "`improvement` needs a type (e.g. IMPROVEMENT_FARM) or --at X,Y")
+
+    improvement = rules.improvements.get(improvement_type)
+    if improvement is None:
+        raise _not_found("improvement", improvement_type, rules.improvements,
+                         _relative(rules.sources.get("improvements",
+                                                     (None, None))[0],
+                                   rules.xml_root),
+                         "IMPROVEMENT_FARM")
+
+    out = []
+    out.append("%s" % improvement_type)
+    out.append("  against %s" % state_summary(state))
+    out.append("")
+
+    build_key, tech = build_for(rules, improvement_type)
+    if tech:
+        out.append("TECH  %s %s   (via %s)"
+                   % (tech, _tech_status(tech, known, state), build_key))
+    elif build_key:
+        out.append("TECH  none - %s is available from the start" % build_key)
+    else:
+        out.append("TECH  no worker action builds this")
+    out.append("")
+
+    out.append("YIELDS")
+    own = improvement.get("yields")
+    if own and any(own):
+        out.append("  flat        %s" % _yield_total(own))
+    else:
+        # Worth stating rather than omitting: a Farm's food does NOT come
+        # from a flat yield, and assuming it does is how the +2 Corn term
+        # gets dropped.
+        out.append("  flat        none - this improvement has no yield of its own")
+    if improvement.get("irrigated") and any(improvement["irrigated"]):
+        out.append("  irrigated   %s (fresh water)"
+                   % _yield_total(improvement["irrigated"]))
+    for entry in improvement.get("tech_yields") or []:
+        if entry.get("yields") and any(entry["yields"]):
+            out.append("  %s   %s %s" % (entry["tech"],
+                                         _yield_total(entry["yields"]),
+                                         _tech_status(entry["tech"], known, state)))
+
+    structs = improvement.get("bonus_structs") or {}
+    if structs:
+        out.append("")
+        out.append("ON A RESOURCE")
+        out.append("  Each line is IN ADDITION to the resource's own yield and the")
+        out.append("  terrain's. `makes valid` bypasses every terrain restriction below.")
+        for bonus_key in sorted(structs):
+            struct = structs[bonus_key]
+            bonus_own = (rules.bonuses.get(bonus_key) or {}).get("yields")
+            bits = []
+            if struct.get("yields") and any(struct["yields"]):
+                # _delta_text rather than a "+" prefix on _yield_total: a
+                # mine on Gems is -1 hammers and +5 commerce, which the
+                # prefix rendered as "+-1 hammers, 5 commerce" - wrong sign
+                # on one term and a missing sign on the other.
+                bits.append(_delta_text(struct["yields"]))
+            else:
+                bits.append("no extra yield")
+            if bonus_own and any(bonus_own):
+                bits.append("(resource itself: %s)" % _yield_total(bonus_own))
+            if struct.get("makes_valid"):
+                bits.append("[makes valid]")
+            out.append("  %-24s %s" % (bonus_key, " ".join(bits)))
+
+    out.append("")
+    out.append("WHERE IT CAN GO")
+    for line in _legality_prose(rules, improvement):
+        out.append("  %s" % line)
+
+    out.append("")
+    out.append("OMITS")
+    out.append("  What a tile ACTUALLY yields - run with --at X,Y for that, which")
+    out.append("  joins terrain, resource, feature, river and your traits, and")
+    out.append("  says whether you can build here at all.")
+    out.append("  Worker-turns to build. A build that clears a feature costs the")
+    out.append("  improvement's time PLUS the clearing time, charged as one job.")
+    out.append("  " + MOD_WARNING)
+    return "\n".join(out)
+
+
+def _legality_prose(rules, improvement):
+    """The legality flags as sentences, in canHaveImprovement's own order."""
+    lines = []
+    if improvement.get("water"):
+        lines.append("water tiles only")
+    else:
+        lines.append("land tiles only")
+    terrains = sorted(k for k, v in (improvement.get("terrain_valid") or {}).items() if v)
+    if terrains:
+        lines.append("terrain: %s" % ", ".join(terrains))
+    features = sorted(k for k, v in (improvement.get("feature_valid") or {}).items() if v)
+    if features:
+        lines.append("feature: %s" % ", ".join(features))
+    if improvement.get("hills_makes_valid"):
+        lines.append("hills make it valid")
+    if improvement.get("fresh_water_makes_valid"):
+        lines.append("fresh water makes it valid")
+    if improvement.get("river_side_makes_valid"):
+        lines.append("being beside a river makes it valid")
+    if improvement.get("requires_flatlands"):
+        lines.append("REQUIRES flatland (no hills)")
+    if improvement.get("requires_feature"):
+        lines.append("REQUIRES a feature on the tile")
+    if improvement.get("requires_river_side"):
+        lines.append("REQUIRES a river side")
+    if improvement.get("requires_irrigation"):
+        lines.append("REQUIRES irrigation - fresh water, or a chain from it")
+    if improvement.get("no_fresh_water"):
+        lines.append("NOT on fresh water")
+    prereq = improvement.get("prereq_nature")
+    if prereq and any(prereq):
+        lines.append("bare tile must already make %s" % _yield_total(prereq))
+    if not terrains and not features:
+        lines.append("(no terrain list - validity comes from the flags above,")
+        lines.append(" or from a resource that makes it valid)")
+    return lines
+
+
+def _view_tile(rules, at, state, known, only=None):
+    """Every in-scope improvement for one tile, with the yield each would give.
+
+    Iterates rather than taking an improvement argument: the question in play
+    is "what should the worker do here", and answering it one improvement at
+    a time puts the enumeration back on the caller. `only` narrows it when a
+    specific improvement WAS named alongside --at.
+    """
+    x, y = at
+    tile = find_tile(state, x, y)
+    if tile is None:
+        raise RulesError(
+            "no tile at %d,%d in this state file.\n"
+            "`map.tiles` holds every tile you have EVER revealed, so an absent "
+            "one has never been scouted - there is nothing to report, not even "
+            "its terrain. Check the coordinates against `render_map.py`, and "
+            "remember y increases SOUTH." % (x, y))
+
+    # The header carries only what bears on the decision. Route, and the
+    # trait list on a leader with no yield trait, were both dropped after
+    # reading real output: neither changes an improvement choice, and every
+    # line here is one the reader pays for on every call.
+    descriptors = [tile.get("terrain") or "?"]
+    plot_type = tile.get("plotType")
+    if plot_type:
+        descriptors.append(plot_type[len("PLOT_"):].lower())
+    for flag in ("feature", "bonus"):
+        if tile.get(flag):
+            descriptors.append(tile[flag])
+    for flag, label in (("river", "river"), ("freshWater", "fresh water"),
+                        ("lake", "lake")):
+        if tile.get(flag):
+            descriptors.append(label)
+
+    owner = tile.get("owner")
+    traits, owner_known = owner_traits(rules, state, owner)
+    player = state.get("player") or {}
+    foreign = owner is not None and owner != player.get("id")
+    if foreign:
+        who = _owner_label(state, owner)
+        descriptors.append("owned by %s" % who
+                           if owner_known else "owned by %s (unmet)" % who)
+
+    out = []
+    out.append("tile %d,%d - %s" % (x, y, ", ".join(descriptors)))
+    if tile.get("improvement"):
+        out.append("  has %s" % tile["improvement"])
+
+    # The single most decision-relevant fact on a resource tile, and the one
+    # the yield columns actively obscure: only ONE improvement connects the
+    # resource to your trade network, and a rival option that scores better
+    # on raw yield still leaves the resource unconnected.
+    bonus_key = tile.get("bonus") or ""
+    connector = connecting_improvement(rules, bonus_key, tile)
+    if connector:
+        note = "  %s is CONNECTED by %s" % (bonus_key, connector)
+        if tile.get("improvement") == connector:
+            note += " - already built"
+        out.append(note)
+        trade_tech = bonus_trade_tech(rules, bonus_key)
+        if trade_tech and trade_tech not in known:
+            # Distinct from the build's own tech and checked FIRST by the
+            # engine, so it can block the connection even once the
+            # improvement stands.
+            out.append("  and needs %s %s before any city can work it"
+                       % (trade_tech, _tech_status(trade_tech, known, state)))
+    if not tile.get("visibleNow"):
+        out.append("  NOT VISIBLE NOW - remembered terrain. Terrain and "
+                   "resources do not change;")
+        out.append("  a unit or a newly built improvement here would not show.")
+
+    # "NOW" must mean what the tile yields TODAY, which on an already-improved
+    # tile is not the bare-terrain figure. Getting this wrong understates the
+    # status quo and makes every alternative look better than it is - the
+    # precise shape of bad advice on a tile that is already working.
+    #
+    # A goody hut is an IMPROVEMENT in the data and emphatically not one
+    # here: running it through improvement_yield clears the tile's feature
+    # (huts do not set bRequiresFeature) and loses the forest's hammer.
+    #
+    # NOT_REAL_IMPROVEMENTS only - deliberately NOT the out-of-scope list.
+    # A Windmill is a real improvement that this view merely declines to
+    # OFFER; if one is standing on the tile it still produces yields, and
+    # treating it as bare ground here would understate the tile.
+    existing = tile.get("improvement")
+    if existing in NOT_REAL_IMPROVEMENTS:
+        existing = None
+    if existing and existing in rules.improvements:
+        current, current_terms = improvement_yield(
+            rules, tile, existing, known, traits, state)
+    else:
+        current, current_terms = nature_terms(rules, tile, state, traits)
+    out.append("")
+    out.append("NOW           %s" % _yield_total(current))
+    for label, rendered in _format_terms(current_terms):
+        out.append("  %-9s %s" % (label, rendered))
+
+    out.append("")
+    candidates = [only] if only else list(workable_improvements(rules))
+    rows = []
+    for improvement_type in candidates:
+        if rules.improvements.get(improvement_type) is None:
+            continue
+        why = (can_have_improvement(rules, tile, improvement_type, known)
+               or build_blocker(rules, tile, improvement_type, state))
+        if why is not None and only is None:
+            continue
+        total, terms = improvement_yield(rules, tile, improvement_type, known,
+                                         traits, state)
+        rows.append((improvement_type, why, total, terms))
+
+    # The connecting improvement first. This is ordering, not ranking: it is
+    # not a claim that it yields most (a Mine on Gems does not), but that it
+    # is the only option that connects the resource at all - a different
+    # kind of fact, and the one a reader scanning the list needs first.
+    # Everything else stays alphabetical.
+    if connector:
+        rows.sort(key=lambda row: (row[0] != connector, row[0]))
+
+    if not rows:
+        # Say WHY nothing is listed. "Nothing can be built here" reads as a
+        # property of the terrain, and on a foreign tile that is the wrong
+        # conclusion entirely - the tile may be excellent and simply not
+        # yours.
+        if _impassable(tile):
+            # Named specifically: a peak yields nothing and can never be
+            # improved OR worked, which is a different fact from "no
+            # improvement happens to fit this terrain".
+            out.append("NOTHING BUILDABLE - impassable. This tile yields "
+                       "nothing and cannot be worked.")
+        elif foreign:
+            out.append("NOTHING BUILDABLE - this tile is inside %s's borders."
+                       % _owner_label(state, owner))
+        elif tile.get("improvement"):
+            out.append("NOTHING TO ADD - %s is already here and nothing else "
+                       "in scope is legal." % tile["improvement"])
+        else:
+            out.append("NOTHING BUILDABLE - no improvement in scope is legal "
+                       "on this terrain.")
+    else:
+        out.append("IF YOU BUILD")
+        for improvement_type, why, total, terms in rows:
+            out.append("")
+            if why is not None:
+                out.append("  %s - CANNOT: %s" % (improvement_type, why))
+                continue
+            # Against what the tile yields TODAY, so on an improved tile the
+            # figure is the real trade of replacing what stands there.
+            delta = [total[i] - current[i] for i in range(3)]
+            out.append("  %-24s %s   (%s)%s"
+                       % (improvement_type, _yield_total(total),
+                          _delta_text(delta),
+                          "   <- CONNECTS %s" % bonus_key
+                          if improvement_type == connector else ""))
+            # Only the columns the improvement actually moved. The unchanged
+            # ones are already on the NOW line above and repeating them was
+            # the single largest source of noise in the first output.
+            for label, rendered in _format_terms(terms):
+                if delta[YIELD_LABELS.index(label)]:
+                    out.append("      %-9s %s" % (label, rendered))
+            for line in _build_gates(rules, tile, improvement_type, known,
+                                     state):
+                out.append("      %s" % line)
+            # The cost that no yield column shows. Losing a strategic
+            # resource is not a yield trade at all - it can remove a whole
+            # unit line from what the empire can build - so it is stated on
+            # the row rather than left to be inferred from its absence.
+            if connector and improvement_type != connector:
+                if tile.get("improvement") == connector:
+                    out.append("      LOSES    %s - replaces the %s that "
+                               "connects it" % (bonus_key, connector))
+                else:
+                    out.append("      leaves   %s unconnected" % bonus_key)
+
+    out.append("")
+    out.append("OMITS")
+    out.append("  Worker-turns to build. A build that clears a feature costs the")
+    out.append("  improvement's time PLUS the clearing time, charged as one job.")
+    out.append("  Irrigation chaining, so a dry tile fed by a chain of farms reads")
+    out.append("  as illegal here. Cottage growth (the yield is a fresh Cottage).")
+    out.append("  Out of scope: Lumbermill, Windmill, Watermill, Fort, Well,")
+    out.append("  Offshore Platform, Forest Preserve.")
+    out.append("  " + MOD_WARNING)
+    return "\n".join(out)
+
+
+def _delta_text(delta):
+    """`+2 food, -1 hammers` against the unimproved tile."""
+    parts = ["%s%d %s" % ("+" if value > 0 else "-", abs(value),
+                          YIELD_LABELS[index])
+             for index, value in enumerate(delta) if value]
+    return ", ".join(parts) if parts else "no change"
+
+
+def _owner_label(state, owner_id):
+    for contact in state.get("contacts") or []:
+        if contact.get("playerId") == owner_id:
+            return "%s (player %s)" % (contact.get("leader") or "?", owner_id)
+    return "player %s" % owner_id
+
+
+def _build_gates(rules, tile, improvement_type, known, state):
+    """Tech gates between "legal here" and "orderable now".
+
+    Two separate gates and they come from different places, which is exactly
+    what the trial failed to join: the improvement's own PrereqTech, and the
+    per-feature tech inside the BUILD that clears whatever is standing here.
+    A forested hill is a legal Mine site that still needs Bronze Working.
+    """
+    lines = []
+    _build_key, tech = build_for(rules, improvement_type)
+    if tech and tech not in known:
+        lines.append("needs    %s %s" % (tech, _tech_status(tech, known, state)))
+    clearing = clearing_requirement(rules, tile, improvement_type)
+    if clearing:
+        build_key, clear_tech, feature = clearing
+        if clear_tech and clear_tech not in known:
+            lines.append("needs    %s %s to clear %s first"
+                         % (clear_tech, _tech_status(clear_tech, known, state),
+                            feature))
+        else:
+            lines.append("clears   %s as part of the build" % feature)
+    return lines
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -3982,7 +5340,7 @@ def build_parser():
     parser.add_argument(
         "subject",
         choices=("unit", "tech", "building", "promotion", "city", "handicap",
-                 "goody"),
+                 "goody", "improvement"),
         help="what to look up",
     )
     # `state` is the only required positional and always comes last, so
@@ -4038,11 +5396,12 @@ def build_parser():
     )
     parser.add_argument(
         "--at", default=None, metavar="X,Y",
-        help="`goody` only: the tile of the hut being considered, as `intel` "
-             "and `render_map` print coordinates. This is the hut's own tile, "
-             "never the unit's - a unit standing on a hut has already popped "
-             "it. Decides the one-city hostile radius, which is otherwise "
-             "reported as a condition. Put this AFTER the state file.",
+        help="a tile, as `intel` and `render_map` print coordinates - remember "
+             "y increases SOUTH. For `improvement`, the tile to report on: "
+             "what it yields now and what each improvement would make it. For "
+             "`goody`, the hut's own tile, never the unit's (a unit standing "
+             "on a hut has already popped it), which decides the one-city "
+             "hostile radius. Put this AFTER the state file.",
     )
     parser.add_argument("--config", default=None, help=argparse.SUPPRESS)
     return parser
@@ -4106,8 +5465,8 @@ def main(argv=None):
     if args.popped_by is not None and args.subject != "goody":
         sys.stderr.write("--popped-by only applies to `goody`\n")
         return 2
-    if args.at is not None and args.subject != "goody":
-        sys.stderr.write("--at only applies to `goody`\n")
+    if args.at is not None and args.subject not in ("goody", "improvement"):
+        sys.stderr.write("--at only applies to `goody` and `improvement`\n")
         return 2
     # Both name the popping unit, and --for-unit is strictly the better one.
     # Silently letting one win would answer about a different unit than the
@@ -4126,9 +5485,14 @@ def main(argv=None):
     # than reporting "state file not found: UNIT_AXEMAN". `promotion
     # --for-unit ID` is the one case where a missing TYPE is correct on
     # purpose, so it skips this.
-    if (args.subject in ("unit", "tech", "building", "promotion", "city")
+    if (args.subject in ("unit", "tech", "building", "promotion", "city",
+                         "improvement")
             and type_key is None
-            and not (args.subject == "promotion" and args.for_unit is not None)):
+            and not (args.subject == "promotion" and args.for_unit is not None)
+            # `improvement --at X,Y` reports on the tile rather than one named
+            # improvement, so a missing TYPE is correct there - same shape as
+            # `promotion --for-unit`.
+            and not (args.subject == "improvement" and args.at is not None)):
         # `city` takes a plain name rather than a TYPE key, so the "did they
         # forget the state file" test cannot key off a prefix - a bare word is
         # exactly what a city argument looks like. Anything not ending .json is
@@ -4138,7 +5502,7 @@ def main(argv=None):
             example = state_path if looks_like_a_type else "Lisbon"
         else:
             looks_like_a_type = state_path.upper().startswith(
-                ("UNIT_", "TECH_", "BUILDING_", "PROMOTION_"))
+                ("UNIT_", "TECH_", "BUILDING_", "PROMOTION_", "IMPROVEMENT_"))
             example = (state_path if looks_like_a_type
                        else args.subject.upper() + "_...")
         sys.stderr.write(
@@ -4147,6 +5511,14 @@ def main(argv=None):
             % (args.subject, "city name" if args.subject == "city" else "TYPE",
                args.subject, example)
         )
+        # The tile mode is the one worth reaching for, and a caller who typed
+        # a bare `improvement` has probably not read far enough to know it
+        # exists.
+        if args.subject == "improvement":
+            sys.stderr.write(
+                "or ask about one tile, which is usually what you want:\n"
+                "    python harness/rules.py improvement <state.json> --at X,Y\n"
+            )
         return 2
 
     try:
@@ -4186,6 +5558,9 @@ def main(argv=None):
             at = _parse_coordinate(args.at) if args.at is not None else None
             text = view_goody(rules, type_key, state, args.popped_by,
                               args.for_unit, at)
+        elif args.subject == "improvement":
+            at = _parse_coordinate(args.at) if args.at is not None else None
+            text = view_improvement(rules, type_key, state, at)
         else:
             text = view_handicap(rules, type_key, state)
     except RulesError as exc:

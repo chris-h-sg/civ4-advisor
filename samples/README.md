@@ -61,7 +61,7 @@ Two loose single-turn captures, not runs — a deliberate exception to "a sample
 ## What to capture
 
 - **From `turn_0000`**, not just a convenient mid-game stretch. Files are numbered for the turn *about to be played*, so a run starts at `turn_0000` — the state before turn 1, which is the snapshot the first-city decision is actually made from. There are no cities, no borders, and barely any revealed map, so the tooling gets its hardest test where the least data exists. Later turns then cover second-city-onward placement, which has ownership and existing cities as constraints.
-- **Varied setups** — the `game` section's climate/sea-level/barbarian options change turn-1–20 advice more than almost anything else in the file, so runs that differ there are worth more than repeats of the same conditions. **Which specific gaps are worth targeting next is in [`ROADMAP.md`](../ROADMAP.md)** — currently a wonder completing anywhere (`wonders.built` has never met real data) and a `bFood` build the turn after another build completes.
+- **Varied setups** — the `game` section's climate/sea-level/barbarian options change turn-1–20 advice more than almost anything else in the file, so runs that differ there are worth more than repeats of the same conditions. **Which specific gaps are worth targeting next is in [`ROADMAP.md`](../ROADMAP.md)**, which is where that list is maintained.
 - **A few representative runs, not everything played.** These are committed, and a run grows with the revealed map (~27KB/turn by turn 12). Keep the set small and deliberate.
 
 ## Curating a run
