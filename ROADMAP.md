@@ -21,8 +21,6 @@ Every item carries a **`Target:`** line naming the files it will have to edit. T
 | `same-turn-round-trips` | Correctness — schema + mod (design first) | 1 trial, sharpest finding on the page | Recorded, **not scheduled** — no affordable design yet |
 | `bearings-by-default` | Cross-tool — all three | Agent's own #1, and player-observed independently | Ready; needs a scope call (prose only) |
 | `city-approach-report` | Lane A — `run_history.py` | 4 of 6 `rules.py` trials; 2 wrote their own BFS | Ready, unblocked |
-| `garrison-posture` | Lane A — `run_history.py` | Follows increment ⑨; no tool reads the new fields | Ready, small |
-| `objectives-age-line` | Lane A — `run_history.py` | Split from the landed `trial-per-turn-checklist` | Ready, very small |
 | `coastal-undetermined-wording` | Lane B — `render_map.py` | Player-observed; the output was already right | Ready; wording only, will break one test assertion |
 | `multi-site-comparison` | Lane B — `render_map.py` | Both trial rounds; one diffed 10 runs by eye | **Reframed** — trigger landed; awaiting next trial |
 | `rules-lookup-gaps` | Lane C — `rules.py` | Seven sub-gaps, 1–2 of 4 trials each | Ready — **not one item**, see its note |
@@ -36,7 +34,7 @@ Every item carries a **`Target:`** line naming the files it will have to edit. T
 
 Grouped by `Target:`, so what can run concurrently is visible without reading the prose.
 
-- **Lane A — `harness/run_history.py`.** `city-approach-report`, `garrison-posture`, `objectives-age-line`. All land in the same module and all touch `intel`; **treat as serial with each other**, though the collision is far smaller than Lane C's. `garrison-posture` extends the same garrison block that `per-city-production-history` (landed) has already rewritten, so read the current block before starting.
+- **Lane A — `harness/run_history.py`.** `city-approach-report` is the only item left in it, so it is serial with nothing. It lands in `intel`'s garrison block, which has been rewritten twice — read the current block before starting.
 - **Lane B — `harness/render_map.py`.** `coastal-undetermined-wording`, `multi-site-comparison`. Both land in the site report, so treat as serial with each other; the wording fix is small enough to take first in the same sitting. Parallel-safe against every other lane.
 - **Lane C — `harness/rules.py`.** `rules-lookup-gaps` is the only item left in it. `rules.py` is a single ~5600-line module, so anything landing here is serial with it by construction — if a second Lane C item ever appears, do not assign the two concurrently.
 - **Lane D — `samples/`.** `varied-setup-samples`. Requires actual play; collides with nothing.
@@ -70,26 +68,6 @@ This is a sharper case of the same root cause already named in `run_history.py`'
 The specific failure: `intel` correctly refuses to judge whether an empty city is in danger and points at `--view military`; `military` renders a symbol grid and cannot answer it either, so the agent eyeballs a corridor off the grid — the derivation the guide says is unreliable.
 
 Wanted is presentation, not a verdict: per city, distance to the nearest unowned land tile, how many reachable unowned land tiles lie within N walk, and whether a land route exists at all. The walk machinery is already local to `run_history.py` (see the target line above). **Hold the line `intel` already holds** — report the approach, never call a city safe or unsafe.
-
-### `garrison-posture` — `intel` shows what is in a city, never whether it is dug in
-
-**Lane A.** **Target:** `harness/run_history.py` (`intel`'s garrison block), `harness/tests/test_run_history.py`, `harness/AGENT_GUIDE.md`, `harness/README.md`.
-
-Increment ⑨ exports `units[].activity` and `units[].fortifyTurns`; **no harness tool reads either** (checked, not assumed), so the guide has to send the agent to raw JSON. `intel`'s garrison listing already prints `[NON-COMBAT]` and promotion tags — posture belongs on the same line, since a Warrior at `fortifyTurns: 5` carries +25% defence over one that just walked in.
-
-Small. It shares the garrison block with the landed `per-city-production-history`, which added a `building:` line under each city — posture belongs on the occupant line above it, so read the current block first. **Presentation only** — print the count, never a "this city is defended" verdict, per the line `intel` already holds.
-
-**Sample gap:** `samples/baseline-early-game/` predates increments ⑦–⑨ and carries no `activity` or `fortifyTurns`, so this can only be tested against synthetic states (as `test_intel_flags_a_food_fed_build_as_stopping_growth` already does). Accepted; `varied-setup-samples` retires it.
-
-### `objectives-age-line` — make objectives drift visible where the advisor is already looking
-
-**Lane A.** **Target:** `harness/run_history.py` (the header every view prints), `harness/tests/test_run_history.py`, `harness/AGENT_GUIDE.md`, `harness/README.md`.
-
-Split off from the landed `trial-per-turn-checklist`, which took the prose half only. A line in `run_history`'s header — `objectives.md last written: t10 (26 turns ago)` — makes the drift visible exactly when the advisor is already reading run state, rather than depending on it remembering to check. The evidence: the brief asks for a restatement every 5–10 turns and got one at t0 updated through t10, then nothing to t36, spanning first contact with two civs, a completed Settler and a unit loss.
-
-**The checklist now carries this as item 4, so this is the structural backstop rather than the fix** — the whole lesson behind the checklist is that an instruction which must be remembered is the thing that fails. Take it with whatever Lane A item is in hand.
-
-*Settle the path first — the obvious answer is measured wrong.* `objectives.md` lives in the **trial folder** while `run_history.py` takes the run folder, and in a trial that run folder is a **junction**: walking up from it resolves through the link into the repo's own `state/`, never into the trial folder. So a sibling-directory guess reports "never written" on every run — silently, and looking exactly like genuine drift, which is worse than no line at all. That leaves an explicit `--objectives PATH` (verified against a generated trial folder, not assumed).
 
 ### `bearings-by-default` — coordinates are the wrong interface for the human player
 

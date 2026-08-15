@@ -34,7 +34,7 @@ Files are numbered for the turn **about to be played**, so a run starts at `turn
 | "a Farm/Mine there gives N" / "the worker should build W here" | `rules.py improvement --at X,Y` |
 | any cost, prereq, or turns-to-complete number | `rules.py <subcommand>` for it |
 
-`rules.py` resolves the right file tree, walks prerequisites transitively, and prices everything for this game's actual setup — use it first. When it doesn't cover something, grep the install directly and **say out loud that you had to** — that's the signal for what to add to `rules.py` next. The install holds ~18 copies of each file: take `<install>/Beyond the Sword/Assets/XML/...`, falling back to `<install>/Assets/XML/...` — an expansion only ships the files it *changes*, so resources (`CIV4BonusInfos.xml`) live only in the base tree. Install path is in `config.local.json`; don't `find`, it is slow and hits the mod copies. Use large context windows: `PrereqTech` sits ~90 lines into a unit block.
+`rules.py` resolves the right file tree, walks prerequisites transitively, and prices everything for this game's actual setup — use it first. When it doesn't cover something, grep the install directly and **say out loud that you had to** — that's the signal for what to add to `rules.py` next. The install holds ~18 copies of each file: take `<install>/Beyond the Sword/Assets/XML/...`, falling back to `<install>/Assets/XML/...` (an expansion ships only the files it *changes*, so `CIV4BonusInfos.xml` lives only in the base tree). Path is in `config.local.json`; don't `find`, it hits the mod copies. Read wide — `PrereqTech` sits ~90 lines into a unit block.
 
 **6. A unit's orders live in *two* fields, and neither implies the other.** `mission` is an active task (build, move); `activity` is a standing posture (fortify, sleep, heal, sentry). **A fortified unit has no `mission`** — the engine deletes it once the activity is set — so a missing `mission` never means "idle". Check both before saying a unit is doing nothing.
 
@@ -46,7 +46,7 @@ Files are numbered for the turn **about to be played**, so a run starts at `turn
 | `activity` | **`ACTIVITY_SLEEP` means fortified *or* sleeping** — there is no separate fortify activity. Only `fortifyTurns > 0` tells them apart. Absent = awake. |
 | `fortifyTurns` | A defence bonus, not just a flag: **+5%/turn, capped at +25%**. Absent = 0. |
 
-`mission.turnsLeft` is the **only** source for worker-build timing — `rules.py` prices city production and has no worker-action build times. For a build not yet started you have no number at all; a build that clears a feature first costs the improvement's time **plus** the clearing time, so treat it as materially slower than a bare one.
+`mission.turnsLeft` is the **only** source for worker-build timing — `rules.py` prices city production and has no worker-action build times. **For a build not yet started you have no number at all**, so say so rather than estimating one.
 
 **Before reporting something as a gap, confirm it's actually missing.** Check the file you're already holding open before concluding a tool doesn't cover it — a past trial reported the beakers-per-turn change as a possible schema gap when reading the previous turn file would have answered it outright.
 
@@ -91,7 +91,7 @@ python harness/run_history.py <run-folder> [--view timeline|intel|lost] [--from 
 Takes the **run folder**, not one turn.
 
 - **`timeline`** — what changed each turn: techs, cities, units gained and lost, **what each city is building and when that changed**, contacts, sightings, tiles revealed, territory, resources unhidden, and an unexplained gold swing (treasury moved by more or less than last turn's `goldPerTurn` — a goody hut or similar, not the ordinary rate). Unchanged turns are skipped. `--from`/`--to` scope it.
-- **`intel`** — leads with what's standing in each of your cities **and what each is building, with an ETA**, then barbarian sightings, then per rival: recent sightings with positions, then every unit type ever fielded with the turn first seen.
+- **`intel`** — leads with what's standing in each of your cities, **each occupant's posture** and **what each is building, with an ETA**, then barbarian sightings, then per rival: recent sightings with positions, then every unit type ever fielded with the turn first seen.
 - **`lost`** — every unit of yours that disappeared: its track, damage history, the tiles revealed on its final turn, and what was in sight beforehand. Reach for this whenever a unit dies.
 
 **A unit's last exported position is usually not where it died** — it moves during the turn it is lost, and the export is the previous turn's snapshot. `lost` gives you that turn's revealed tiles as evidence: a unit sees radius 1 from flat ground, radius 2 from a hill, so the reveal shape constrains where it got to. That inference is yours.
@@ -100,7 +100,9 @@ Takes the **run folder**, not one turn.
 
 **`[NON-COMBAT]`** on a city's occupants means combat strength 0 (settlers, workers, work boats). A city holding only those is undefended however occupied it looks.
 
-**A `[WOODSMAN1, ...]` or `[N promotion(s) available]` tag next to a unit is a name, not an explanation** — see `rules.py promotion` below.
+**`[FORTIFIED 3t, +15% def]`** is a defender's dug-in bonus, already computed — don't re-derive it. `[sleeping]`, `[healing]`, `[on sentry]` and `[holding (turn skipped)]` are the other postures; **no tag means awake**, which for a unit you haven't ordered means idle. This is trap 6's `activity`/`fortifyTurns` pair, read for you.
+
+**A `[WOODSMAN1, ...]` or `[N promotion(s) available]` tag is a name, not an explanation** — `rules.py promotion <state> --for-unit ID` (the id `intel` prints) is the join, and fetches every promotion the unit holds with a combined total.
 
 **`SWITCHED` is a mind changed mid-build; `COMPLETED` means the item actually arrived.** A switch is often the sharpest fact of the turn — ask about it.
 
@@ -117,6 +119,8 @@ Positions carry **distance and bearing from your nearest city**. When the walk d
 `timeline` also reports **rival territory the first time you see it**, which is often the earliest hard evidence of where a rival city is: a border implies a city within about two tiles, possibly beyond your revealed edge. And it lists the **coordinates** of small reveals, which is what lets you work out where an unseen event happened.
 
 **`--as-of N` makes turn N the present**, discarding later files entirely. Only needed when replaying a finished run; live, the newest file already is now. It affects every view, unlike `--from`/`--to`, which scope `timeline` only. `intel` ignores them on purpose — truncating a dossier drops the earliest sighting of a type, which is the fact that proves the capability.
+
+**The header reports how stale `objectives.md` is**, on every view. `RESTATE` is a trigger: restate before advising anything else, and **write the result back to the file** — the age comes from the file's timestamp, so advice you only said in chat leaves it reading stale. `cannot be derived` means the timestamps aren't usable (a fresh clone or a reloaded save); open the file and judge for yourself. No line means no `objectives.md` yet.
 
 The tool **exits non-zero on a run that isn't one continuous game**. That's a real problem with the files, not something to work around.
 
@@ -152,20 +156,20 @@ It lists what is available now **and** what is one tech away, each blocked row c
 
 **Settlers and workers eat the city's food surplus**, so their estimates are marked `(+food, growth stops)`: the build lands sooner *and* the city stops growing while it does. That trade is yours to weigh. On a capture too old to carry the exported food/hammer split, a header line warns that the other estimates in that city run slightly fast while such a build is queued; if there is no such line, the numbers are exact.
 
-**Reach for it whenever you're about to state a rule.** Especially after `intel` shows you a rival unit: `rules.py unit UNIT_ARCHER <state>` turns a sighting into a dated tech conclusion, which is the join `intel` deliberately refuses to make for you. Same when `intel`'s garrison listing names a unit's promotions (e.g. `[WOODSMAN1, WOODSMAN2]`) or shows `N promotion(s) available` — that names WHICH promotions, never what they do; `rules.py promotion <state> --for-unit ID` (the id `intel` prints beside the unit) is the join, and fetches every promotion that unit holds automatically with a combined total, rather than needing each name typed by hand.
+**Reach for it whenever you're about to state a rule.** Especially after `intel` shows you a rival unit: `rules.py unit UNIT_ARCHER <state>` turns a sighting into a dated tech conclusion, which is the join `intel` deliberately refuses to make for you. Same for a promotion tag on your own unit — it names WHICH promotion, never what it does.
 
 **Never call a fight on strength alone — run both units and read the `abilities` block.** Modifiers there routinely swing a matchup the raw numbers get backwards, and each names its own condition: `+100% attacking UNITCLASS_AXEMAN` applies only when attacking, `+100% defending vs UNITCLASS_CHARIOT` only when defending. Quote the modifier, not the strength.
 
-**Never answer a goody-hut question from `handicap`.** Its `iBarbarianCreationTurnsElapsed` looks like it settles the matter and does not — it bounds *map spawns* only, and **a hut can turn hostile on turn 1**. Reading it as a safety window killed a live trial's only unit. Run `goody`, and pass `--for-unit ID --at X,Y` (the popping unit and the hut's tile, both already in the state file) to turn the range into one number. `--at` is the **hut's** tile, never the unit's; the tool lists the revealed ones if you don't name one, and the figures then assume the hut is popped from where that unit stands now.
+**Never answer a goody-hut question from `handicap`.** Its `iBarbarianCreationTurnsElapsed` looks like it settles the matter and does not — it bounds *map spawns* only, and **a hut can turn hostile on turn 1**. Reading it as a safety window killed a live trial's only unit. Run `goody --for-unit ID --at X,Y` instead; `--at` is the **hut's** tile, never the unit's.
 
-**The Scout and the Explorer cannot draw a hostile result at all**, on any difficulty or turn — so which unit you send changes the answer completely, and if a Scout can reach the hut the risk is zero rather than merely lower.
+**Which unit you send changes the answer completely** — a Scout or Explorer can never draw a hostile result, so the risk is zero rather than merely lower. Check whether one can reach the hut before treating a `HOSTILE CHANCE` figure as the cost of popping it.
 
 **Never state a tile yield from memory — run `improvement --at X,Y`, and quote the decomposition.** A trial reasoned a Farm on Corn from background knowledge, invented a Despotism yield penalty (**Civ3**, not Civ4) and answered 4. It is 5 — a resource pays **twice**, once bare and again for the improvement on it. An invented term is visible in the working and plausible in a bare number.
 
 `--at` lists every improvement legal on the tile with its total, its working, and the change against leaving the tile alone. Rows are self-explaining; these three are the judgements they don't make for you:
 
 - **`<- CONNECTS X` usually settles a resource tile.** Only that improvement trades the resource; a lost strategic one can cost you a whole unit line, which no yield column shows. It is listed first as **ordering, not ranking** — a Mine on Gems is −1 hammer. **The exception is `and needs TECH_X before any city can work it`**: Wine needs Monarchy, Spices and Dye need Calendar, and while that tech is far off something non-connecting is a legitimate call.
-- **A feature is a tech gate, not a refusal.** A Mine on a forested hill is legal and the forest goes with it, but `needs ... to clear ... first` names a *separate* tech — Bronze Working for forest, Iron Working for jungle. A trial had both halves on screen from separate calls and recommended the mine anyway.
+- **A feature is a tech gate, not a refusal.** `needs ... to clear ... first` names a *separate* tech from the improvement's own — a trial had both halves on screen from separate calls and recommended the mine anyway.
 - **`NOW` includes what is already built**, so every change figure is the cost of *replacing* it, not a gain over bare ground.
 
 Two readings that look like tool bugs and are not: `+1 commerce` from a Farm on a wooded river tile is the river, restored by the chop (the `commerce  1 river` line); and `NOTHING BUILDABLE` on foreign soil is culture, not bad ground — the tile may be excellent and simply not yours. `NOT VISIBLE NOW` is remembered terrain and fine to plan on, since terrain and resources don't change; a tile **absent** from `map.tiles` was never scouted and is refused outright — don't infer it from neighbours.

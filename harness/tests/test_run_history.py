@@ -1104,6 +1104,217 @@ def test_field_unit_shows_promotions_too(tmp_path):
     assert "[COMBAT1]" in section
 
 
+# -- garrison posture -------------------------------------------------------
+#
+# Increment 9 exports activity/fortifyTurns and samples/baseline-early-game
+# predates it, so every unit in the sample carries neither. These mutate a
+# loaded turn, the same pattern the promotion tests above use.
+
+
+def _posture_section(tmp_path, mutate, pick=None, garrison=True, turn=34):
+    """Render the garrison section with one mutated unit.
+
+    `pick` chooses the unit (default: the first Warrior); `garrison` moves it
+    into Lisbon, which is what makes it an occupant rather than a field unit.
+    """
+    state = copy.deepcopy(load(turn))
+    if pick is None:
+        pick = lambda u: u["type"] == "UNIT_WARRIOR"
+    unit = next(u for u in state["units"] if pick(u))
+    if garrison:
+        lisbon = next(c for c in state["cities"] if c["name"] == "Lisbon")
+        unit["x"], unit["y"] = lisbon["x"], lisbon["y"]
+    mutate(unit)
+    text = render_single(tmp_path, state, "intel")
+    return text.split("YOUR CITIES AND WHAT IS STANDING IN THEM")[1]
+
+
+def test_garrison_shows_a_fortified_defender_with_its_bonus(tmp_path):
+    """The whole point of the field: a dug-in Warrior and one that just walked
+    in are the same unit at different defensive strength."""
+    section = _posture_section(
+        tmp_path,
+        lambda u: u.update({"activity": "ACTIVITY_SLEEP", "fortifyTurns": 3}),
+    )
+    assert "[FORTIFIED 3t, +15% def]" in section
+
+
+def test_fortify_bonus_is_capped(tmp_path):
+    """+5%/turn stops at +25%, so 5 turns is the most that can be earned."""
+    section = _posture_section(
+        tmp_path,
+        lambda u: u.update({"activity": "ACTIVITY_SLEEP", "fortifyTurns": 5}),
+    )
+    assert "[FORTIFIED 5t, +25% def]" in section
+
+
+def test_sleeping_is_told_apart_from_fortified(tmp_path):
+    """Both report ACTIVITY_SLEEP - there is no ACTIVITY_FORTIFY - so only
+    fortifyTurns separates them. Reading activity alone would print 'sleeping'
+    over a dug-in defender."""
+    section = _posture_section(
+        tmp_path, lambda u: u.update({"activity": "ACTIVITY_SLEEP"}))
+    assert "[sleeping]" in section
+    assert "FORTIFIED" not in section
+
+
+@pytest.mark.parametrize("activity,expected", [
+    ("ACTIVITY_HEAL", "[healing]"),
+    ("ACTIVITY_SENTRY", "[on sentry]"),
+    ("ACTIVITY_HOLD", "[holding (turn skipped)]"),
+])
+def test_each_activity_gets_a_word(tmp_path, activity, expected):
+    section = _posture_section(tmp_path, lambda u: u.update({"activity": activity}))
+    assert expected in section
+
+
+def test_an_unknown_activity_still_prints(tmp_path):
+    """A value added to the schema later must not vanish silently."""
+    section = _posture_section(
+        tmp_path, lambda u: u.update({"activity": "ACTIVITY_PATROL"}))
+    assert "[patrol]" in section
+
+
+def test_posture_is_omitted_for_an_awake_unit(run):
+    """Field-level omission upstream: both keys are absent on most units, and
+    the common case must add nothing to the line."""
+    clamped = run_history.Run(SAMPLE_DIR, as_of=34)
+    section = render(clamped, "intel").split(
+        "YOUR CITIES AND WHAT IS STANDING IN THEM")[1]
+    assert "FORTIFIED" not in section
+    assert "sleeping" not in section
+
+
+def test_field_unit_shows_posture_too(tmp_path):
+    """A fortified unit outside a city is still fortified."""
+    section = _posture_section(
+        tmp_path,
+        lambda u: u.update({"fortifyTurns": 1}),
+        pick=lambda u: u["type"] == "UNIT_WARRIOR" and u["x"] != 75,
+        garrison=False,
+    )
+    assert "[FORTIFIED 1t, +5% def]" in section
+
+
+def test_posture_composes_with_the_non_combat_flag(tmp_path):
+    """A sleeping Worker must show both - neither tag may swallow the other,
+    and _unit_tags owns the order they appear in."""
+    section = _posture_section(
+        tmp_path,
+        lambda u: u.update({"activity": "ACTIVITY_SLEEP"}),
+        pick=lambda u: u["type"] == "UNIT_WORKER",
+    )
+    line = next(l for l in section.splitlines() if "WORKER" in l)
+    assert "[NON-COMBAT]  [sleeping]" in line
+
+
+# -- objectives staleness ---------------------------------------------------
+#
+# The line fires with no flag, so these build the trial layout: a run folder
+# with objectives.md in its PARENT. Turn-file mtimes are set explicitly, since
+# the age in turns is derived from them and a checkout leaves them all equal.
+
+
+def _objectives_run(tmp_path, written_during=None, turns=(5, 6, 7, 8),
+                    ordered=True):
+    """A run folder under tmp_path, with objectives.md beside it."""
+    trial = tmp_path / "trial"
+    run_dir = trial / "state"
+    run_dir.mkdir(parents=True)
+    write_run(run_dir, [load(t) for t in turns])
+
+    # Stamped through the tool's own file listing rather than by rebuilding the
+    # turn_%04d.json convention that write_run owns.
+    base = 1_700_000_000
+    for i, path in enumerate(run_history.turn_files(str(run_dir))):
+        stamp = base + (i * 60 if ordered else 0)
+        os.utime(path, (stamp, stamp))
+
+    if written_during is not None:
+        path = trial / run_history.OBJECTIVES_FILENAME
+        path.write_text("# objectives\n", encoding="utf-8")
+        stamp = base + turns.index(written_during) * 60 + 30
+        os.utime(str(path), (stamp, stamp))
+    return str(run_dir)
+
+
+def test_objectives_age_is_reported_without_any_flag(tmp_path):
+    """The fix cannot be something the advisor has to remember, or it fails the
+    same way the instruction it backstops did."""
+    path = _objectives_run(tmp_path, written_during=6)
+    text = render(run_history.Run(path), "intel")
+    assert "objectives.md" not in text  # the found case names a turn, not a path
+    assert "last written ~t6, 2 turn(s) ago" in text
+
+
+def test_objectives_older_than_the_threshold_says_restate(tmp_path):
+    turns = tuple(range(5, 25))
+    path = _objectives_run(tmp_path, written_during=6, turns=turns)
+    assert "RESTATE" in render(run_history.Run(path), "intel")
+
+
+def test_recent_objectives_do_not_say_restate(tmp_path):
+    path = _objectives_run(tmp_path, written_during=6)
+    text = render(run_history.Run(path), "intel")
+    assert "last written" in text and "RESTATE" not in text
+
+
+def test_no_objectives_file_prints_no_line(tmp_path):
+    """Silence when there is nothing to report - the sample has no such file
+    and its header must be unchanged."""
+    path = _objectives_run(tmp_path, written_during=None)
+    # Matched against the header key, not a bare substring: tmp_path itself
+    # contains this test's name and so contains "objectiv".
+    header = render(run_history.Run(path), "intel").split("\n\n")[0]
+    assert not [l for l in header.splitlines() if l.startswith("  objectiv")]
+
+
+def test_unordered_mtimes_refuse_to_derive_an_age(tmp_path):
+    """A fresh clone restamps every turn file to the checkout instant. Equal
+    mtimes must NOT read as play order: an earlier version used <= here and
+    reported the latest turn, '0 turns ago', for arbitrarily stale objectives -
+    wrong in the worst direction, since it says freshly-restated."""
+    path = _objectives_run(tmp_path, written_during=6, ordered=False)
+    text = render(run_history.Run(path), "intel")
+    assert "cannot be derived" in text
+    assert "0 turn(s) ago" not in text
+
+
+@pytest.mark.parametrize("view", run_history.VIEWS)
+def test_objectives_line_appears_on_every_view(tmp_path, view):
+    """It lives in the shared preamble: whichever view the advisor reached for
+    this turn is the one that has to carry it."""
+    path = _objectives_run(tmp_path, written_during=6)
+    assert "last written ~t6" in render(run_history.Run(path), view)
+
+
+def test_objectives_lookup_does_not_follow_a_junction(tmp_path):
+    """THE load-bearing property. In a trial folder the run is a JUNCTION into
+    the repo's own state/, so resolving it before walking up lands in the repo
+    and finds nothing - reporting 'never written' on every real trial, which
+    looks exactly like genuine drift. abspath collapses the '..' textually, so
+    it never follows the link."""
+    real = tmp_path / "repo" / "state" / "GAME_1"
+    real.mkdir(parents=True)
+    write_run(real, [load(t) for t in (5, 6)])
+
+    trial = tmp_path / "trial"
+    trial.mkdir()
+    link = trial / "state"
+    try:
+        os.symlink(str(real), str(link), target_is_directory=True)
+    except (OSError, NotImplementedError, AttributeError) as error:
+        pytest.skip("cannot create a directory link here: %s" % error)
+
+    (trial / "objectives.md").write_text("# objectives\n", encoding="utf-8")
+    run_obj = run_history.Run(str(link))
+    # Both halves matter: the path must land beside the run rather than in the
+    # junction's target, and the render must actually report on it - an earlier
+    # design would have resolved the link and silently found nothing.
+    assert os.path.dirname(run_history.objectives_path(run_obj)) == str(trial)
+    assert "objectiv" in render(run_obj, "intel").split("\n\n")[0]
+
+
 @pytest.mark.parametrize("view", run_history.VIEWS)
 def test_every_view_states_what_it_omits(run, view):
     assert "THIS VIEW OMITS" in render(run, view)

@@ -95,6 +95,38 @@ NON_COMBAT_UNITS = (
     "UNIT_MISSIONARY_ISLAM",
 )
 
+# The engine's fortify bonus: getFortifyTurns() * FORTIFY_MODIFIER_PER_TURN,
+# capped by MAX_FORTIFY_TURNS at 5 turns (CvUnit.cpp:8584, and this install's
+# GlobalDefines.xml). Transcribed here rather than read from the XML because
+# run_history.py takes a run folder and never opens the game install - that is
+# rules.py's job. The export caps fortifyTurns at 5 itself, so the min() in
+# _posture_tag is belt-and-braces against a future rules change, not a live one.
+FORTIFY_PERCENT_PER_TURN = 5
+FORTIFY_PERCENT_MAX = 25
+
+# ActivityTypes worth a word on the occupant line. There is deliberately no
+# fortify entry, because the engine has no ACTIVITY_FORTIFY - fortify and sleep
+# both report ACTIVITY_SLEEP, so _posture_tag reaches this table only once
+# fortifyTurns has ruled fortification out, and "sleeping" is then correct.
+# ACTIVITY_HOLD is relabelled because "hold" reads as a posture when it means
+# the turn was skipped. Anything unlisted falls back to its own name lowercased,
+# so a value added to the schema later is still printed rather than dropped.
+ACTIVITY_LABEL = {
+    "ACTIVITY_SLEEP": "sleeping",
+    "ACTIVITY_HEAL": "healing",
+    "ACTIVITY_SENTRY": "on sentry",
+    "ACTIVITY_HOLD": "holding (turn skipped)",
+}
+
+# The advisor's own objectives file, which lives in the TRIAL folder beside the
+# run rather than inside it - see objectives_path for why that parent lookup has
+# to stay lexical. Named here with the threshold because these are the two facts
+# a change to the trial layout or the brief would break, and both are settled
+# elsewhere: the filename by trial-template/CLAUDE.md, the 10-turn rule by its
+# item 4.
+OBJECTIVES_FILENAME = "objectives.md"
+OBJECTIVES_STALE_AFTER = 10
+
 # How a tracked field's change should be described. The engine has several distinct
 # mechanisms that all surface as "this field differs from last turn", and collapsing
 # them would invent causes the export cannot support.
@@ -1569,9 +1601,45 @@ def _loss_block(run, before, after, unit):
     return lines
 
 
-def _combat_note(unit):
-    """' [PROMOTION_A, PROMOTION_B]' / ' [1 promotion available]' / '', for one
-    of the player's own units.
+def _unit_tags(unit, non_combat=True):
+    """Every bracketed tag for one of the player's own units, in a fixed order.
+
+    ONE OWNER FOR THE WHOLE SEQUENCE, because the alternative already went wrong.
+    The tags grew one at a time and were composed inline at each call site, which
+    left the bracketing and spacing rule restated in four places - and NON-COMBAT
+    had drifted to a single leading space where the others used two. Order is
+    likewise a property of the line, not of any one tag: threat-to-life first
+    (can this even fight), then posture, then the slower-moving combat record.
+    A fifth tag adds a member here and touches no caller.
+
+    `non_combat` is off for the field listing, which has never carried that tag:
+    it answers "can this city defend itself", which is a question about a
+    garrison. A unit in the open is not defending anything, and the summary line
+    under each city ("nothing here can defend") is where the fact does its work.
+
+    Own units only. foreignUnits[] carries none of these fields - see
+    schema/state.schema.json.
+    """
+    tags = (
+        _non_combat_tag(unit) if non_combat else "",
+        _posture_tag(unit),
+        _combat_tag(unit),
+    )
+    return "".join("  [%s]" % t for t in tags if t)
+
+
+def _non_combat_tag(unit):
+    """'NON-COMBAT' for a unit with iCombat 0, else ''.
+
+    Two trials read `Lisbon (75,36) SETTLER` as a garrison before registering
+    that a settler cannot defend, so the count was quietly overstating the
+    position. See NON_COMBAT_UNITS for why the list is transcribed and short.
+    """
+    return "NON-COMBAT" if unit["type"] in NON_COMBAT_UNITS else ""
+
+
+def _combat_tag(unit):
+    """'COMBAT1, COMBAT2' / '1 promotion available' / '', for one of our units.
 
     Roadmap item 3's motivating case: a scout took two promotions from a Lion
     fight and the agent had no way to see it short of the player saying so out
@@ -1583,11 +1651,42 @@ def _combat_note(unit):
     """
     promotions = unit.get("promotions")
     if promotions:
-        return "  [%s]" % ", ".join(p.replace("PROMOTION_", "") for p in promotions)
+        return ", ".join(p.replace("PROMOTION_", "") for p in promotions)
     available = unit.get("promotionsAvailable")
     if available:
-        return "  [%d promotion%s available]" % (
+        return "%d promotion%s available" % (
             available, "" if available == 1 else "s")
+    return ""
+
+
+def _posture_tag(unit):
+    """'FORTIFIED 5t, +25% def' / 'sleeping' / '', for one of our units.
+
+    Increment 9 exports `activity` and `fortifyTurns` and nothing in harness/
+    read either, so the guide had to send the agent to raw JSON for a fact that
+    belongs on the line it is already reading. A Warrior at fortifyTurns 5
+    carries +25% defence over one that walked in this turn - the same unit type,
+    the same strength, a materially different city.
+
+    Two fields because the engine has two and neither implies the other: there
+    is no ACTIVITY_FORTIFY, so fortify and sleep BOTH report ACTIVITY_SLEEP and
+    only fortifyTurns separates them (AGENT_GUIDE.md trap 6). Reading the
+    activity alone would print 'sleeping' over a dug-in defender.
+
+    The bonus is arithmetic on an exported number, not a verdict: +5%/turn
+    capped at +25%, which is the engine's own rule and the whole reason the raw
+    count is worth printing. Whether the city is defended remains the reader's
+    call, per the line _garrisons already holds.
+    """
+    fortified = unit.get("fortifyTurns") or 0
+    if fortified:
+        return "FORTIFIED %dt, +%d%% def" % (
+            fortified, min(fortified * FORTIFY_PERCENT_PER_TURN, FORTIFY_PERCENT_MAX),
+        )
+    activity = unit.get("activity")
+    if activity:
+        return ACTIVITY_LABEL.get(
+            activity, activity.replace("ACTIVITY_", "").lower())
     return ""
 
 
@@ -1658,10 +1757,8 @@ def _garrisons(run, latest, latest_turn, land=None):
         inside = at.get(pos, [])
         if inside:
             what = ", ".join(
-                "%s (id %d)%s%s" % (
-                    u["type"].replace("UNIT_", ""), u["id"],
-                    " [NON-COMBAT]" if u["type"] in NON_COMBAT_UNITS else "",
-                    _combat_note(u),
+                "%s (id %d)%s" % (
+                    u["type"].replace("UNIT_", ""), u["id"], _unit_tags(u),
                 )
                 for u in inside
             )
@@ -1683,7 +1780,7 @@ def _garrisons(run, latest, latest_turn, land=None):
                 "    %-16s id %-6d (%d,%d)%s%s"
                 % (
                     unit["type"], unit["id"], unit["x"], unit["y"],
-                    _combat_note(unit),
+                    _unit_tags(unit, non_combat=False),
                     nearest_city_note(run, latest, (unit["x"], unit["y"]), land),
                 )
             )
@@ -1866,6 +1963,79 @@ def _intel_footer(run, latest_turn):
 # -- output ---------------------------------------------------------------
 
 
+def objectives_path(run):
+    """Where `objectives.md` sits relative to a run folder.
+
+    THE LOOKUP IS LEXICAL, AND THAT IS THE LOAD-BEARING PART. In a trial folder
+    `state/` is a JUNCTION into the repo's own state/<game>/, so RESOLVING it and
+    then walking up lands in the repo and finds nothing. os.path.abspath collapses
+    the ".." textually BEFORE touching the filesystem, so it never follows the
+    link and lands in the trial folder beside the run - verified against a
+    generated junction for every path spelling the advisor might type ("state",
+    "./state", a trailing slash, an absolute path). Do not "fix" this to
+    realpath: it would silently report "never written" on every real trial,
+    which looks exactly like genuine drift and is worse than printing nothing.
+    """
+    return os.path.abspath(
+        os.path.join(run.path, os.pardir, OBJECTIVES_FILENAME))
+
+
+def _objectives_lines(run):
+    """The header's objectives-staleness line, or nothing if there is no file.
+
+    THIS LINE IS NOT ABOUT THE RUN - it is here because this is what gets run.
+    Everything else in this module is derived from the state files it was pointed
+    at; this reads a file `mod/` never wrote and the schema never describes. It
+    lives here because the fix cannot be something the advisor has to remember,
+    or it fails the way the instruction it backstops did: the brief asks for
+    objectives restated every 10 turns and a trial went t10 -> t36 without one,
+    through first contact with two civs, a completed Settler and a unit loss.
+    `run_history.py` is the call the advisor makes every turn regardless, so it
+    is the only delivery vehicle that fires with nothing to pass. A placement
+    chosen for delivery, not for subject matter - and deliberately no
+    --objectives override, which would reintroduce the remembering.
+
+    THE AGE COMES FROM MTIMES, WHICH IS WHY IT CAN REFUSE. The file carries no
+    turn number, so the turn it was last written on is inferred as the newest
+    turn file older than it. That holds in live play, where turn files land one
+    per turn in real time. It does NOT hold on a fresh clone or a reloaded save -
+    git restamps every file at checkout and a reload rewrites one turn in place
+    (see turn_files), which is the same distrust of mtime that makes turn_files
+    order by filename. Such a run gets no turn at all and says so, rather than a
+    confident wrong number.
+    """
+    try:
+        written = os.stat(objectives_path(run)).st_mtime
+    except OSError:
+        return []
+
+    stamps = [(os.path.getmtime(f), s["game"]["gameTurn"]) for f, s in run.states]
+    # STRICTLY ascending, not <=. A fresh clone restamps every file to the same
+    # checkout instant, and equal timestamps satisfy <= perfectly - which made an
+    # earlier version of this report the LATEST turn, "0 turns ago", on a run
+    # whose objectives were arbitrarily old. Wrong in the worst direction: it
+    # says freshly-restated when nothing has been restated at all. Equal mtimes
+    # are the signature of the case this check exists to catch, so they must
+    # fail it.
+    ordered = all(a[0] < b[0] for a, b in zip(stamps, stamps[1:]))
+    older = [t for stamp, t in stamps if stamp <= written] if ordered else []
+    if not older:
+        return [
+            "  objectiv %s found, but this run's turn files were not written in"
+            % OBJECTIVES_FILENAME,
+            "           play order (a fresh clone or a reloaded save restamps"
+            " them), so its",
+            "           age in turns cannot be derived. Check it yourself.",
+        ]
+
+    age = run.turns[-1] - older[-1]
+    note = "  RESTATE - older than %d turns" % OBJECTIVES_STALE_AFTER
+    return [
+        "  objectiv last written ~t%d, %d turn(s) ago%s"
+        % (older[-1], age, note if age > OBJECTIVES_STALE_AFTER else "")
+    ]
+
+
 def preamble(run, view, first_turn, last_turn):
     latest = run.latest()
     lines = [
@@ -1884,6 +2054,7 @@ def preamble(run, view, first_turn, last_turn):
         "  latest  t%d (%s) - THE ONLY TURN THAT IS 'NOW'"
         % (latest["game"]["gameTurn"], format_year(latest["game"]["year"])),
     ]
+    lines.extend(_objectives_lines(run))
     if run.as_of is not None:
         lines.append(
             "  AS-OF   clamped to t%d: every later turn file was discarded before"
