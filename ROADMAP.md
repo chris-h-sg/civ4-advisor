@@ -19,7 +19,6 @@ Every item carries a **`Target:`** line naming the files it will have to edit. T
 | Slug | Lane / target | Evidence | Status |
 | --- | --- | --- | --- |
 | `same-turn-round-trips` | Correctness — schema + mod (design first) | 1 trial, sharpest finding on the page | Recorded, **not scheduled** — no affordable design yet |
-| `bearings-by-default` | Cross-tool — all three | Agent's own #1, and player-observed independently | Ready; needs a scope call (prose only) |
 | `city-approach-report` | Lane A — `run_history.py` | 4 of 6 `rules.py` trials; 2 wrote their own BFS | Ready, unblocked |
 | `coastal-undetermined-wording` | Lane B — `render_map.py` | Player-observed; the output was already right | Ready; wording only, will break one test assertion |
 | `multi-site-comparison` | Lane B — `render_map.py` | Both trial rounds; one diffed 10 runs by eye | **Reframed** — trigger landed; awaiting next trial |
@@ -38,7 +37,6 @@ Grouped by `Target:`, so what can run concurrently is visible without reading th
 - **Lane B — `harness/render_map.py`.** `coastal-undetermined-wording`, `multi-site-comparison`. Both land in the site report, so treat as serial with each other; the wording fix is small enough to take first in the same sitting. Parallel-safe against every other lane.
 - **Lane C — `harness/rules.py`.** `rules-lookup-gaps` is the only item left in it. `rules.py` is a single ~5600-line module, so anything landing here is serial with it by construction — if a second Lane C item ever appears, do not assign the two concurrently.
 - **Lane D — `samples/`.** `varied-setup-samples`. Requires actual play; collides with nothing.
-- **Cross-tool — `bearings-by-default`.** Touches `render_map.py`, `run_history.py` and `rules.py`, so it **collides with Lanes A, B and C at once**. Run it alone, or accept a rebase. It is the one item that cannot be parallelized with anything.
 - **Unlaned — `same-turn-round-trips`.** Would cross `mod/` and `schema/`, colliding with no active lane, but it has no design yet.
 
 Every lane also touches `harness/README.md` or a sibling README on landing (this file's own rule: delete the item, write the reasoning into the README). **That is the real contention point** — the prose files, not the code. Expect to rebase documentation edits even when code lanes are disjoint.
@@ -68,16 +66,6 @@ This is a sharper case of the same root cause already named in `run_history.py`'
 The specific failure: `intel` correctly refuses to judge whether an empty city is in danger and points at `--view military`; `military` renders a symbol grid and cannot answer it either, so the agent eyeballs a corridor off the grid — the derivation the guide says is unreliable.
 
 Wanted is presentation, not a verdict: per city, distance to the nearest unowned land tile, how many reachable unowned land tiles lie within N walk, and whether a land route exists at all. The walk machinery is already local to `run_history.py` (see the target line above). **Hold the line `intel` already holds** — report the approach, never call a city safe or unsafe.
-
-### `bearings-by-default` — coordinates are the wrong interface for the human player
-
-**Cross-tool — collides with Lanes A, B and C simultaneously.** **Target:** `harness/render_map.py`, `harness/run_history.py`, `harness/rules.py`, all three test modules, `harness/AGENT_GUIDE.md`, `harness/README.md`. Run alone.
-
-**The agent's own #1 ask, and independently the player's** — the only item both reporters ranked at the top. At t5 the player said outright they cannot see (x,y) coordinates in-game and asked for relative descriptions ("the plains hill NW of the capital"). Every tool speaks coordinates natively, so from then on the agent called `bearing.py` on nearly every turn purely to translate tool output into something actionable. That is a translation step on every single turn of every session.
-
-The machinery exists and is already trusted: `run_history` and `render_map --view military` print bearings, with wrap handling built in. Wanted is bearing-from-nearest-city as the **default** rendering — `render_map`'s RESOURCES REVEALED list, the `--around` site-report header, `foreignUnits` summaries — with raw coordinates kept as a secondary field, since they remain the input format for every tool.
-
-**One scope decision to make first, and it is the reason this isn't already obvious.** The ask says "everywhere", but **grids are positional by construction** — a cell's meaning is its place in the render, and a bearing per cell is both impossible and pointless. Read this as *every prose and list line*, leaving grid cells alone. Getting that wrong turns the highest-value usability item into a broken renderer.
 
 ### `coastal-undetermined-wording` — the site report's undetermined coastal state leads with "no"
 
@@ -136,7 +124,7 @@ Also outstanding from the same caveat: the baseline's increment-⑤ and ⑥ fiel
 
 **How the advisor reasoned wrongly while every tool answered correctly.** No slugs, no targets — these are not work. **An accumulator, not a backlog:** one occurrence is noise, a second is a pattern, and only a pattern justifies building something. Each entry names what would promote it; the bar is recurrence, not a good argument.
 
-**All three are now actively tested rather than passively held.** The landed per-turn checklist in `trial-template/CLAUDE.md` carries one check line each (its items 6–8), so the next trial either produces a second occurrence or leaves them where they are. That was the checklist's second job, and it is what makes this section resolvable instead of permanent — **a finding that survives several trials with the check in place is a candidate for deletion, not indefinite storage.**
+**All three are now actively tested rather than passively held.** The landed per-turn checklist in `trial-template/CLAUDE.md` carries one check line each (its items 7–9), so the next trial either produces a second occurrence or leaves them where they are. That was the checklist's second job, and it is what makes this section resolvable instead of permanent — **a finding that survives several trials with the check in place is a candidate for deletion, not indefinite storage.**
 
 **All three are player-observed and none appeared in the agent's own gap report** — the agent reported what it noticed, the player reported what it didn't. That is the wrong-but-plausible class the trial brief's out-of-band-fact protocol exists to catch, and this is the first clean sample of it.
 
@@ -174,8 +162,6 @@ Also worth recording: across two live trials (Cowork and Claude Code, 25 turns e
 **Run a trial before building anything.** The per-turn checklist and the out-of-band-fact protocol in `trial-template/CLAUDE.md` are both unmeasured, and the Findings checks either fire or don't — so **the next trial is worth more than the next build**, and items below have their evidence gated on it (`multi-site-comparison` outright, the Findings section entirely).
 
 **Then Lane C — `rules-lookup-gaps`**, whose seven sub-bullets are **not one item**: four are genuine lookups, two (the research- and production-switch rules) are prose assertions about engine behaviour with no XML field behind them, and the happiness/health view carries an unverified precondition. **All of these are serial with each other by construction**; do not split them across agents.
-
-**`bearings-by-default` needs its own window.** It touches all three tools and therefore collides with Lanes A, B and C at once. It is the highest-frequency usability item on the page — a translation step removed from every turn — but it cannot be parallelized, so it wants a slot where nothing else is running. Settle the prose-only scope question before starting.
 
 **`city-approach-report`** is now the one substantial harness build left — 4-of-6 trial evidence, unblocked, and cleanly Lane A.
 

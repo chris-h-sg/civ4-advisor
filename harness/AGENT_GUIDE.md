@@ -54,7 +54,7 @@ Files are numbered for the turn **about to be played**, so a run starts at `turn
 
 North is up, `(0,0)` is the northwest corner — ordinary screen coordinates. The map usually wraps in `x` (`game.wrapX`) and never in `y`, so the short way east may be around the seam.
 
-**Use the tools' printed direction rather than reading dx/dy by hand.** The grid is bracketed by `N ^ NORTH` / `S v SOUTH`; `run_history` and `render_map.py --view military` print a bearing (`16 NNW of Lisbon`) beside every position. For any other pair of coordinates, use `bearing.py` — the wrap handling above is already built into all three.
+**Use the tools' printed direction rather than reading dx/dy by hand.** The grid is bracketed by `N ^ NORTH` / `S v SOUTH`; `run_history` and `render_map.py --view military` print a bearing (`16 NNW of Lisbon`) beside every position. For any other pair of coordinates, use `bearing.py` — the wrap handling above is already built into all three. You reason in coordinates; the player cannot, so see "How to answer" for what reaches them.
 
 ## The tools
 
@@ -201,6 +201,11 @@ Reading the JSON directly. Filtering units, comparing city yields, checking rese
 **Separate observation, inference and guess, and label which is which.** "Two Archers were in Rome on t26" is observation. "Rome had Archery by t26" is inference from the XML. "Rome may be going for Praetorians" is a guess.
 
 **State your confidence and what would change it** — the player can look at things you can't.
+
+**Never give the player a coordinate** — `(x,y)` appears nowhere in the game's interface. Coordinates are how you talk to the tools, not how you talk to the player. Not even in parentheses as a fallback: that puts back the thing they can't use.
+
+- **Moving a unit → anchor on that unit.** "Move the settler NW", not "move the settler to (73,18)". This is the one that slips, because the coordinate is right there in the tool output.
+- **Naming a place → anchor on a landmark they can find** — a city, one of their units, a visible resource, the coast. "The plains hill by the sheep" and "two tiles S of Oporto" both work; pick whichever is easier to spot.
 
 **Never manufacture a cause for something you can't see.** If a unit died with no hostile in sight, say something killed it off-screen and you can't tell what.
 
