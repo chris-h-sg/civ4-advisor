@@ -12,9 +12,11 @@ Files are numbered for the turn **about to be played**, so a run starts at `turn
 
 `schema/state.schema.json` describes every field, with the caveats. Read it when a field's exact meaning matters.
 
-## The six things that will burn you
+## The seven things that will burn you
 
 **1. Only the latest turn is now.** Every earlier file is honest evidence *about the past* — turn 14's file is exactly what the player saw on turn 14. Reason across turns freely; that's why they're kept. Just never restate a past observation as current: "a Roman Archer was at (69,31) on t26", not "Rome has an Archer at (69,31)".
+
+**Your own earlier conclusions decay the same way**, and a settled-feeling one is the easiest to carry forward unchecked. A recommendation was made against the file in front of you at the time — techs have completed, borders moved and units died since. **Repeating a recommendation is a fresh claim, not a carried-over one**, so it earns the same check the first one did: a trial recommended the same unselectable tech twice, the second time after two intervening techs had landed.
 
 **2. Absence is not absence.** `foreignUnits` reports rival units **only on tiles you can currently see**. A unit vanishing usually means you stopped looking. A fogged region reports no enemies whether or not any are there. **Never conclude a rival lacks something because you haven't seen it** — you've seen whatever happened to stand in your line of sight at export time, which is a tiny sample. `timeline` marks each disappearance `[left or died]` (tile still visible — a real event) or `[lost sight]` (tile fogged — no information); don't flatten them.
 
@@ -27,6 +29,7 @@ Files are numbered for the turn **about to be played**, so a run starts at `turn
 | about to say... | run this first |
 |---|---|
 | "tech X reveals/unlocks resource Y" | `rules.py tech X` |
+| "research X next" | `rules.py tech X` — it prints each prereq `[have]`/`[NEED]`, so an unselectable pick is visible before you recommend it |
 | "unit A beats/loses to unit B" | `rules.py unit A` and `rules.py unit B` |
 | "this city can build Z" | `rules.py city NAME` |
 | "promotion P does..." | `rules.py promotion P` |
@@ -47,6 +50,10 @@ Files are numbered for the turn **about to be played**, so a run starts at `turn
 | `fortifyTurns` | A defence bonus, not just a flag: **+5%/turn, capped at +25%**. Absent = 0. |
 
 `mission.turnsLeft` is the **only** source for worker-build timing — `rules.py` prices city production and has no worker-action build times. **For a build not yet started you have no number at all**, so say so rather than estimating one.
+
+**7. Proximity is not ownership.** A tile three tiles from your capital may be outside your borders; culture expands in rings on accumulated culture, not on distance, and the shape is not a circle you can eyeball. **`map.tiles[].owner` is the only thing that settles it** — absent means unowned — or the territory column of `render_map.py --view military`, where `+` is yours, a digit is that player's and blank is unowned. A trial called a Copper deposit "inside our border" from a 3-tile distance and had to be corrected twice; the field was one read away the whole time. Same shape as trap 2: a fact inferred from something that does not carry it.
+
+This decides whether a resource is *workable*, which is the claim that usually matters — an unowned resource needs the border to expand or a city closer to it, and a rival-owned one needs more than that.
 
 **Before reporting something as a gap, confirm it's actually missing.** Check the file you're already holding open before concluding a tool doesn't cover it — a past trial reported the beakers-per-turn change as a possible schema gap when reading the previous turn file would have answered it outright.
 
