@@ -4,8 +4,14 @@ Build a self-contained trial folder for one game, ready to point Claude Code at.
 
 .DESCRIPTION
 Creates -Destination containing junctions to this repo's harness/, the specific
-game's run folder under state/, and the Civ IV install, plus a CLAUDE.md and
-config.local.json so the tools resolve paths with no further setup.
+game's run folder under state/, the schema/ folder and the Civ IV install, plus
+a CLAUDE.md and config.local.json so the tools resolve paths with no further
+setup.
+
+schema/ is mounted because AGENT_GUIDE.md sends the agent to
+schema/state.schema.json for a field's exact meaning, and 40 of its 84 field
+descriptions carry a caveat that cannot be inferred from the turn files.
+Without it that instruction is a dead end.
 
 The destination is deliberately not created inside this repo: Claude Code's
 CLAUDE.md discovery walks up from cwd, so a trial folder nested under this
@@ -33,12 +39,16 @@ $ErrorActionPreference = "Stop"
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $harnessPath = Join-Path $repoRoot "harness"
+$schemaPath = Join-Path $repoRoot "schema"
 $stateRoot = Join-Path $repoRoot "state"
 $gameStatePath = Join-Path $stateRoot $GameDir
 $configPath = Join-Path $repoRoot "config.local.json"
 
 if (-not (Test-Path $harnessPath)) {
     throw "Expected $harnessPath - is this script still inside trial-template/ in the repo?"
+}
+if (-not (Test-Path $schemaPath)) {
+    throw "Expected $schemaPath - is this script still inside trial-template/ in the repo?"
 }
 if (-not (Test-Path $gameStatePath)) {
     $available = Get-ChildItem $stateRoot -Directory | Select-Object -ExpandProperty Name
@@ -62,6 +72,7 @@ if (Test-Path $Destination) {
 
 New-Item -ItemType Directory -Path $Destination | Out-Null
 New-Item -ItemType Junction -Path (Join-Path $Destination "harness") -Target $harnessPath | Out-Null
+New-Item -ItemType Junction -Path (Join-Path $Destination "schema") -Target $schemaPath | Out-Null
 New-Item -ItemType Junction -Path (Join-Path $Destination "state") -Target $gameStatePath | Out-Null
 New-Item -ItemType Junction -Path (Join-Path $Destination "civ4_install") -Target $installPath | Out-Null
 
@@ -72,5 +83,6 @@ $configJson = @{ civ4_install_path = "civ4_install" } | ConvertTo-Json
 
 Write-Output "Trial folder ready: $Destination"
 Write-Output "  harness      -> $harnessPath"
+Write-Output "  schema       -> $schemaPath"
 Write-Output "  state        -> $gameStatePath"
 Write-Output "  civ4_install -> $installPath"

@@ -4,7 +4,7 @@
 
 Two sources feed it: the design-review items recorded while building each tool, and findings from **agent trials** — a fresh agent given the guide and a sample (or a live game) and asked a real question, then asked where a tool would have helped. Trial counts below are that evidence, and they are the strongest thing on this page — better than anything predicted in advance.
 
-**Trial evidence comes in two kinds, and they are not equally reliable.** *Agent-asked* is what a trial reported when asked where a tool would have helped. *Player-observed* is what the human running the trial noticed the agent getting wrong — and the agent did not report, because it never noticed. The second kind is rarer and worth more: it is the only detector for the wrong-but-plausible class, which by construction never appears in an agent's own gap report. Items below name which kind they carry. See `trial-protocol`, and the **Findings** section for observations that are not build items at all.
+**Trial evidence comes in two kinds, and they are not equally reliable.** *Agent-asked* is what a trial reported when asked where a tool would have helped. *Player-observed* is what the human running the trial noticed the agent getting wrong — and the agent did not report, because it never noticed. The second kind is rarer and worth more: it is the only detector for the wrong-but-plausible class, which by construction never appears in an agent's own gap report. Items below name which kind they carry. The protocol for capturing the second kind now lives in `trial-template/CLAUDE.md`; see the **Findings** section for observations that are not build items at all.
 
 **Read the source before queueing a gap.** A trial reporting something missing is evidence that it was not *found*, which is not the same as it not existing — `coastal-undetermined-wording` was drafted as a missing feature before anyone checked, and the capability was already there and already correct. `AGENT_GUIDE.md` gives the advising agent this rule ("before reporting something as a gap, confirm it's actually missing"); it applies with more force here, where the output is a build item rather than a sentence.
 
@@ -19,15 +19,14 @@ Every item carries a **`Target:`** line naming the files it will have to edit. T
 | Slug | Lane / target | Evidence | Status |
 | --- | --- | --- | --- |
 | `same-turn-round-trips` | Correctness — schema + mod (design first) | 1 trial, sharpest finding on the page | Recorded, **not scheduled** — no affordable design yet |
-| `trial-per-turn-checklist` | Lane E — trial docs | Player-observed ×2, plus the agent's own B5 lapse | Ready, costs nothing |
 | `bearings-by-default` | Cross-tool — all three | Agent's own #1, and player-observed independently | Ready; needs a scope call (prose only) |
 | `city-approach-report` | Lane A — `run_history.py` | 4 of 6 `rules.py` trials; 2 wrote their own BFS | Ready, unblocked |
 | `garrison-posture` | Lane A — `run_history.py` | Follows increment ⑨; no tool reads the new fields | Ready, small |
+| `objectives-age-line` | Lane A — `run_history.py` | Split from the landed `trial-per-turn-checklist` | Ready, very small |
 | `coastal-undetermined-wording` | Lane B — `render_map.py` | Player-observed; the output was already right | Ready; wording only, will break one test assertion |
-| `multi-site-comparison` | Lane B — `render_map.py` | Both trial rounds; one diffed 10 runs by eye | **Reframed** — the gap is the trigger, not the table |
+| `multi-site-comparison` | Lane B — `render_map.py` | Both trial rounds; one diffed 10 runs by eye | **Reframed** — trigger landed; awaiting next trial |
 | `rules-lookup-gaps` | Lane C — `rules.py` | Seven sub-gaps, 1–2 of 4 trials each | Ready — **not one item**, see its note |
 | `varied-setup-samples` | Lane D — `samples/` (capture) | Coverage holes identified, not trial-driven | Opportunistic — needs a game played |
-| `trial-protocol` | Lane E — trial docs | The meta-finding behind three landed items | Ready, costs nothing |
 
 `Deliberately not building` is below and carries no slugs — those entries are decisions, not work. **Findings** likewise: observations about how the advisor reasons, held as an accumulator until one recurs. Each names what would promote it; the bar is a second occurrence, not a good argument.
 
@@ -37,11 +36,10 @@ Every item carries a **`Target:`** line naming the files it will have to edit. T
 
 Grouped by `Target:`, so what can run concurrently is visible without reading the prose.
 
-- **Lane A — `harness/run_history.py`.** `city-approach-report`, `garrison-posture`. Both land in the same module and both touch `intel`; **treat as serial with each other**, though the collision is far smaller than Lane C's. `garrison-posture` extends the same garrison block that `per-city-production-history` (landed) has already rewritten, so read the current block before starting.
+- **Lane A — `harness/run_history.py`.** `city-approach-report`, `garrison-posture`, `objectives-age-line`. All land in the same module and all touch `intel`; **treat as serial with each other**, though the collision is far smaller than Lane C's. `garrison-posture` extends the same garrison block that `per-city-production-history` (landed) has already rewritten, so read the current block before starting.
 - **Lane B — `harness/render_map.py`.** `coastal-undetermined-wording`, `multi-site-comparison`. Both land in the site report, so treat as serial with each other; the wording fix is small enough to take first in the same sitting. Parallel-safe against every other lane.
 - **Lane C — `harness/rules.py`.** `rules-lookup-gaps` is the only item left in it. `rules.py` is a single ~5600-line module, so anything landing here is serial with it by construction — if a second Lane C item ever appears, do not assign the two concurrently.
 - **Lane D — `samples/`.** `varied-setup-samples`. Requires actual play; collides with nothing.
-- **Lane E — trial/advisor documentation.** `trial-protocol`, `trial-per-turn-checklist`. Touches only `trial-template/`; parallel-safe against every code lane. The two are close enough in subject that one agent should take both.
 - **Cross-tool — `bearings-by-default`.** Touches `render_map.py`, `run_history.py` and `rules.py`, so it **collides with Lanes A, B and C at once**. Run it alone, or accept a rebase. It is the one item that cannot be parallelized with anything.
 - **Unlaned — `same-turn-round-trips`.** Would cross `mod/` and `schema/`, colliding with no active lane, but it has no design yet.
 
@@ -83,6 +81,16 @@ Small. It shares the garrison block with the landed `per-city-production-history
 
 **Sample gap:** `samples/baseline-early-game/` predates increments ⑦–⑨ and carries no `activity` or `fortifyTurns`, so this can only be tested against synthetic states (as `test_intel_flags_a_food_fed_build_as_stopping_growth` already does). Accepted; `varied-setup-samples` retires it.
 
+### `objectives-age-line` — make objectives drift visible where the advisor is already looking
+
+**Lane A.** **Target:** `harness/run_history.py` (the header every view prints), `harness/tests/test_run_history.py`, `harness/AGENT_GUIDE.md`, `harness/README.md`.
+
+Split off from the landed `trial-per-turn-checklist`, which took the prose half only. A line in `run_history`'s header — `objectives.md last written: t10 (26 turns ago)` — makes the drift visible exactly when the advisor is already reading run state, rather than depending on it remembering to check. The evidence: the brief asks for a restatement every 5–10 turns and got one at t0 updated through t10, then nothing to t36, spanning first contact with two civs, a completed Settler and a unit loss.
+
+**The checklist now carries this as item 4, so this is the structural backstop rather than the fix** — the whole lesson behind the checklist is that an instruction which must be remembered is the thing that fails. Take it with whatever Lane A item is in hand.
+
+*Settle the path first — the obvious answer is measured wrong.* `objectives.md` lives in the **trial folder** while `run_history.py` takes the run folder, and in a trial that run folder is a **junction**: walking up from it resolves through the link into the repo's own `state/`, never into the trial folder. So a sibling-directory guess reports "never written" on every run — silently, and looking exactly like genuine drift, which is worse than no line at all. That leaves an explicit `--objectives PATH` (verified against a generated trial folder, not assumed).
+
 ### `bearings-by-default` — coordinates are the wrong interface for the human player
 
 **Cross-tool — collides with Lanes A, B and C simultaneously.** **Target:** `harness/render_map.py`, `harness/run_history.py`, `harness/rules.py`, all three test modules, `harness/AGENT_GUIDE.md`, `harness/README.md`. Run alone.
@@ -111,7 +119,9 @@ Asked in both trial rounds; one trial ran `--around` ten times and diffed by eye
 
 It outlived the cheap presentation fixes it was once grouped with (`--site-only` and the seam-description wording, both since landed — see `harness/README.md`) because it is a real interface question (how many sites, what shape the table takes), not a layout tweak.
 
-**Reframed by the Ramesses trial, and worth reading before building it.** The player observed that the agent *"does comparative analysis of city sites when asked, has been very thorough considering tiles and strategic value vs rivals, produces a clear table — but only when asked."* So the agent already produces a good multi-site comparison on request, by hand, and the thing that fails is that nobody asks. Building the table buys a tidier version of something that works and leaves the actual failure untouched; the trigger belongs in `trial-per-turn-checklist`. **That is an argument about sequencing, not a cancellation** — the tool still removes hand-derivation and the wrap-handling risk that comes with it — but this item should follow the checklist rather than precede it.
+**Reframed by the Ramesses trial, and worth reading before building it.** The player observed that the agent *"does comparative analysis of city sites when asked, has been very thorough considering tiles and strategic value vs rivals, produces a clear table — but only when asked."* So the agent already produces a good multi-site comparison on request, by hand, and the thing that fails is that nobody asks. Building the table buys a tidier version of something that works and leaves the actual failure untouched.
+
+**The trigger half has now landed** as item 5 of the per-turn checklist in `trial-template/CLAUDE.md` (a walking settler forces an explicit candidate table). So this item is **waiting on evidence rather than on a decision**: if the next trial produces good comparisons unprompted, what remains here is removing hand-derivation and its wrap-handling risk — real, but a smaller claim than the one this item was queued on. If the checklist item does *not* fire, that is the stronger argument for building the table. Either way the interface decision (how many sites, what shape) is still open and unmade.
 
 ### `rules-lookup-gaps` — smaller `rules.py` gaps
 
@@ -144,44 +154,13 @@ Also outstanding from the same caveat: the baseline's increment-⑤ and ⑥ fiel
 
 ---
 
-## Process
-
-### `trial-per-turn-checklist` — the advisor does several things well, but only when asked
-
-**Lane E.** **Target:** `trial-template/CLAUDE.md`. Almost certainly not `harness/AGENT_GUIDE.md` — the guide describes the tools, and this is about the shape of a turn. Build it together with `trial-protocol`; they are the same file and the same subject.
-
-**The cheapest item on the page and the one covering the most separate observations.** Three distinct findings share one cause — the advisor produces good work on request and does not self-prompt:
-
-- **Unit movement.** *Player-observed:* the agent should give movement instructions each turn when a unit is ready to move, and often didn't.
-- **What to build after founding.** *Player-observed:* a new city needs its first build chosen immediately, in that same turn, and the advice arrived late.
-- **Site comparison.** *Player-observed:* thorough and well-tabulated when asked, absent otherwise — see `multi-site-comparison`, which this partly displaces.
-- **Objectives drift.** *Agent-asked* (its B5, and its own lapse): `trial-template/CLAUDE.md` asks for a restatement every 5–10 turns; the agent wrote one at t0, updated through t10, then stopped — t15–t36 have none, spanning first contact with two civs, a completed Settler and a unit loss.
-
-The last one has a cheap tool half worth pairing with the prose: a line in `run_history`'s header — `objectives.md last written: t10 (26 turns ago)` — makes the drift visible exactly when the advisor is already reading run state. **That half is Lane A**, so if it is taken, it goes with whatever Lane A item is in hand rather than here.
-
-**It also has a second job: making the `Findings` section testable.** Several findings resolve to "watch whether this recurs" — Warriors' movement, resource-versus-yield weighting, coastal status read past in the site report. Those are only checkable if someone is looking at the right moment, which is what a per-turn checklist is for. Adding them as explicit check lines converts a passive list of observations into something the next trial actively tests.
-
-**A caution on how to write this.** The failure is not that the agent lacks instructions — `trial-template/CLAUDE.md` already asks for restatements and gets ignored. It is the same lesson the compass and the walk-vs-straight-line ordering both taught (see `harness/README.md`): **when a caveat does not stick, change the structure rather than adding words.** A per-turn checklist works because it is checkable at a fixed moment; a longer paragraph asking for diligence will not.
-
-### `trial-protocol` — because out-of-band discovery is the real detector
-
-**Lane E.** **Target:** `trial-template/CLAUDE.md` (the session brief the trial deploys), and probably `harness/README.md`'s trial section for the reasoning. *Uncertain* whether any of this belongs in `harness/AGENT_GUIDE.md`: the protocol is aimed at the **player**, not the agent, and the guide is the agent's file — so the honest answer is likely "no", but that is a call to make while writing it.
-
-**The meta-finding, and the one with no obvious owner.** The mod-side gaps in the (now-resolved) `doTurn()` mutation-order audit (see `REFERENCES.md`), `same-turn-round-trips`, the now-built increment ⑦, and increment ⑧'s one-too-high `turnsLeft` all surfaced *only* because the player narrated or checked something the agent could not see — "it's actually healed", "here's the 60 gold", "it got two promotions", "that number is wrong against the UI". In a run where the player did not, those would have silently produced worse advice with nothing in the output able to catch it. The `turnsLeft` case is the sharpest: the value was wrong, plausible, and agreed with by a passing test suite.
-
-That is the compass failure mode again: wrong-but-plausible, self-consistent, invisible from inside. Trials are currently the only detector for this class of problem, and they fire only when the player happens to mention the right thing.
-
-The fix is not tooling. It is a protocol: during a trial, **note every time you tell the agent something the JSON should have carried.** That turns an accident into a repeatable finding mechanism, and it costs nothing. Belongs in the advisor instructions used to set up a session.
-
-**One asymmetry this doesn't fix.** A trial can report itself confident and correct while the player observes real slips. The guide's "tell us what's missing" instruction only catches failures the agent *notices*, which structurally excludes the entire wrong-but-plausible class. Not fixable in the agent's instructions — it is the argument for the player-side protocol being more load-bearing than it looks.
-
----
-
 ## Findings
 
-**How the advisor reasoned wrongly while every tool answered correctly.** No slugs, no targets — these are not work. **An accumulator, not a backlog:** one occurrence is noise, a second is a pattern, and only a pattern justifies building something. Each entry names what would promote it; the bar is recurrence, not a good argument. What to do with the section now is check these behaviours on the next run, which is `trial-per-turn-checklist`'s second job.
+**How the advisor reasoned wrongly while every tool answered correctly.** No slugs, no targets — these are not work. **An accumulator, not a backlog:** one occurrence is noise, a second is a pattern, and only a pattern justifies building something. Each entry names what would promote it; the bar is recurrence, not a good argument.
 
-**All three are player-observed and none appeared in the agent's own gap report** — the agent reported what it noticed, the player reported what it didn't. That is the wrong-but-plausible class `trial-protocol` exists to catch, and this is the first clean sample of it.
+**All three are now actively tested rather than passively held.** The landed per-turn checklist in `trial-template/CLAUDE.md` carries one check line each (its items 6–8), so the next trial either produces a second occurrence or leaves them where they are. That was the checklist's second job, and it is what makes this section resolvable instead of permanent — **a finding that survives several trials with the check in place is a candidate for deletion, not indefinite storage.**
+
+**All three are player-observed and none appeared in the agent's own gap report** — the agent reported what it noticed, the player reported what it didn't. That is the wrong-but-plausible class the trial brief's out-of-band-fact protocol exists to catch, and this is the first clean sample of it.
 
 - **Warrior movement, when not thinking about it.** The agent treated Warriors as having 2 moves in passing remarks, while `units[].moves` is exported and correct — a background prior overriding correctly-read data. *Promote when:* it recurs. A second sighting argues for restating unit stats per turn or a "verify movement before advising a move" checklist trigger; one justifies neither.
 
@@ -204,7 +183,7 @@ Carried forward from `harness/README.md` so they are not re-proposed. **These ca
 
 - **A `productionBankedFor` field on `cities[]`.** Asked for by the Ramesses trial after it wrongly advised switching production to a Warrior on the belief that 40 hammers banked toward a Worker would complete it instantly. The misconception is real and recurring — "should I switch production" is a live question most turns. But Civ4 banks hammers **per build class with a decay rule**, so a single field cannot represent the behaviour faithfully, and a half-right field is worse than none: it would be read as authoritative on exactly the decision it gets wrong. This is a **rule**, not a state fact, and it belongs in `rules.py city`'s output as a line — which is the trial's own fallback suggestion. Folded into `rules-lookup-gaps` as the research-switch rule's sibling.
 - **Score decomposition, or an unexplained-score detector.** The trial watched score move 45 → 65 → 72 → 98 and had to flag one jump as unexplained, and proposed either a pop/land/tech/wonder breakdown or a `timeline` anomaly line mirroring the existing gold-swing detector. Declined for the current window: score is a scoreboard number, not a decision input in turns 0–50 — nothing the advisor recommends changes on knowing whether a jump came from population or land. The trial ranked it last itself. Revisit only if the advising window widens far enough that victory-condition tracking matters.
-- **The Bronze Working / copper reveal "gap" — not one.** The Claude Code trial recommended delaying Bronze Working until copper was revealed, inverting the dependency — Bronze Working *is* what reveals copper. But `BONUS_COPPER` carries `<TechReveal>TECH_BRONZE_WORKING</TechReveal>`, and `rules.py tech TECH_BRONZE_WORKING` against that session's own state file prints `resources revealed BONUS_COPPER` under `UNLOCKS` (verified). Tool and data were both already correct and simply unconsulted, which makes this evidence for the trial brief's trigger list (landed — now `trial-template/CLAUDE.md`) rather than a build item.
+- **The Bronze Working / copper reveal "gap" — not one.** The Claude Code trial recommended delaying Bronze Working until copper was revealed, inverting the dependency — Bronze Working *is* what reveals copper. But `BONUS_COPPER` carries `<TechReveal>TECH_BRONZE_WORKING</TechReveal>`, and `rules.py tech TECH_BRONZE_WORKING` against that session's own state file prints `resources revealed BONUS_COPPER` under `UNLOCKS` (verified). Tool and data were both already correct and simply unconsulted, which makes this evidence for the guide's rule-5 trigger table (landed) rather than a build item.
 
 Also worth recording: across two live trials (Cowork and Claude Code, 25 turns each, same game) no ranking or scoring tool was ever requested — every finding was a presentation or data gap, never a request to have the tool decide. The bar in `harness/README.md` is holding.
 
@@ -214,7 +193,7 @@ Also worth recording: across two live trials (Cowork and Claude Code, 25 turns e
 
 **Ordering is not identity.** The old integer numbers were doing both jobs at once, and that is exactly what broke: deleting a landed item left a gap that read as a missing step, and every cross-reference to a number went stale the moment the series shifted. Slugs name items; this section — and only this section — says what to do first. Neither the index table's row order nor the lane letters imply priority.
 
-**Lane E first — `trial-protocol` and `trial-per-turn-checklist`.** Both cost nothing, both pay off on the very next trial, and the checklist addresses more separate observations than any other item here. Doing them first also means the next trial generates better evidence for everything below.
+**Run a trial before building anything.** The per-turn checklist and the out-of-band-fact protocol in `trial-template/CLAUDE.md` are both unmeasured, and the Findings checks either fire or don't — so **the next trial is worth more than the next build**, and items below have their evidence gated on it (`multi-site-comparison` outright, the Findings section entirely).
 
 **Then Lane C — `rules-lookup-gaps`**, whose seven sub-bullets are **not one item**: four are genuine lookups, two (the research- and production-switch rules) are prose assertions about engine behaviour with no XML field behind them, and the happiness/health view carries an unverified precondition. **All of these are serial with each other by construction**; do not split them across agents.
 
@@ -222,7 +201,7 @@ Also worth recording: across two live trials (Cowork and Claude Code, 25 turns e
 
 **`city-approach-report`** is now the one substantial harness build left — 4-of-6 trial evidence, unblocked, and cleanly Lane A.
 
-**`multi-site-comparison` now follows `trial-per-turn-checklist`** rather than standing alone — the trial evidence says the missing thing is the trigger, not the table. It still needs its interface decision.
+**`multi-site-comparison` is now gated on the next trial** rather than standing alone — the trial evidence said the missing thing was the trigger, not the table, and the trigger has landed in the checklist. Whether the table is still worth building is a question that trial answers. It also still needs its interface decision.
 
 **`varied-setup-samples`** happens whenever a game is played to a wonder completion — opportunistic rather than scheduled. The Ramesses trial raised its value: it ran at **Monarch on Fractal with 7 civs** while the only committed sample is Emperor and otherwise default, and `rules.py goody` (landed) is difficulty-dependent in a way that changes the advice — its output differs on every one of the nine handicaps, and only Emperor is covered by a committed sample. A second sample at a different difficulty would be worth more than a repeat.
 
