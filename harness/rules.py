@@ -2517,12 +2517,20 @@ def improvement_yield(rules, tile, improvement_type, known, traits=(),
 
     feature_key = tile.get("feature") or ""
     feature = rules.features.get(feature_key)
-    # An improvement that does not REQUIRE the feature clears it first, so its
-    # yield change is gone by the time the improvement stands. Only the
-    # feature-requiring improvements (all excluded from scope) keep it - as
-    # does the bare tile, which clears nothing.
-    keeps_feature = (improvement_type is None
-                     or improvement.get("requires_feature"))
+    # Whether the feature survives is a property of the BUILD, not of the
+    # improvement: each BUILD_* lists the specific features it removes in its
+    # FeatureStructs, and removes nothing else. Forest and jungle appear in
+    # almost every one of those lists, which is what makes "the improvement
+    # clears whatever is there" look right - but flood plains appear in NO
+    # build's FeatureStructs at all, so a Farm on flood plains keeps the
+    # feature's 3 food. Asking the improvement's own bRequiresFeature instead
+    # answers a different question and drops that 3 food.
+    #
+    # clearing_requirement is the one walk of those structs; reuse it rather
+    # than restating the rule, so the yield and the reported requirement can
+    # never disagree. It returns None both for the bare tile (which clears
+    # nothing) and for a feature-requiring improvement.
+    keeps_feature = clearing_requirement(rules, tile, improvement_type) is None
     if feature and keeps_feature and feature.get("yields") and any(feature["yields"]):
         terms.append((_plain(feature_key), list(feature["yields"])))
         _add(total, feature["yields"])

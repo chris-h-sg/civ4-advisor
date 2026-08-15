@@ -324,6 +324,17 @@ def xml_root(tmp_path):
                <iYieldChange>0</iYieldChange>
                <iYieldChange>0</iYieldChange>
              </YieldChanges></FeatureInfo>""",
+        # Shaped like FEATURE_FLOOD_PLAINS: a food yield change, and named by
+        # NO build's FeatureStructs above - so no build removes it and it
+        # survives whatever gets built on top. The stock files have exactly
+        # one such feature, which is why "an improvement clears the feature"
+        # looked like a safe simplification for as long as it did.
+        """<FeatureInfo><Type>FEATURE_TESTFLOOD</Type>
+             <YieldChanges>
+               <iYieldChange>3</iYieldChange>
+               <iYieldChange>0</iYieldChange>
+               <iYieldChange>0</iYieldChange>
+             </YieldChanges></FeatureInfo>""",
     ])
     (root / "Terrain" / "CIV4FeatureInfos.xml").write_text(features, encoding="latin-1")
 
@@ -3982,6 +3993,52 @@ def test_a_cleared_feature_does_not_contribute_its_yield(xml_root, tmp_path):
     r = build_rules(xml_root, state)
     total, terms = rules.improvement_yield(
         r, tile, "IMPROVEMENT_TESTMINE", set(), (), state)
+    assert "FEATURE_FOREST" not in [name for name, _v in terms]
+    # grass 2 food, hills -1 food +1 hammer, mine +2 hammers
+    assert total == [1, 3, 0]
+
+
+def test_a_feature_no_build_removes_keeps_its_yield_under_the_improvement(
+        xml_root, tmp_path):
+    """Whether the feature survives is per-BUILD data, not a property of the
+    improvement.
+
+    The bug this pins: `keeps_feature` asked the improvement's own
+    bRequiresFeature - "does this improvement NEED a feature" - and used the
+    answer for "does this build REMOVE the feature". Those agree for forest
+    and jungle, which nearly every build lists in its FeatureStructs, and
+    disagree for flood plains, which appear in no build's FeatureStructs at
+    all. A Farm on real flood plains printed 1 food instead of 4, with the
+    3-food term missing from the working entirely rather than mis-totalled.
+
+    Both directions in one test on purpose. Keeping every feature is exactly
+    as wrong as dropping every feature, and either half alone passes under
+    the opposite error.
+
+    The engine sweep cannot reach this: it checks tiles as they exist, and no
+    sample tile has a real improvement standing on a feature. The error is
+    only in the counterfactual "if you build" projection, so the coverage has
+    to be synthetic.
+    """
+    # SURVIVES: no build names FEATURE_TESTFLOOD, so the farm stands on top
+    # of it and the 3 food is still there.
+    flood = {"x": 5, "y": 5, "terrain": "TERRAIN_TESTGRASS",
+             "feature": "FEATURE_TESTFLOOD", "freshWater": True}
+    # CLEARED: BUILD_TESTMINE lists FEATURE_FOREST with bRemove, so the
+    # forest's +1 hammer is gone once the mine stands.
+    wooded = {"x": 6, "y": 6, "terrain": "TERRAIN_TESTGRASS",
+              "plotType": "PLOT_HILLS", "feature": "FEATURE_FOREST"}
+    _path, state = make_state(tmp_path, tiles=[flood, wooded])
+    r = build_rules(xml_root, state)
+
+    total, terms = rules.improvement_yield(
+        r, flood, "IMPROVEMENT_TESTFARM", set(), (), state)
+    assert "FEATURE_TESTFLOOD" in [name for name, _v in terms]
+    # grass 2 food + flood 3 food + farm's irrigated +1 on fresh water
+    assert total == [6, 0, 0]
+
+    total, terms = rules.improvement_yield(
+        r, wooded, "IMPROVEMENT_TESTMINE", set(), (), state)
     assert "FEATURE_FOREST" not in [name for name, _v in terms]
     # grass 2 food, hills -1 food +1 hammer, mine +2 hammers
     assert total == [1, 3, 0]
