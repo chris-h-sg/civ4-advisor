@@ -90,7 +90,7 @@ Without the first, the game's Python log stops updating after startup and you ha
 
 **2. Start a game** as usual. When the game is loaded and you see the game start popup, the mod writes a file into a new folder under `state\`, named for your leader.
 
-**3. Set up the advisor for that game** — once per game. Double-click **`advisor\new_game.bat`**.
+**3. Set up the advisor for that game** — once per game. Double-click **`new_game.bat`**.
 
 It lists the games it can see, newest first, and the one you just started is the default — so pressing Enter is usually the right answer:
 

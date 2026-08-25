@@ -47,17 +47,25 @@ $ErrorActionPreference = "Stop"
 
 try {
 
-    $repoRoot = Split-Path -Parent $PSScriptRoot
+    $repoRoot = $PSScriptRoot
     $harnessPath = Join-Path $repoRoot "harness"
     $schemaPath = Join-Path $repoRoot "schema"
     $stateRoot = Join-Path $repoRoot "state"
     $configPath = Join-Path $repoRoot "config.local.json"
 
     if (-not (Test-Path -LiteralPath $harnessPath)) {
-        throw "Expected $harnessPath - is this script still inside advisor/ in the repo?"
+        throw "Expected $harnessPath - is this script still in the civ4-advisor folder?"
     }
     if (-not (Test-Path -LiteralPath $schemaPath)) {
-        throw "Expected $schemaPath - is this script still inside advisor/ in the repo?"
+        throw "Expected $schemaPath - is this script still in the civ4-advisor folder?"
+    }
+    ## The advisor persona, copied into every game folder. Deliberately still in
+    ## advisor/ rather than at the root: it is data this script deploys, not
+    ## something a player runs, and a bare CLAUDE.md at the root would collide
+    ## with the developer one.
+    $personaPath = Join-Path $repoRoot "advisor\CLAUDE.md"
+    if (-not (Test-Path -LiteralPath $personaPath)) {
+        throw "Expected $personaPath - is this script still in the civ4-advisor folder?"
     }
 
     $noGames = @"
@@ -278,7 +286,7 @@ Your Desktop or Documents folder is fine.
         throw "Could not finish setting up $Destination`n  $($_.Exception.Message)`n`nNothing was left behind. Fix that and re-run."
     }
 
-    Copy-Item (Join-Path $PSScriptRoot "CLAUDE.md") (Join-Path $Destination "CLAUDE.md")
+    Copy-Item $personaPath (Join-Path $Destination "CLAUDE.md")
 
     $configJson = @{ civ4_install_path = "civ4_install" } | ConvertTo-Json
     [System.IO.File]::WriteAllText((Join-Path $Destination "config.local.json"), $configJson, [System.Text.UTF8Encoding]::new($false))

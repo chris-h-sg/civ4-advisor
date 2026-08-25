@@ -6,4 +6,7 @@ REM by default, and a repo downloaded as a ZIP is additionally marked as coming
 REM from the internet. -ExecutionPolicy Bypass applies to THIS ONE RUN only and
 REM changes nothing about your machine.
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0setup.ps1" %*
-if errorlevel 1 pause
+REM Always pause: double-clicking closes the window the instant this exits, and
+REM the next steps printed above are the whole point of running it.
+echo.
+pause
