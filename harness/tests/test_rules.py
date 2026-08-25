@@ -933,6 +933,61 @@ def test_resolver_rejects_a_vanilla_install_path(tmp_path):
     assert "Beyond the Sword" in str(excinfo.value)
 
 
+def test_a_relative_install_path_resolves_against_the_config_not_the_cwd(tmp_path, monkeypatch):
+    """An advisor folder's config says just "civ4_install" - the junction beside it.
+
+    Resolving that against the process working directory works only when the
+    tool happens to be run from that folder, and the permission rules the setup
+    generates explicitly bless running it by absolute path from anywhere. The
+    failure names a path that visibly exists, so it reads as "your install is
+    broken" rather than "wrong directory".
+    """
+    folder = tmp_path / "advisor-folder"
+    bts = folder / "civ4_install" / "Beyond the Sword" / "Assets" / "XML"
+    bts.mkdir(parents=True)
+    config = folder / "config.local.json"
+    config.write_text(json.dumps({"civ4_install_path": "civ4_install"}), encoding="utf-8")
+
+    # Deliberately somewhere else: this is the case that used to fail.
+    monkeypatch.chdir(tmp_path)
+    resolved, _vanilla = rules.resolve_xml_root(str(config))
+    assert os.path.isdir(resolved)
+    assert str(folder) in resolved
+
+
+def test_an_absolute_install_path_is_left_alone(tmp_path, monkeypatch):
+    """The repo's own config is absolute; making relative paths work must not
+    quietly re-root an absolute one against the config's folder."""
+    install = tmp_path / "elsewhere"
+    (install / "Beyond the Sword" / "Assets" / "XML").mkdir(parents=True)
+    config = tmp_path / "cfg" / "config.local.json"
+    config.parent.mkdir()
+    config.write_text(json.dumps({"civ4_install_path": str(install)}), encoding="utf-8")
+
+    monkeypatch.chdir(tmp_path)
+    resolved, _vanilla = rules.resolve_xml_root(str(config))
+    assert str(install) in resolved
+    assert "cfg" not in resolved
+
+
+def test_a_config_beside_the_start_wins_over_one_further_up(tmp_path):
+    """The walk-up looks for config.local.json.EXAMPLE, which an advisor folder
+    does not have - so without this it sails past the folder's own config and
+    resolves whatever ancestor carries the marker (a second checkout, a
+    re-unzip, a synced Documents tree). Silent, and points at the wrong install.
+    """
+    ancestor = tmp_path / "some-checkout"
+    (ancestor / "config.local.json.example").parent.mkdir(parents=True)
+    (ancestor / "config.local.json.example").write_text("{}", encoding="utf-8")
+    (ancestor / "config.local.json").write_text("{}", encoding="utf-8")
+
+    folder = ancestor / "nested" / "advisor-folder"
+    folder.mkdir(parents=True)
+    (folder / "config.local.json").write_text("{}", encoding="utf-8")
+
+    assert rules.find_repo_root(str(folder)) == str(folder)
+
+
 def test_missing_config_is_fatal_not_defaulted(tmp_path):
     with pytest.raises(rules.RulesError) as excinfo:
         rules.resolve_xml_root(str(tmp_path / "nope.json"))
