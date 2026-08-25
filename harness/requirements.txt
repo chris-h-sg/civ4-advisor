@@ -1,5 +1,7 @@
 # Dev/test dependencies only. The tools themselves are stdlib-only and must stay
 # that way - see README.md "Running these" for why.
 #
-# Also covers mod/tests/, which has needed pytest since before this file had entries.
+# Also covers mod/tests/, which needs both of these: pytest to be collected by
+# the same run, and jsonschema to validate the export against schema/.
 pytest>=8.0
+jsonschema>=4.0
