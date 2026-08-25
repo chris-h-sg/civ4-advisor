@@ -23,7 +23,7 @@ Underneath, it runs its own tools for the things a language model is unreliable 
 
 - **Windows.** The mod runs inside the game, which is Windows-only.
 - **Civilization IV: Beyond the Sword**, installed and working. A stock install — this changes no base game files.
-- **[Claude Code](https://claude.com/claude-code)**, installed and signed in.
+- **[Claude Code](https://claude.com/download)**, signed in, with a paid Claude plan (it is not included in the free tier). The desktop app is the easiest way to use it; the `claude` command-line tool also works.
 - **[Python 3](https://www.python.org/downloads/)** (3.8 or newer). Claude Code does not include one. During installation, **tick "Add python.exe to PATH"** — that checkbox is the single most common thing to get wrong here. Claude runs its own tools with it; you never have to.
 
 You do not need to know how to code.
@@ -112,16 +112,27 @@ Press ENTER to use that, or type another path:
 
 Anywhere outside this repo is fine.
 
-**4. Open Claude Code in that folder.** The script prints the exact commands to run:
+**4. Open that folder in Claude Desktop.** Go to the **Code** tab, click **Select folder**, and pick the folder the script just made.
+
+**Set the model to Sonnet 5 with medium effort.** That is the recommended default for this; using Opus or higher effort significantly increases thinking time for marginal improvements.
+
+Then give it this to start:
+
+> Read your instructions, then look at my position and tell me what to do.
+
+<details>
+<summary>Or use the command line</summary>
+
+If you prefer the `claude` command-line tool, the script prints the exact commands:
 
 ```bash
 cd %USERPROFILE%\Desktop\civ-pacal
 claude
 ```
 
-Then give it this to start:
+Then give it the same starting message. Everything below works the same either way.
 
-> Read your instructions, then look at my position and tell me what to do.
+</details>
 
 Then each turn: play, hit End Turn, and tell Claude "done", "what now?", anything. **There is no automatic trigger; you prompt it to check.** It reads the latest turn files itself, so you do not need to tell it what happened. Feel free to play multiple turns in between prompts, it will look at everything that happened since the last prompt.
 

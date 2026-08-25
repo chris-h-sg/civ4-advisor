@@ -360,14 +360,17 @@ Your Desktop or Documents folder is fine.
     Write-Host "Advisor folder ready: $Destination" -ForegroundColor Green
     Write-Host "  game -> $GameDir" -ForegroundColor DarkGray
     Write-Host ""
-    Write-Host "Now open Claude Code there:" -ForegroundColor Gray
-    Write-Host "  cd `"$Destination`"" -ForegroundColor Gray
-    Write-Host "  claude" -ForegroundColor Gray
+    Write-Host "Now open that folder in Claude Desktop:" -ForegroundColor Gray
+    Write-Host "  Code tab  ->  Select folder  ->  $Destination" -ForegroundColor Gray
+    Write-Host ""
+    Write-Host "Recommended model: Sonnet 5, medium effort." -ForegroundColor Gray
     Write-Host ""
     Write-Host "Then start with:" -ForegroundColor Gray
     Write-Host "  Read your instructions, then look at my position and tell me what to do." -ForegroundColor White
     Write-Host ""
     Write-Host "After that, just tell it when you have played a turn." -ForegroundColor DarkGray
+    Write-Host ""
+    Write-Host "(Prefer the command line?  cd `"$Destination`"  then  claude)" -ForegroundColor DarkGray
 
 } catch {
     Write-Host ""

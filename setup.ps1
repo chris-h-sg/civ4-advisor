@@ -760,7 +760,8 @@ Re-run with -UserDataPath pointing at the folder that contains CivilizationIV.in
   3. Set up the advisor for that game: double-click new_game.bat
      It lists your games, you pick one, and it makes a folder for it.
 
-  4. Open Claude Code in that folder, and start with:
+  4. Open that folder in Claude Desktop (Code tab > Select folder), and
+     start with:
 
        Read your instructions, then look at my position and tell me what to do.
 
