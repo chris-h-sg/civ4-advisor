@@ -74,8 +74,8 @@ No games found under state\.
 Start a game in Civ IV first - the mod creates that game's folder the moment you
 begin, and this script links to it. Play at least the first turn, then re-run.
 
-If you have started a game and nothing appeared, the mod is not exporting. Run:
-  setup.bat -Verify
+If you have started a game and nothing appeared, the mod is not exporting.
+Double-click verify.bat in the civ4-advisor folder to find out why.
 "@
 
     ## Describe each run folder by what a person would recognise: the leader, how far

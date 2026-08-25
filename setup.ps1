@@ -29,7 +29,8 @@ under Documents\My Games\Beyond the Sword. Skips the detection prompt.
 
 .PARAMETER Verify
 Check everything and print a report. Changes nothing. Use this when state files
-are not appearing and you want to know why.
+are not appearing and you want to know why. verify.bat is a double-clickable
+wrapper for exactly this.
 
 .PARAMETER NoShortcut
 Skip creating the Desktop shortcut.
@@ -755,7 +756,7 @@ Re-run with -UserDataPath pointing at the folder that contains CivilizationIV.in
 
   2. Start a game. A folder appears under:
        $stateRoot
-     If nothing appears there, run:  setup.bat -Verify
+     If nothing appears there, double-click verify.bat
 
   3. Set up the advisor for that game: double-click new_game.bat
      It lists your games, you pick one, and it makes a folder for it.

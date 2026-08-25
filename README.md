@@ -42,11 +42,7 @@ If it cannot find your install, tell it where to look. From a command prompt in 
 setup.bat -InstallPath "D:\path\to\Sid Meier's Civilization IV Beyond the Sword"
 ```
 
-To check an existing setup at any time if something is not working:
-
-```bash
-setup.bat -Verify
-```
+To check an existing setup at any time if something is not working, **double-click `verify.bat`**.
 
 <details>
 <summary>Doing it by hand instead</summary>
@@ -112,6 +108,8 @@ Press ENTER to use that, or type another path:
 
 Anywhere outside this repo is fine.
 
+Each game needs its own advisor folder. To start a new game, run `new_game.bat` again.
+
 **4. Open that folder in Claude Desktop.** Go to the **Code** tab, click **Select folder**, and pick the folder the script just made.
 
 **Set the model to Sonnet 5 with medium effort.** That is the recommended default for this; using Opus or higher effort significantly increases thinking time for marginal improvements.
@@ -140,7 +138,7 @@ Do tell it when something happened between turns that the start of turn game sta
 
 ## When it isn't working
 
-Run `setup.bat -Verify` first — it checks each piece and says which one failed.
+**Double-click `verify.bat` first**. It checks each piece and says which one failed without changing anything.
 
 | Symptom | Cause |
 |---|---|
@@ -169,6 +167,7 @@ Worth knowing before you try it:
 - **No religions, espionage, corporations.** The advisor has no visibility and will only be able to give general advice on these topics.
 - **Prompt it at the start of your turn.** Nothing fires automatically and it's not able to see actions you take during your turn live.
 - **Advice quality.** Claude struggles with spatial reasoning, doesn't know what the UI looks like, and it sometimes confuses rules with other Civ editions. It sometimes forgets to use its tools like mapping; if it gives nonsense advice, ask it to check using its tools.
+- **Uses your plan allowance.** On the recommended Sonnet 5 at medium effort, 50 turns typically takes less than half of a 5-hour limit window.
 - **Single player only.** Never tested in multiplayer.
 
 ## How it works
