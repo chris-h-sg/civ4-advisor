@@ -2582,12 +2582,19 @@ def test_handicap_view_explains_the_negative_bonus_sign(xml_root, tmp_path):
 
 def test_handicap_view_carries_no_turn_window_advice(xml_root, tmp_path):
     """The advising-window scope is prompt guidance and has deliberately never
-    been in code - the player may use this tool at any turn."""
+    been in code - the player may use this tool at any turn.
+
+    Checks the phrasings actually in use, not just the retired turn-count one.
+    An assertion naming a string the codebase no longer contains passes whatever
+    the view prints, which is worse than no test: it reads as a guard while
+    guarding nothing.
+    """
     _, state = make_state(tmp_path)
     r = build_rules(xml_root, state)
-    text = rules.view_handicap(r, "HANDICAP_HARD", state)
-    assert "turns 0-50" not in text.lower()
-    assert "0-50" not in text
+    text = rules.view_handicap(r, "HANDICAP_HARD", state).lower()
+    for phrase in ("advising window", "classical era", "this early",
+                   "turns 0-50", "0-50", "turn 50"):
+        assert phrase not in text, "scope leaked into handicap output: %r" % phrase
 
 
 def test_handicap_view_denies_that_its_turn_fields_gate_goody_huts(
