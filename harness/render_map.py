@@ -124,7 +124,7 @@ OWN_UNIT_GLYPH = (
 # as hammers, so a food-starved turn while building one of these is the city
 # spending growth on the unit on purpose, not a city that's stuck. Not the
 # whole gate in general (a Police State civic makes military units food-fed
-# too - see CLAUDE.md) but it's the only case that recurs turns 0-50, and
+# too - see CLAUDE.md) but it's the only case that recurs this early, and
 # scope stays there. Same two types as OWN_UNIT_GLYPH above by coincidence of
 # scope, not by rule - that list is glyph precedence, unrelated to food cost.
 FOOD_COST_UNITS = frozenset(("UNIT_SETTLER", "UNIT_WORKER"))

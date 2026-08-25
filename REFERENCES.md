@@ -2,6 +2,8 @@
 
 Links and prior art gathered while scoping this project. Kept here so they don't get lost to chat history.
 
+**Note on turn numbers below.** The advising scope is now an era ("early game through roughly the Classical era" — see `CLAUDE.md`), not a turn count, but several notes here justify a narrowing with a specific bound like "unreachable before turn 50". Those are deliberately left as written: each is a checkable claim about when a mechanic becomes reachable, and restating it as an era would make it vaguer without making it truer. Read them as "early enough that this cannot arise", and re-check the ones that say so if the scope widens again.
+
 ## Civ IV Python API
 
 - **Python class reference (BUG mod project, community-hosted):**

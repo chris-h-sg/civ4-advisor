@@ -2526,8 +2526,8 @@ def test_handicap_view_explains_the_negative_bonus_sign(xml_root, tmp_path):
 
 
 def test_handicap_view_carries_no_turn_window_advice(xml_root, tmp_path):
-    """The turn-50 scope is prompt guidance and has deliberately never been in
-    code - the player may use this tool at any turn."""
+    """The advising-window scope is prompt guidance and has deliberately never
+    been in code - the player may use this tool at any turn."""
     _, state = make_state(tmp_path)
     r = build_rules(xml_root, state)
     text = rules.view_handicap(r, "HANDICAP_HARD", state)
@@ -3443,7 +3443,7 @@ def test_a_food_build_adds_the_food_surplus_to_its_rate():
         t42  UNIT_WARRIOR   foodPerTurn 6  productionPerTurn 7
         t43  UNIT_SETTLER   foodPerTurn 0  productionPerTurn 13   (= 6 + 7)
     Ignoring it roughly doubled the quoted time on the two builds that
-    dominate turns 0-50.
+    dominate the early game.
 
     THE FALLBACK PATH, as are the four tests below it: these cities omit the
     increment-6 split deliberately. Since the baseline run was backfilled, no

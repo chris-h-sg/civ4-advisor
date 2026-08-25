@@ -345,7 +345,7 @@ def _buildGameOptions(ctx):
 	'''Game options that are switched ON, in XML order; usually a short list or empty.
 
 	Small field, outsized effect on our actual scope: GAMEOPTION_RAGING_BARBARIANS
-	and GAMEOPTION_NO_BARBARIANS change turn 1-20 advice more than almost anything
+	and GAMEOPTION_NO_BARBARIANS change early-game advice more than almost anything
 	else in this file, and GAMEOPTION_AGGRESSIVE_AI changes how risky early scouting
 	and thin defence are.'''
 	return _enabledTypes(ctx.gc.getNumGameOptionInfos(), ctx.game.isOption,
@@ -765,7 +765,7 @@ def _buildUnit(ctx, unit):
 ## ActivityTypes (CvEnums.h:1334-1348) as exported keys. ACTIVITY_AWAKE is the
 ## default and omitted; the numeric values are the enum's own ordering, which is
 ## stable and marked "Exposed to Python" in the header. NO_ACTIVITY (-1) and the
-## air/naval/plunder activities are all out of scope for turns 0-50 and simply
+## air/naval/plunder activities are all out of scope this early and simply
 ## fall through to omission rather than being invented into names.
 _ACTIVITY_TYPES = {
 	1: 'ACTIVITY_HOLD',
@@ -809,7 +809,7 @@ def _buildMission(ctx, unit):
 	(shift-clicked orders), and the game's own interface renders the rest as "..."
 	with no detail - see CvMainInterface.py:2713-2737. Exporting the head matches
 	both that display and the shape cities already use for `producing`, and a
-	backlog is vanishingly rare in turns 0-50. Purely additive to widen later.
+	backlog is vanishingly rare this early. Purely additive to widen later.
 
 	The payload fields depend on the mission, because iData1/iData2 mean different
 	things per mission type and there is no generic reading of them. Verified in
@@ -1043,7 +1043,7 @@ def _territoryHealRate(ctx, unit, plot):
 
 	Off a city tile, the engine picks friendly/enemy/neutral by TEAM, not by player:
 	isFriendlyTerritory(plotTeam) is friendly only for our own team or a vassal
-	relation (structurally unreachable in turns 0-50, since vassalage needs a
+	relation (structurally unreachable this early, since vassalage needs a
 	capitulation war), otherwise the tile is enemy if the plot's owning team is at war
 	with ours and neutral otherwise - which also covers an unowned plot, whose team is
 	NO_TEAM and is never "at war" with anyone. Each branch is further adjusted by this

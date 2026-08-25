@@ -528,7 +528,7 @@ def parse_units(text):
             "free_promotions": free_promotions,
             # Cannot draw a HOSTILE result from a goody hut. Only the Scout and
             # the Explorer carry it, and it is the single most decision-relevant
-            # field in the file for turns 0-50: the hut that killed a trial's
+            # field in the file this early: the hut that killed a trial's
             # warrior could not have killed a scout. Directly relevant to
             # `goody-hut-outcomes`, whose whole subject is that roll.
             "no_bad_goodies": _int_tag(block, "bNoBadGoodies") == 1,
@@ -2007,7 +2007,8 @@ NOT_REAL_IMPROVEMENTS = frozenset((
 ))
 
 # Real improvements the tile view does not offer, because they are outside
-# turns 0-50. Purely a SCOPE choice and the one likely future edit here:
+# the advising window (early game through roughly the Classical era). Purely
+# a SCOPE choice and the one likely future edit here:
 # widening the window means deleting from this list, which must stay safe to
 # do. Keeping it separate from NOT_REAL_IMPROVEMENTS is what makes it safe -
 # the two sets happen to be disjoint today, and fusing them would mean a
@@ -2679,8 +2680,8 @@ def food_build_rate(city, unit):
     Settlers and workers are built with food AND hammers: while one is in the
     queue the city's entire food surplus is added to production, so the city
     stops growing and the unit arrives much sooner. Ignoring it made the tool
-    quote roughly double the real time on the two builds that dominate turns
-    0-50.
+    quote roughly double the real time on the two builds that dominate the
+    early game.
 
     Returns (rate, folded) so the caller can label an estimate that assumes
     growth stops - the trade is real and belongs to the reader.
