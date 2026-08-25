@@ -291,6 +291,71 @@ Your Desktop or Documents folder is fine.
     $configJson = @{ civ4_install_path = "civ4_install" } | ConvertTo-Json
     [System.IO.File]::WriteAllText((Join-Path $Destination "config.local.json"), $configJson, [System.Text.UTF8Encoding]::new($false))
 
+    ## Pre-approve what the advisor legitimately needs, so the player is not asked
+    ## to approve every file individually on their first turn.
+    ##
+    ## This has to be GENERATED rather than committed, because of how permission
+    ## rules treat links: an allow rule matches only when BOTH the link path and
+    ## the path it resolves to match. Everything here is reached through a
+    ## junction pointing outside this folder, so a rule naming the folder alone
+    ## never fires - the resolved targets have to be listed too, and they are
+    ## different on every machine (a different repo location, a different game,
+    ## a Civ IV install on any drive).
+    ##
+    ## Scope is deliberately narrow: read the four link targets, run the four
+    ## harness tools, and write only inside this folder. The advisor never needs
+    ## to modify the repo, the recorded game, or the Civ IV install, so nothing
+    ## here lets it. Anything else still prompts.
+    $claudeDir = Join-Path $Destination ".claude"
+    New-Item -ItemType Directory -Path $claudeDir | Out-Null
+
+    ## Permission rules are matched with forward slashes, including on Windows.
+    function ConvertTo-RulePath($Path) { $Path.TrimEnd('\').Replace('\', '/') }
+
+    $readRoots = @($harnessPath, $schemaPath, $gameStatePath, $installPath) |
+                 ForEach-Object { ConvertTo-RulePath $_ }
+    $here = ConvertTo-RulePath $Destination
+
+    $allow = @()
+    ## Both halves of each link: the name inside this folder, and its real target.
+    foreach ($name in 'harness', 'schema', 'state', 'civ4_install') {
+        foreach ($tool in 'Read', 'Glob', 'Grep') {
+            $allow += "$tool($name/**)"
+        }
+    }
+    foreach ($root in $readRoots) {
+        foreach ($tool in 'Read', 'Glob', 'Grep') {
+            $allow += "$tool($root/**)"
+        }
+    }
+    ## The four tools, however the agent spells the path to them.
+    foreach ($tool in 'render_map', 'run_history', 'rules', 'bearing') {
+        $allow += "Bash(python harness/$tool.py:*)"
+        $allow += "Bash(python $($readRoots[0])/$tool.py:*)"
+    }
+    ## Notes and restated objectives, inside this folder only.
+    $allow += @("Read($here/**)", "Glob($here/**)", "Grep($here/**)",
+                "Write($here/**)", "Edit($here/**)")
+
+    ## Built by hand rather than with ConvertTo-Json, which on PS 5.1 escapes an
+    ## apostrophe to ' - valid JSON, but "Sid Meier's" is unreadable and
+    ## this is a file a cautious user should be able to open and check.
+    function ConvertTo-JsonString($Value) { $Value.Replace('\', '\\').Replace('"', '\"') }
+    function Format-JsonArray($Items) {
+        ($Items | ForEach-Object { '      "' + (ConvertTo-JsonString $_) + '"' }) -join ",`r`n"
+    }
+
+    $settingsJson = "{`r`n" +
+        "  `"permissions`": {`r`n" +
+        "    `"additionalDirectories`": [`r`n" + (Format-JsonArray $readRoots) + "`r`n    ],`r`n" +
+        "    `"allow`": [`r`n" + (Format-JsonArray $allow) + "`r`n    ]`r`n" +
+        "  }`r`n}`r`n"
+
+    [System.IO.File]::WriteAllText(
+        (Join-Path $claudeDir "settings.local.json"),
+        $settingsJson,
+        [System.Text.UTF8Encoding]::new($false))
+
     Write-Host ""
     Write-Host "Advisor folder ready: $Destination" -ForegroundColor Green
     Write-Host "  game -> $GameDir" -ForegroundColor DarkGray
