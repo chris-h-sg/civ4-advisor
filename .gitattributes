@@ -7,3 +7,7 @@
 # and they stop matching what the mod produces - on a fresh clone only, so it
 # would pass locally and fail for everyone else. Still text, so diffs work.
 samples/**/*.json text eol=lf
+
+# Screenshots for docs/. The `* text=auto` rule above would otherwise treat these
+# as text and corrupt them on checkout.
+docs/images/** binary

@@ -80,7 +80,7 @@ NEARBY_RADIUS = 6
 # registering that a settler has no combat strength at all, so the count was
 # quietly overstating the position. Transcribed at development time like the
 # founding rules in render_map.py, and deliberately short: these are the ones
-# that exist before turn 50. A unit missing from this list is simply unflagged,
+# that exist inside the advising window. A unit missing from this list is simply unflagged,
 # which is the safe direction - it never claims something CAN fight.
 NON_COMBAT_UNITS = (
     "UNIT_SETTLER",
@@ -122,7 +122,7 @@ ACTIVITY_LABEL = {
 # run rather than inside it - see objectives_path for why that parent lookup has
 # to stay lexical. Named here with the threshold because these are the two facts
 # a change to the trial layout or the brief would break, and both are settled
-# elsewhere: the filename by trial-template/CLAUDE.md, the 10-turn rule by its
+# elsewhere: the filename by advisor/CLAUDE.md, the 10-turn rule by its
 # item 4.
 OBJECTIVES_FILENAME = "objectives.md"
 OBJECTIVES_STALE_AFTER = 10

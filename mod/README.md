@@ -2,6 +2,8 @@
 
 Civ IV: Beyond the Sword mod. Runs inside the game's embedded **Python 2.4** interpreter.
 
+> [`docs/MODDING.md`](../docs/MODDING.md) is the narrative version of the API findings below, written for an outside modding audience. This file stays the working reference.
+
 ## Constraints
 
 - Python 2.4 only: no `json` module, no f-strings, no modern syntax. See root `CLAUDE.md` for the full list.

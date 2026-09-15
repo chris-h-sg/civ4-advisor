@@ -7,6 +7,8 @@ Reads the state JSON written by `mod/` and turns it into forms an agent can reas
 > **This README is for developers** — design rationale, measured findings, and the boundary that keeps this folder from growing into something else. The advising agent reads **[`AGENT_GUIDE.md`](AGENT_GUIDE.md)** instead.
 >
 > **Usage belongs in the guide; reasons belong here.** A paragraph here explaining how to invoke something is in the wrong file, and so is a line there justifying a design choice.
+>
+> [`docs/ADVISOR.md`](../docs/ADVISOR.md) is a third thing again: the narrative version for an outside AI/agent audience, assuming no Civ IV knowledge. It tells the story and links down here for the detail.
 
 ## Constraints
 
@@ -26,12 +28,12 @@ python harness/render_map.py state/<game>/turn_0007.json --view settle
 
 That is a constraint, not a convenience. An agent running one mid-session will not think to activate a venv first, so a tool that needs one fails with an `ImportError` and turns a strategy question into an environment-debugging detour. **Tools are stdlib-only**, and a proposed dependency is a reason to reconsider the tool.
 
-Tests are the exception and may use dependencies; `requirements.txt` covers those (declares `pytest`, which also covers `mod/tests/`):
+Tests are the exception and may use dependencies; `harness/requirements.txt` covers those (`pytest` plus `jsonschema`, which `mod/tests/` needs to validate against the schema). Run from the repo root:
 
 ```
 python -m venv .venv
 .venv\Scripts\activate
-pip install -r requirements.txt
+pip install -r harness/requirements.txt
 python -m pytest harness/tests mod/tests
 ```
 
@@ -96,7 +98,7 @@ What replaced it is a count of what is *there* — workable land, workable water
 
 **`--site-only` (requires `--around`) skips the grid and prints just the site report.** The report was already there in `extra_sections()`; what was missing was a way to get it *alone*. Four trials found `--radius 1` as a workaround — it still draws a 3x3 grid, just a small one — and one piped output through `sed`. Implemented as an early return in `render()` once the shared preamble is built, reusing the same `extra_sections()` loop the normal path ends with rather than duplicating it.
 
-**`yields`/`worker` flag a city `NOT GROWING` on a specific, checkable condition: `foodPerTurn <= 0` and the current build is not a Settler or Worker.** The naive version checked `productionFromFood == 0` instead, reasoning that a food-fed build shows food going into it — wrong, because a Settler/Worker can show `productionFromFood == 0` on an all-hammer turn (food banked earlier in the build) and still be exactly the deliberate, not-stuck case. Checking the unit type sidesteps the turn-by-turn funding split entirely. Not the whole engine gate — a Police State civic makes military units food-fed too — but the only case that recurs in scope (turns 0–50), so `FOOD_COST_UNITS` stays a two-item constant rather than a general `bFood` lookup. States the fact and stops; it does not diagnose *why* the city is stuck (terrain, borders, happiness), matching this tool's present-don't-decide line.
+**`yields`/`worker` flag a city `NOT GROWING` on a specific, checkable condition: `foodPerTurn <= 0` and the current build is not a Settler or Worker.** The naive version checked `productionFromFood == 0` instead, reasoning that a food-fed build shows food going into it — wrong, because a Settler/Worker can show `productionFromFood == 0` on an all-hammer turn (food banked earlier in the build) and still be exactly the deliberate, not-stuck case. Checking the unit type sidesteps the turn-by-turn funding split entirely. Not the whole engine gate — a Police State civic makes military units food-fed too — but the only case that recurs in scope, so `FOOD_COST_UNITS` stays a two-item constant rather than a general `bFood` lookup. States the fact and stops; it does not diagnose *why* the city is stuck (terrain, borders, happiness), matching this tool's present-don't-decide line.
 
 </details>
 
@@ -115,7 +117,7 @@ Takes a **run folder** of `turn_*.json` files — the whole game, not one turn. 
 
 **`intel` ignores `--from`/`--to` on purpose** and says so on stderr: a dossier truncated at turn M drops the earliest sighting of a unit type, which is precisely the fact that proves a capability. Clamping the *run* is a different thing and is what `--as-of` is for.
 
-**Barbarians and animals are listed separately, and that split is load-bearing.** A Roman Archer implies Archery (`CIV4UnitInfos.xml` gives `UNIT_ARCHER` a `PrereqTech` of `TECH_ARCHERY`); a panther implies nothing about anyone. Both arrive through `foreignUnits` under the barbarian player id, so a single list would invite reading animal sightings as evidence about a civ. **They get full positions**, which they did not at first: the split was right and the barbarian half was under-built, printing a bare turn count. A trial called it "the section with no coordinates is the section I most needed coordinates from" — correctly, since in turns 0–50 the animals *are* the military threat, and it reconstructed the lion cluster at (71,33–34) by hand.
+**Barbarians and animals are listed separately, and that split is load-bearing.** A Roman Archer implies Archery (`CIV4UnitInfos.xml` gives `UNIT_ARCHER` a `PrereqTech` of `TECH_ARCHERY`); a panther implies nothing about anyone. Both arrive through `foreignUnits` under the barbarian player id, so a single list would invite reading animal sightings as evidence about a civ. **They get full positions**, which they did not at first: the split was right and the barbarian half was under-built, printing a bare turn count. A trial called it "the section with no coordinates is the section I most needed coordinates from" — correctly, since this early the animals *are* the military threat, and it reconstructed the lion cluster at (71,33–34) by hand.
 
 **The five changes after the first round of trials**, all from what agents did with the output rather than from review:
 
@@ -243,7 +245,7 @@ The first draft of the closure also **stopped one level down** while printing th
 
 **An explicit handicap that is not the game's own is flagged.** Comparing difficulties is legitimate, but the header then shows two handicaps and the one being reported is not in effect.
 
-**No turn-window notes in the output.** An early draft observed that turn 35 falls inside the 0–50 advising window; that was cut. The cutoff is prompt guidance and has deliberately never been in code — same reason it is not in the mod — and the player may run this at any turn.
+**No turn-window notes in the output.** An early draft observed that turn 35 falls inside the advising window; that was cut. The cutoff is prompt guidance and has deliberately never been in code — same reason it is not in the mod — and the player may run this at any turn.
 
 **`UNLOCKS` resolves every category, because the narrow version taught agents to guess.** The first version resolved only units and printed `buildings not reported - grep CIV4BuildingInfos.xml`. Two trials filled the gap **from memory** — the one thing `AGENT_GUIDE.md` rule 5 forbids — and they were not being careless: a tech with no unit rendered as `units (none)` and nothing else, reading as "this tech does nothing". `TECH_BRONZE_WORKING` printed four units, three of them other civs' uniques the player can never build, while its actual value in that position was copper reveal, forest chopping and Slavery. An authoritative-looking block with a load-bearing omission is worse than no block. It now reverse-indexes buildings, civics, projects, improvements, worker actions, resource reveals and resource usability, plus the tech block's own ability flags.
 
@@ -328,7 +330,7 @@ The **substantive error was conflating discovery with comparison.** Repeated one
 
 A blocker on the in-progress tech now says so: `needs TECH_MASONRY - RESEARCHING NOW, ~7 turns left`. "Needs Masonry" and "needs Masonry, arriving in seven turns" are different decisions — one is a plan, the other is a wait — and the second is exactly the case the blocked-rows-stay-listed rule exists to surface.
 
-**Settlers and workers are built from food as well as hammers, and both halves of that were wrong at first.** `bFood` units convert the city's entire food surplus into production, so the city stops growing and the build lands much sooner. Ignoring it roughly doubled the quoted time on the two builds that dominate turns 0–50. The export already carries it, and the baseline shows it cleanly on consecutive Lisbon turns: t42 `UNIT_WARRIOR` food 6 / prod 7, t43 `UNIT_SETTLER` food **0** / prod **13**. So `productionPerTurn` already contains the food while such a build is queued and `foodPerTurn` reads 0 — which means the correction is conditional, or it double-counts. (Increment ⑥ has since exported the split outright; the paragraphs below are the inference it replaced, kept because the fallback still runs them on every committed sample.)
+**Settlers and workers are built from food as well as hammers, and both halves of that were wrong at first.** `bFood` units convert the city's entire food surplus into production, so the city stops growing and the build lands much sooner. Ignoring it roughly doubled the quoted time on the two builds that dominate the early game. The export already carries it, and the baseline shows it cleanly on consecutive Lisbon turns: t42 `UNIT_WARRIOR` food 6 / prod 7, t43 `UNIT_SETTLER` food **0** / prod **13**. So `productionPerTurn` already contains the food while such a build is queued and `foodPerTurn` reads 0 — which means the correction is conditional, or it double-counts. (Increment ⑥ has since exported the split outright; the paragraphs below are the inference it replaced, kept because the fallback still runs them on every committed sample.)
 
 The first fix handled that direction and introduced the mirror-image error: with a food build running, *ordinary* rows inherit food they would not get, and a Warrior read 13 hpt when its true rate is 7. The split was **not recoverable from one file** — Lisbon's hammers move 8 → 2 across t37 → t38 as worked tiles change — so it was flagged rather than silently used, once in the section header instead of on thirty rows. Food-fed rows carry `(+food, growth stops)`, because that trade belongs to the reader.
 
@@ -476,4 +478,4 @@ It contains no rationale by design; the reasons live here. The split itself — 
 
 **The tool half was deliberately not taken in the same sitting.** An `objectives.md last written: t10 (26 turns ago)` line in `run_history`'s header is the structural backstop for the one checklist item that still depends on the agent remembering. It is `run_history.py` — a different lane — and it carries a trap: `objectives.md` lives in the trial folder while the tool takes the run folder, and that run folder is a junction, so walking up from it resolves into the repo's own `state/` rather than the trial folder. A sibling-directory guess would report "never written" every run, looking exactly like real drift. Queued as `objectives-age-line`, which carries the measurement.
 
-**The session brief now lives as `trial-template/CLAUDE.md`, deployed by `trial-template/setup_trial.ps1 -GameDir <name>` rather than pointed at directly** (reasoning for the junctions and why it builds outside the repo is in the script's own docstring). One consequence worth recording here rather than there: this is what let the split-mount caveat drop out of the trial instructions altogether — `config.local.json` now sits where `find_repo_root()`'s walk-up actually lands, since the generated folder is a real, contiguous tree rather than several separately connected ones.
+**The session brief now lives as `advisor/CLAUDE.md`, deployed by `new_game.ps1 -GameDir <name>` at the repo root rather than pointed at directly** (reasoning for the junctions and why it builds outside the repo is in the script's own docstring). One consequence worth recording here rather than there: this is what let the split-mount caveat drop out of the trial instructions altogether — `config.local.json` now sits where `find_repo_root()`'s walk-up actually lands, since the generated folder is a real, contiguous tree rather than several separately connected ones.

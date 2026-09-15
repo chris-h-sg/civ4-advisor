@@ -217,8 +217,18 @@ class RulesError(Exception):
 
 
 def find_repo_root(start=None):
-    """Walk up from this file looking for config.local.json's directory."""
+    """Walk up from this file looking for config.local.json's directory.
+
+    A config sitting BESIDE the start point wins before any walking. An advisor
+    folder built by new_game.py holds its own config.local.json but no
+    config.local.json.example, so the walk-up would sail straight past it and
+    resolve whatever ancestor happens to carry the marker - a second checkout, a
+    re-unzip, a synced Documents tree. That fails silently and points at the
+    wrong install, which is the one outcome resolve_xml_root exists to prevent.
+    """
     here = os.path.abspath(start or os.path.dirname(__file__))
+    if os.path.isfile(os.path.join(here, "config.local.json")):
+        return here
     while True:
         if os.path.isfile(os.path.join(here, "config.local.json.example")):
             return here
@@ -257,6 +267,16 @@ def resolve_xml_root(config_path=None):
     install = config.get("civ4_install_path")
     if not install:
         raise RulesError("config.local.json has no civ4_install_path")
+
+    # A relative civ4_install_path is relative to the CONFIG FILE, never to the
+    # process working directory. An advisor folder's config says just
+    # "civ4_install" (the junction beside it), so resolving against cwd works
+    # only when the tool happens to be run from that folder - and the generated
+    # permission rules explicitly bless running it by absolute path from
+    # anywhere. The failure names a path that visibly exists, which is worse
+    # than most: it reads as "your install is broken" rather than "wrong cwd".
+    if not os.path.isabs(install):
+        install = os.path.join(os.path.dirname(os.path.abspath(config_path)), install)
 
     bts_root = os.path.join(install, BTS_XML_ROOT)
     vanilla_root = os.path.join(install, VANILLA_XML_ROOT)
@@ -528,7 +548,7 @@ def parse_units(text):
             "free_promotions": free_promotions,
             # Cannot draw a HOSTILE result from a goody hut. Only the Scout and
             # the Explorer carry it, and it is the single most decision-relevant
-            # field in the file for turns 0-50: the hut that killed a trial's
+            # field in the file this early: the hut that killed a trial's
             # warrior could not have killed a scout. Directly relevant to
             # `goody-hut-outcomes`, whose whole subject is that roll.
             "no_bad_goodies": _int_tag(block, "bNoBadGoodies") == 1,
@@ -2007,7 +2027,8 @@ NOT_REAL_IMPROVEMENTS = frozenset((
 ))
 
 # Real improvements the tile view does not offer, because they are outside
-# turns 0-50. Purely a SCOPE choice and the one likely future edit here:
+# the advising window (early game through roughly the Classical era). Purely
+# a SCOPE choice and the one likely future edit here:
 # widening the window means deleting from this list, which must stay safe to
 # do. Keeping it separate from NOT_REAL_IMPROVEMENTS is what makes it safe -
 # the two sets happen to be disjoint today, and fusing them would mean a
@@ -2679,8 +2700,8 @@ def food_build_rate(city, unit):
     Settlers and workers are built with food AND hammers: while one is in the
     queue the city's entire food surplus is added to production, so the city
     stops growing and the unit arrives much sooner. Ignoring it made the tool
-    quote roughly double the real time on the two builds that dominate turns
-    0-50.
+    quote roughly double the real time on the two builds that dominate the
+    early game.
 
     Returns (rate, folded) so the caller can label an estimate that assumes
     growth stops - the trade is real and belongs to the reader.

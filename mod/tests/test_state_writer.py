@@ -1851,7 +1851,7 @@ class UnitTests(unittest.TestCase):
 
     def test_out_of_scope_activities_are_omitted_not_invented(self):
         # NO_ACTIVITY (-1) and the air/naval/plunder activities are out of scope
-        # for turns 0-50; they fall through to omission rather than being given a
+        # this early; they fall through to omission rather than being given a
         # made-up name.
         _, parsed = buildWith(units=[Unit(0, activity=-1)])
         self.assertNotIn("activity", parsed["units"][0])
@@ -2922,7 +2922,7 @@ class ForeignUnitTests(unittest.TestCase):
         self.assertEqual(parsed["foreignUnits"], [])
 
     def test_barbarians_are_included(self):
-        # They own real units and are the main military fact of turns 1-20. Only
+        # They own real units and are the main military fact of the early game. Only
         # contacts filters them out, and for its own specific reason.
         _, parsed = buildDiplomacy(
             rivals=[Rival(BARBARIAN_PLAYER, teamId=BARBARIAN_PLAYER, barbarian=True,
