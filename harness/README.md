@@ -7,6 +7,8 @@ Reads the state JSON written by `mod/` and turns it into forms an agent can reas
 > **This README is for developers** — design rationale, measured findings, and the boundary that keeps this folder from growing into something else. The advising agent reads **[`AGENT_GUIDE.md`](AGENT_GUIDE.md)** instead.
 >
 > **Usage belongs in the guide; reasons belong here.** A paragraph here explaining how to invoke something is in the wrong file, and so is a line there justifying a design choice.
+>
+> [`docs/ADVISOR.md`](../docs/ADVISOR.md) is a third thing again: the narrative version for an outside AI/agent audience, assuming no Civ IV knowledge. It tells the story and links down here for the detail.
 
 ## Constraints
 

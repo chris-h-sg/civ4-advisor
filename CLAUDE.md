@@ -112,3 +112,5 @@ Do not implement action execution until explicitly asked — that is a future ph
 ## See also
 
 `REFERENCES.md` for API docs, prior art, and other links gathered during research.
+
+`docs/MODDING.md` and `docs/ADVISOR.md` are the **narrative** versions written for outside readers — a Civ IV modding audience and an AI/agent audience respectively. They tell the story of a finding and link down for the detail; this file and `REFERENCES.md` remain the working reference, and stay authoritative. Keep it that way: a paragraph that could be pasted into this file unchanged does not belong in those.
