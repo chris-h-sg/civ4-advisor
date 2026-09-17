@@ -105,19 +105,17 @@ Goal: mirrored map, one LLM civ, one stock civ, no human, runs unattended.
 
 ✅ **Mirrored map ships with the game.** `PublicMaps/Mirror.py` — "Generates half a map, then mirrors it," by Bob Thomas. Three custom options, four reflection modes in source (horizontal, rotational, two offset variants). Nothing to build.
 
-⚠️ **No-human games are supported, two routes.** `CvGame::update()` ends the game when `countHumanPlayersAlive() == 0` *unless* autoplay or autorun is on:
+✅ **Setup and observation confirmed live — the game-control half of the platform, not the LLM-driving half.** Two routes tested on this machine (Steam BTS install), both start from a normal game with no special launch path:
 
-- `CyGame.setAIAutoPlay(N)` — ✅ exposed to Python, decrements per game turn, calls `reviveActivePlayer()` at 0.
-- `Autorun = 1` in `CivilizationIV.ini` — already present in the local ini at line 210, with `AutorunTurnLimit = 0` at 207. Engine-side, **not** Python-exposed.
+- **`Autorun = 1`** (ini, `[DEBUG]`): plays itself from turn 1, no console needed. Never kills any civ — confirmed live (775 turns, untouched) and in source (`killUnits`/`killCities` only appear in `setAIAutoPlay`'s block, unrelated to `GetAutorun()`). But: `AutorunTurnLimit` **does not work** (set to 1, kept running), there's **no way to stop it** short of closing the window (no console command found), and the **UI is almost entirely locked** while running (map/minimap only, no menus, no city screens).
+- **`Game.AIPlay N`** (debug console, `CheatCode = chipotle`; = `CyGame.setAIAutoPlay(N)`): runs exactly N turns and stops, repeatable for more batches, **full UI access between batches** (can open AI city screens). But it **kills the calling player's civ** on activation, exactly as source predicted — harmless since that slot is never played, but each batch call re-kills the replacement unit it gives you. Doesn't stop early on victory.
+- Two separate consoles exist, both behind tilde: `` ` `` alone = cheat console (`Game.AIPlay N`), `Shift+` `` ` `` = Python console (`gc.getPlayer(id).killCities()` etc.) — easy to confuse.
+- **Symmetric 2-civ map, confirmed live**: start 4 civs in 2 teams on `Mirror.py`, `Game.AIPlay N` to remove your own slot, then in the Python console `gc.getPlayer(X).killCities()` **and** `.killUnits()` (both required — a leftover Settler keeps the civ alive) to remove the extra civ on the other team. Leaves exactly 2 confirmed-mirrored AI civs.
+- Nothing stops a run automatically under either route — a harness needs its own stopping condition (batch count, or a score check between `Game.AIPlay` batches).
 
-⚠️ **Stock `setAIAutoPlay` destroys the active player's units and cities** on activation:
+`Game.AIPlay` in batches is the better fit for a harness that needs to pause and read state; `Autorun` is simpler but effectively write-only once started.
 
-```cpp
-if ((iOldValue == 0) && (getAIAutoPlay() > 0))
-{ GET_PLAYER(getActivePlayer()).killUnits(); killCities(); }
-```
-
-RtW's SDK replaces this with `setDisableHuman()`; stock does not. So the human slot must be a **third, empty observer**, never one of the two contestants. `Autorun` avoids the kill entirely and may be the better route.
+**Not yet tested**: actually driving one civ's decisions via the callbacks/watcher loop (item C) — this only confirms the stock-AI-vs-stock-AI shell works.
 
 Observation is free — the existing exporter already writes every turn, and `calculateScore` gives a crude per-turn metric immediately (the cheap version of CivBench's victory-probability estimator).
 
@@ -269,7 +267,7 @@ Findings that matter for a 300-turn loop:
 Branch first; everything below lands on it.
 
 1. **B** (measure `AI_unitUpdate`) — cheapest, and decides whether the tactical layer is in scope at all.
-2. ⚠️ **Confirm `Autorun` actually works from a normal game start.** Referenced in three SDK places and present in the ini, but may be intended for a specific launch path. 10-minute test, and the whole platform depends on it.
+2. ✅ **Done.** `Autorun` and `Game.AIPlay` both confirmed live from a normal game start — no special launch path. See [The test platform](#the-test-platform) for the full comparison and the recommended `Game.AIPlay` + kill-the-extra-civ setup.
 3. **A** (exporter for non-active players) — prerequisite for everything else; nothing can be observed without it. Shared-code change, so it lands before the mode scaffolding.
 4. **B2** (mode gating + callback surface), with the advisor-path-unchanged test written *first*.
 5. **Spike: `AI_chooseTech` only.** One callback, once per tech, one AI civ, everything else stock. Proves the whole chain — export → watcher → Claude → plan file → callback — on the cheapest possible decision.
