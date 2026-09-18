@@ -184,16 +184,15 @@ Two rules the sketch settled:
 
 ## Work items
 
-### A. Unblock the exporter for non-active players — *prerequisite for everything*
+### A. Unblock the exporter for non-active players — ✅ confirmed live (2026-09-18)
 
-`buildState` refuses to run when the exported player isn't the active player (`_requireActivePlayer`), because of two getters. Both turn out to be fixable rather than blocking:
+`buildState` refuses to run when the exported player isn't the active player (`_requireActivePlayer`), because two getters (`calculateYield(bDisplay=True)`, `getVisualOwner()`) silently answer for `getActiveTeam()`/`getActivePlayer()` with no team/player parameter exposed through the Python binding for either. Reimplementing their fog-honest branches in the mod was considered and rejected as too much duplicated-formula surface for a spike (`harness/rules.py` already ports the same formula in Python 3 for a different purpose).
 
-- ✅ **`calculateYield(bDisplay=True)`** — read `CvPlot::calculateYield` (`CvPlot.cpp:5873`). The active-team reference lives *entirely* inside the `if (bDisplay)` branch; the `else` branch uses `getOwnerINLINE()`/`getImprovementType()`/`getRouteType()`, no active team anywhere. `bDisplay=False` is a clean fix, and for an AI player true values are what we want.
-- ✅ **`getVisualOwner()`** — `CvUnit.cpp:10954` takes `TeamTypes eForTeam` and only falls back to the active team on `NO_TEAM`. The C++ is fine; the *Python binding* drops the argument. For our own AI there's nothing to hide, so `getOwner()` is the honest call.
+**What shipped instead: `CvCustomEventManager._maybeExportOpponentTurn` transiently calls `CyGame.setActivePlayer(targetPlayerId, False)` around the export, then restores the original active player in a `finally`.** Verified against `CvGame.cpp` first: `setActivePlayer`'s password-prompt/net-ID-swap branch is guarded on `GET_PLAYER(eNewValue).isHuman()`, so with a non-human target and `bForceHotSeat=False` (always true here) that branch never runs. **Confirmed live over 20+ turns across two separate test runs: no UI glitch, flicker, or camera jump observed.** The advisor's own export (`_requireActivePlayer` and both getters) is completely untouched — this is a second, independent code path, not a relaxation of the existing guard.
 
-❓ This changes the export's central invariant. Decide whether it's a flag on the existing path or a separate fog-free export mode. **Do not** quietly relax `_requireActivePlayer` for the advisor's path — that guard exists for a reason.
+Verified correct, not just crash-free: revealed-tile sets for two different civs at turn 0 had **zero overlap**, each centered on its own (different) starting position — confirming `calculateYield`'s fog-honest branch resolves against the flipped team, not a leftover from whichever player was active before. A captured Settler's turn-0 tile matched its city's turn-1 tile exactly, confirming unit/city identity is genuinely the target player's own, not a mismatched reading. Unit ownership (a controllable barbarian-owned Lion) matched independent live observation.
 
-Also worth exporting, since the AI consults it and we'd be replacing a decision that had access: `AI_getAttitude`, war plans, `AI_getBonusValue`, financial-trouble flags.
+Also worth exporting later, since the AI consults it and we'd be replacing a decision that had access: `AI_getAttitude`, war plans, `AI_getBonusValue`, financial-trouble flags.
 
 ### B. Measure `AI_unitUpdate` overhead — *gate on the tactical layer*
 
@@ -237,7 +236,28 @@ Second leg of the same spike: `AI_chooseProduction` now calls out to a separate 
 
 **Observed live (5s artificial delay) — ⚠️ the game freezes completely.** `decide_production.py` was given a `time.sleep(DECISION_DELAY_SECONDS)` (5s) before answering, as a cheap stand-in for real LLM latency — no mod-side code change needed, since a fresh `python <path>` process re-reads the script from disk every call. **Confirmed live: the game is completely unresponsive for the full duration of the blocking call**, the exact risk the plan already called out, now measured rather than reasoned about. Item D's real-LLM measurements are 71–142s wall clock per call — at that duration this is a multi-minute freeze, likely tripping Windows' "not responding" state.
 
-**Still open:** only the happy-path and invalid-key failure modes were exercised, not a missing script/`LocalConfig.MOD_PYTHON_DIR`/PATH entry. Freeze duration wasn't stopwatched independently of the 5s delay itself.
+**Still open:** only the happy-path and invalid-key failure modes were exercised, not a missing script/`LocalConfig.MOD_PYTHON_DIR`/PATH entry. Freeze duration wasn't stopwatched independently of the 5s delay itself. `DECISION_DELAY_SECONDS` now defaults to `0` (kept in the script for re-use, not deleted) so routine testing isn't paying the 5s tax; only worth turning back on to probe a specific timeout question.
+
+### Spike: per-turn export for a non-active AI player — ✅ confirmed live (2026-09-18)
+
+Closes item A. `_maybeExportOpponentTurn` in `CvCustomEventManager.py` exports the AI opponent's own state every turn, fog of war included, alongside the existing production spike — same `AI_OPPONENT_PLAYER_KEY` target, gated on `LocalConfig.MODE` (`'opponent'`: only the AI export runs; `'advisor'`: only the human export runs, unchanged; `'both'`: both run independently). Wired into `onGameStart`/`onLoadGame` (covers turn 0 / a resumed save, before any turn has been played) and `onBeginPlayerTurn` (every turn after).
+
+**Mechanism, chosen over reimplementing the fog-honest yield formula in the mod:** `_maybeExportOpponentTurn` transiently calls `CyGame.setActivePlayer(targetPlayerId, False)` around the export, restoring the original active player in a `finally`. The alternative — porting `calculateYield`'s fog-honest branch into Python 2.4 using the team-parameterized primitives (`calculateNatureYield`, `calculateImprovementYieldChange`) that *are* exposed, the way `harness/rules.py` already does in Python 3 for a different purpose — was rejected as too much duplicated-formula surface for a spike. `setActivePlayer`'s password-prompt/net-ID-swap branch was verified against `CvGame.cpp` to be skipped entirely for a non-human target with `bForceHotSeat=False` (both always true here), before ever running it live.
+
+**Two real defects found and fixed during this spike, both confirmed against genuine turn-0 game state, not just plausible-looking:**
+
+1. **Off-by-one in every exported file.** `onBeginPlayerTurn(N, ...)` fires at the *end* of turn N, same trap `CLAUDE.md` already documents for `onEndPlayerTurn` — a first version without a `+1` correction produced a `turn_0000.json` that already showed the AI's capital founded, one turn ahead of its own filename. Fixed to match `onEndGameTurn`'s existing `+1` convention. Caught by comparing the exported Settler's turn-0 tile against the same city's turn-1 tile — identical coordinates, confirming genuine same-unit continuity once the fix landed.
+2. **Turn 0 was unreachable in pure `'opponent'` mode.** With the human export silenced, nothing exported the AI's pre-founding state, since `onBeginPlayerTurn` structurally can't fire before a turn has been played. Fixed by also routing the opponent export through `onGameStart`/`onLoadGame` — the same hooks that already solve this for the human, now serving both targets independently.
+
+**Verified correct after both fixes, over two live runs (11 and 22 turns):**
+- Only the target AI's export folder is written in `'opponent'` mode — no advisor-export folder appears alongside it.
+- `turn_0000.json` correctly shows the pre-founding Settler, not the founded city.
+- Revealed-tile sets for two different civs at turn 0 have **zero overlap**, each centered on a different starting position — the strongest evidence the fog-honest branch is resolving against the *flipped* team, not a leftover from whichever player was active before.
+- Revealed-tile count is monotonically non-decreasing across 21 turns (fog never un-reveals).
+- Unit ownership (a controllable barbarian-owned Lion) matched independent live observation from the same session.
+- No UI glitch, flicker, or camera jump observed across either run.
+
+New test coverage: `mod/tests/test_custom_event_manager.py` (12 tests) locks in mode gating, player-targeting, the `+1` turn correction, and the active-player flip/restore — including restore-on-exception. Confirmed to actually catch regressions, not just pass: temporarily reverting the `+1` fix was caught immediately by `test_on_begin_player_turn_exports_only_the_matching_player`.
 
 ### C. The decision loop
 
@@ -300,17 +320,16 @@ Branch first; everything below lands on it.
 
 1. **B** (measure `AI_unitUpdate`) — cheapest, and decides whether the tactical layer is in scope at all.
 2. ✅ **Done.** `Autorun` and `Game.AIPlay` both confirmed live from a normal game start — no special launch path. See [The test platform](#the-test-platform) for the full comparison and the recommended `Game.AIPlay` + kill-the-extra-civ setup.
-3. **A** (exporter for non-active players) — prerequisite for everything else; nothing can be observed without it. Shared-code change, so it lands before the mode scaffolding.
-4. **B2** (mode gating + callback surface), with the advisor-path-unchanged test written *first*.
+3. ✅ **Done.** `_maybeExportOpponentTurn` exports the AI opponent's own state every turn, fog of war included, via a transient `setActivePlayer` flip rather than reimplementing the fog-honest yield formula — see [Spike: per-turn export for a non-active AI player](#spike-per-turn-export-for-a-non-active-ai-player--confirmed-live-2026-09-18). Mode-gated (`advisor`/`opponent`/`both`) alongside the existing production spike, with test coverage in `mod/tests/test_custom_event_manager.py`.
+4. **B2** (mode gating + callback surface) — the `MODE` scaffolding itself is done (advisor/opponent/both, byte-identical advisor path when off); the rest of the callback surface (`AI_chooseTech`, `AI_doWar`, `AI_doDiplo`, `AI_unitUpdate`) is still untouched.
 5. ✅ **Done, as `AI_chooseProduction` instead of `AI_chooseTech`, in two legs.** First leg: one callback, one hardcoded decision, one AI civ, everything else stock — proved callback dispatch, identity gating, and the override sticking turn after turn (see [Spike: `AI_chooseProduction`](#spike-ai_chooseproduction--confirmed-live-2026-09-18)). Second leg: swapped the hardcoded constant for a synchronous, blocking round-trip to a separate Python 3 process — `os.popen` works inside the embedded interpreter, but a multi-second delay **froze the game completely** (see [Spike: external-process round-trip](#spike-external-process-round-trip--confirmed-live-2026-09-18)), confirming the blocking approach can't carry a real LLM call and item C's poll-a-plan-file pattern is required, not optional.
-6. **C** (the full loop) and the mirrored-map platform.
+6. **C** (the full loop) and the mirrored-map platform — the only remaining piece before a real LLM can drive a decision without freezing the game. Nothing today connects the per-turn export (step 3) to the production decision (step 5): they run on independent hooks with no shared data yet.
 7. **E** (evaluation) once games run end to end.
 
 Steps 1 and 2 are both throwaway measurements that can kill or reshape the design; do them before writing anything that assumes the answer.
 
 ## Open questions
 
-- ❓ Does the export need a fog-free mode, or a flag on the existing path? (A)
 - ❓ Does `setCommercePercent` from Python fire the same side effects as the C++ path? (C)
 - ❓ Subscription or API key for unattended runs? (D)
 - ❓ Is the one-turn unit-order lag acceptable, or does it want a same-turn workaround?

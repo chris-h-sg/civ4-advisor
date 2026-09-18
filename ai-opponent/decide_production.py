@@ -9,11 +9,11 @@ out of scope for this spike, which only proves the process round-trip works.
 Hand-edit decision_config.txt mid-game to change what gets built without
 restarting Civ 4.
 
-Sleeps DECISION_DELAY_SECONDS before answering - a stand-in for real LLM
+Can sleep DECISION_DELAY_SECONDS before answering, as a stand-in for real LLM
 latency (docs/AI_OPPONENT_PLAN.md item D measured 71-142s wall clock per
-call), so the spike can check whether anything in the round-trip (os.popen,
-the callback, the game itself) has a timeout shorter than that before an
-actual LLM is wired in.
+call) - useful for checking whether anything in the round-trip (os.popen, the
+callback, the game itself) has a timeout shorter than that. 0 by default so
+routine testing (e.g. the ai-opponent-mode export spike) isn't paying for it.
 """
 
 import os
@@ -21,11 +21,12 @@ import sys
 import time
 
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'decision_config.txt')
-DECISION_DELAY_SECONDS = 5
+DECISION_DELAY_SECONDS = 0
 
 
 def main():
-    time.sleep(DECISION_DELAY_SECONDS)
+    if DECISION_DELAY_SECONDS:
+        time.sleep(DECISION_DELAY_SECONDS)
     try:
         configFile = open(CONFIG_PATH, 'r')
         try:

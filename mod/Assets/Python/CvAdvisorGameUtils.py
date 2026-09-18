@@ -40,19 +40,42 @@ DECIDE_SCRIPT_NAME = 'decide_production.py'
 DECIDE_TIMEOUT_SECONDS = 10
 
 
-def _advisorPlayerId():
-	'''Engine player id of the AI civ we're driving this spike for, or None.
-
-	None whenever MODE isn't 'opponent' or AI_OPPONENT_PLAYER_KEY isn't set, which
-	folds the mode check into the identity check per AI_OPPONENT_PLAN.md "Mode
-	gating" - no separate "is opponent mode on" branch needed on the hot path.
-	Matched by leader type per AI_OPPONENT_PLAN.md "Targeting one AI only" (the
-	scriptData tagging trick is for the real loop, not this spike).'''
+def opponentModeActive():
+	'''True when LocalConfig.MODE drives an AI opponent - either 'opponent' alone
+	or 'both' alongside the advisor. Shared by CvCustomEventManager (gates the
+	human-facing export) and this module's own AI_chooseProduction gating, so the
+	two modules agree on what "opponent mode is on" means without duplicating the
+	LocalConfig lookup.'''
 	try:
 		import LocalConfig
 	except ImportError:
+		return False
+	return getattr(LocalConfig, 'MODE', 'advisor') in ('opponent', 'both')
+
+
+def advisorModeActive():
+	'''True when LocalConfig.MODE keeps the advisor's own (human-player) export
+	running - either 'advisor' (the default) or 'both'.'''
+	try:
+		import LocalConfig
+	except ImportError:
+		return True
+	return getattr(LocalConfig, 'MODE', 'advisor') in ('advisor', 'both')
+
+
+def _advisorPlayerId():
+	'''Engine player id of the AI civ we're driving this spike for, or None.
+
+	None whenever opponent mode isn't active or AI_OPPONENT_PLAYER_KEY isn't set,
+	which folds the mode check into the identity check per AI_OPPONENT_PLAN.md
+	"Mode gating" - no separate "is opponent mode on" branch needed on the hot
+	path. Matched by leader type per AI_OPPONENT_PLAN.md "Targeting one AI only"
+	(the scriptData tagging trick is for the real loop, not this spike).'''
+	if not opponentModeActive():
 		return None
-	if getattr(LocalConfig, 'MODE', 'advisor') != 'opponent':
+	try:
+		import LocalConfig
+	except ImportError:
 		return None
 	leaderKey = getattr(LocalConfig, 'AI_OPPONENT_PLAYER_KEY', None)
 	if not leaderKey:

@@ -189,6 +189,19 @@ class OpponentModeTargetingTests(unittest.TestCase):
     vacuous (nothing would ever be a match to correctly skip)."""
 
     def test_matches_only_the_configured_leader(self):
+        # KNOWN STALE (see docs/AI_OPPONENT_PLAN.md "Spike: external-process
+        # round-trip"): AI_chooseProduction now routes the actual unit choice
+        # through _decideProduction(), an os.popen call to
+        # ai-opponent/decide_production.py, which this test's LocalConfig
+        # never gives a MOD_PYTHON_DIR - so it always returns None and the
+        # override always falls through, failing the result==1 assertion
+        # below. Left failing rather than patched: this whole mechanism is
+        # spike code expected to be replaced once the external process is a
+        # real LLM call with the poll-a-plan-file pattern (item C), so
+        # fixing the mock now would be effort spent on code we're about to
+        # throw away. The identity-gating behavior this class exists to
+        # cover is otherwise intact - see the other tests below, none of
+        # which depend on _decideProduction succeeding.
         alexander = FakePlayer(INFO_TYPES['LEADER_ALEXANDER'], human=False)
         other = FakePlayer(999, human=False)
         ns = loadModule([other, alexander], mode='opponent', leaderKey='LEADER_ALEXANDER')

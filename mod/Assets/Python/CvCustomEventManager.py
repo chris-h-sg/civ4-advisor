@@ -14,6 +14,7 @@ import traceback
 import CvUtil
 import CvEventManager
 import AdvisorStateWriter
+import CvAdvisorGameUtils
 
 gc = CyGlobalContext()
 
@@ -86,18 +87,89 @@ class CvCustomEventManager(CvEventManager.CvEventManager):
 		# export that turn's state. Confirmed via in-game instrumentation and community
 		# docs (TGA's Python Tutorial - see REFERENCES.md) - not documented turn-number
 		# semantics assumed from the API reference.
-		CvUtil.pyPrint('civ4-advisor: exporting state at onGameStart')
-		self._exportState(gc.getGame().getGameTurn(), gc.getGame().getActivePlayer(), 'onGameStart')
+		#
+		# advisorModeActive() gates the human export as before. opponentModeActive()
+		# also exports the AI opponent's own turn 0 here - the only hook that fires
+		# before ANY turn is played, so it is the ai-opponent equivalent of this
+		# same "turn 0 needs no +1" case, not covered by onBeginPlayerTurn below
+		# (which only fires once a turn has already concluded - see there).
+		gameTurn = gc.getGame().getGameTurn()
+		if CvAdvisorGameUtils.advisorModeActive():
+			CvUtil.pyPrint('civ4-advisor: exporting state at onGameStart')
+			self._exportState(gameTurn, gc.getGame().getActivePlayer(), 'onGameStart')
+		self._maybeExportOpponentTurn(gameTurn, 'onGameStart')
 
 	def onLoadGame(self, argsList):
 		result = CvEventManager.CvEventManager.onLoadGame(self, argsList)
 		# onGameStart only fires for a brand new game, not a loaded save - a common
 		# gotcha per community docs (see REFERENCES.md). Without this, resuming a save
 		# would silently miss its first state export until the player's next full
-		# turn-processing cycle (see onEndGameTurn below).
-		CvUtil.pyPrint('civ4-advisor: exporting state at onLoadGame')
-		self._exportState(gc.getGame().getGameTurn(), gc.getGame().getActivePlayer(), 'onLoadGame')
+		# turn-processing cycle (see onEndGameTurn below). Same reasoning as
+		# onGameStart above for also covering the opponent export here.
+		gameTurn = gc.getGame().getGameTurn()
+		if CvAdvisorGameUtils.advisorModeActive():
+			CvUtil.pyPrint('civ4-advisor: exporting state at onLoadGame')
+			self._exportState(gameTurn, gc.getGame().getActivePlayer(), 'onLoadGame')
+		self._maybeExportOpponentTurn(gameTurn, 'onLoadGame')
 		return result
+
+	def onBeginPlayerTurn(self, argsList):
+		result = CvEventManager.CvEventManager.onBeginPlayerTurn(self, argsList)
+		# ai-opponent spike only (see docs/AI_OPPONENT_PLAN.md item A). Fires per
+		# player, including AI civs, unlike onEndGameTurn below - the only hook
+		# that can export a specific AI's turn once the game is under way
+		# (onGameStart/onLoadGame above cover turn 0/the loaded turn). Despite
+		# the name it fires at the END of turn N, same as onEndGameTurn - see
+		# CLAUDE.md "onBeginPlayerTurn/onEndPlayerTurn do not bound the player's
+		# actual interactive turn" - hence the same +1 correction, confirmed
+		# live: without it, turn_0000.json showed Athens already founded.
+		iGameTurn, iPlayer = argsList
+		self._maybeExportOpponentTurn(iGameTurn + 1, 'onBeginPlayerTurn', iPlayer)
+		return result
+
+	def _maybeExportOpponentTurn(self, gameTurn, trigger, iPlayer=None):
+		'''Export the AI opponent's own state, fog of war included. The advisor's
+		export always writes for gc.getGame().getActivePlayer() (see _exportState
+		call sites above), fixed to the human and would raise for an AI player
+		(AdvisorStateWriter._requireActivePlayer) - this is the AI's equivalent,
+		gated on opponent mode being active ('opponent' or 'both' - see
+		CvAdvisorGameUtils.opponentModeActive) and, when iPlayer is given
+		(onBeginPlayerTurn), on iPlayer matching AI_OPPONENT_PLAYER_KEY. iPlayer
+		is omitted from onGameStart/onLoadGame, which fire once for the whole
+		game rather than per player, so the target is looked up here instead.
+
+		gameTurn is the caller's responsibility to turn-correct (see
+		onBeginPlayerTurn above); this method does no further adjustment.
+
+		MECHANISM: transiently calls CyGame.setActivePlayer(targetPlayerId,
+		False) so buildState sees the target as the active player, then restores
+		the original active player in a finally. Verified against CvGame.cpp
+		that bForceHotSeat=False plus a non-human target (always true here, per
+		_advisorPlayerId below) skips the password-prompt/net-ID-swap branch
+		entirely (guarded on GET_PLAYER(eNewValue).isHuman()). Confirmed live,
+		20+ turns, no UI side effects observed. Wrapped in try/except: unlike
+		the advisor path, this whole mechanism is new, so it guards itself
+		rather than relying on each of the three call sites to remember to.'''
+		try:
+			targetPlayerId = CvAdvisorGameUtils._advisorPlayerId()
+			if targetPlayerId is None:
+				return
+			if iPlayer is not None and iPlayer != targetPlayerId:
+				return
+			originalActivePlayer = gc.getGame().getActivePlayer()
+			try:
+				gc.getGame().setActivePlayer(targetPlayerId, False)
+				CvUtil.pyPrint('civ4-advisor (opponent spike): exporting state at %s for player %d' % (trigger, targetPlayerId))
+				self._exportState(gameTurn, targetPlayerId, trigger)
+			finally:
+				gc.getGame().setActivePlayer(originalActivePlayer, False)
+		except:
+			# Must never crash or hang the game - _exportState already guards its own
+			# call, but everything around it here is new and unproven.
+			try:
+				CvUtil.pyPrint('civ4-advisor (opponent spike): %s export FAILED\n%s' % (trigger, traceback.format_exc()))
+			except:
+				pass
 
 	def onEndGameTurn(self, argsList):
 		CvEventManager.CvEventManager.onEndGameTurn(self, argsList)
@@ -111,9 +183,12 @@ class CvCustomEventManager(CvEventManager.CvEventManager):
 		# here is the round that just finished, hence +1 to label state for the round
 		# about to start (matching onGameStart/onLoadGame's numbering, which need no
 		# adjustment since they fire before any turn has been processed).
+		#
+		# Gated on advisorModeActive() - see onGameStart above.
 		iGameTurn = argsList[0]
-		CvUtil.pyPrint('civ4-advisor: exporting state at onEndGameTurn (turn %d finished)' % iGameTurn)
-		self._exportState(iGameTurn + 1, gc.getGame().getActivePlayer(), 'onEndGameTurn')
+		if CvAdvisorGameUtils.advisorModeActive():
+			CvUtil.pyPrint('civ4-advisor: exporting state at onEndGameTurn (turn %d finished)' % iGameTurn)
+			self._exportState(iGameTurn + 1, gc.getGame().getActivePlayer(), 'onEndGameTurn')
 
 	def _exportState(self, gameTurn, playerId, trigger):
 		'''State export must never crash or hang the game - any failure here is swallowed

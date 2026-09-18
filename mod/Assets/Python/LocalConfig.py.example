@@ -26,15 +26,18 @@ MOD_PYTHON_DIR = r'C:\path\to\civ4-advisor\mod\Assets\Python'
 ## A slow map scan is warned about regardless of this setting.
 LOG_TIMINGS = False
 
-## Spike only (see docs/AI_OPPONENT_PLAN.md): 'advisor' (default) leaves every AI
-## player on stock behavior. 'opponent' makes CvAdvisorGameUtils override production
-## for AI_OPPONENT_PLAYER_KEY below; everyone else still plays stock. Not yet a real
-## opponent mode - this is the one-callback proof-of-concept spike only.
+## Spike only (see docs/AI_OPPONENT_PLAN.md): 'advisor' (default) exports only the
+## human player's state (onGameStart/onLoadGame/onEndGameTurn) and leaves every AI
+## on stock behavior. 'opponent' exports only AI_OPPONENT_PLAYER_KEY's own state
+## (onBeginPlayerTurn, fog of war included) and overrides its production; the
+## human export is silent. 'both' runs both exports side by side, still no
+## human-vs-AI interaction beyond what stock AI already does. Not yet a real
+## opponent mode - this is the proof-of-concept spike only.
 MODE = 'advisor'
 
-## Which AI civ CvAdvisorGameUtils drives when MODE == 'opponent', matched by
-## getLeaderType() - simplest option while testing with civs that don't share a
-## leader (see AI_OPPONENT_PLAN.md "Targeting one AI only"). Value is a LeaderHeadTypes
-## string key, e.g. 'LEADER_ALEXANDER' (Greece - first in the leader-pick list, easy
-## to select at game setup).
+## Which AI civ CvAdvisorGameUtils drives when MODE is 'opponent' or 'both',
+## matched by getLeaderType() - simplest option while testing with civs that
+## don't share a leader (see AI_OPPONENT_PLAN.md "Targeting one AI only"). Value
+## is a LeaderHeadTypes string key, e.g. 'LEADER_ALEXANDER' (Greece - first in
+## the leader-pick list, easy to select at game setup).
 AI_OPPONENT_PLAYER_KEY = None
