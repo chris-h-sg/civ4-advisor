@@ -115,7 +115,7 @@ Goal: mirrored map, one LLM civ, one stock civ, no human, runs unattended.
 
 `Game.AIPlay` in batches is the better fit for a harness that needs to pause and read state; `Autorun` is simpler but effectively write-only once started.
 
-**Not yet tested**: actually driving one civ's decisions via the callbacks/watcher loop (item C) — this only confirms the stock-AI-vs-stock-AI shell works.
+✅ **Driving one civ's production via `AI_chooseProduction` confirmed live** (2026-09-18) — see [Work items](#work-items) "Spike" below. **Not yet tested**: the rest of the decision loop (watcher, plan files, an actual LLM call) — item C.
 
 Observation is free — the existing exporter already writes every turn, and `calculateScore` gives a crude per-turn metric immediately (the cheap version of CivBench's victory-probability estimator).
 
@@ -207,6 +207,22 @@ Build out the files listed under [Repo layout](#repo-layout), plus a `mod/tests/
 
 Every hook and callback needs the never-crash wrapper: one raising in `AI_unitUpdate` would do so once per unit per slice.
 
+### Spike: `AI_chooseProduction` — ✅ confirmed live (2026-09-18)
+
+Ran in place of the planned `AI_chooseTech` spike (same purpose — prove one callback, once, for one AI, sticks — but `AI_chooseProduction` is easier to verify visually and avoids the `TechTypes`-int return-contract trap above). Hardcoded decision only, no LLM: `CvAdvisorGameUtils.AI_chooseProduction` always orders `UNIT_WARRIOR` for one player, matched by `getLeaderType()` against `LocalConfig.AI_OPPONENT_PLAYER_KEY`, gated by `LocalConfig.MODE == 'opponent'`.
+
+Setup: `Game.AIPlay N` (see [The test platform](#the-test-platform)) in a 3-civ game (human + 2 AI, human's civ killed by the first `AIPlay` call as expected), one AI civ set to Hannibal/Carthage.
+
+**Observed over multiple `Game.AIPlay 5` batches:**
+- ✅ The callback fires and the return-1 override sticks turn after turn — Hannibal's city queue showed nothing but Warriors, never advancing to any other build, across repeated batches.
+- ✅ The untargeted AI civ played entirely normally in the same game — confirms the per-city `getOwner()` gate isolates the override correctly, with no cross-talk between civs sharing one dispatch point.
+- ✅ `EntryPoints/CvGameInterfaceFile.py` indirection (the "MODDERS" hook the base game ships for this) works as documented — no collision with `CvEventInterface.py`, which the advisor mod already modifies for the event-manager hook.
+- ✅ `pushOrder`'s real signature — `(eOrder, iData1, iData2, bSave, bPop, bAppend, bForce)`, verified against the bundled SDK source rather than copied from a positional example — produced the expected order.
+
+Validates the whole previously-unproven chain for this callback: dispatch reaches our subclass, identity gating by leader works, the override return value is honored every time rather than just once, and `pushOrder` lands correctly. Confirms the general pattern (see [Mode gating](#mode-gating) and [Targeting one AI only](#targeting-one-ai-only)) is sound for the other four callbacks, though each still has its own return contract and argument shape to verify individually — the `AI_chooseTech` int-return trap noted above hasn't itself been exercised live yet.
+
+`LocalConfig.AI_OPPONENT_PLAYER_KEY` was later switched from `LEADER_HANNIBAL` (used for this run) to `LEADER_ALEXANDER` - first in the in-game leader-pick list and easier to select without hunting - purely a test-setup convenience, no code change.
+
 ### C. The decision loop
 
 **Never call the LLM synchronously inside a callback.** These are blocking C++→Python calls inside turn processing; a live call freezes the game and violates the standing "mod must never crash or hang the game" constraint.
@@ -270,7 +286,7 @@ Branch first; everything below lands on it.
 2. ✅ **Done.** `Autorun` and `Game.AIPlay` both confirmed live from a normal game start — no special launch path. See [The test platform](#the-test-platform) for the full comparison and the recommended `Game.AIPlay` + kill-the-extra-civ setup.
 3. **A** (exporter for non-active players) — prerequisite for everything else; nothing can be observed without it. Shared-code change, so it lands before the mode scaffolding.
 4. **B2** (mode gating + callback surface), with the advisor-path-unchanged test written *first*.
-5. **Spike: `AI_chooseTech` only.** One callback, once per tech, one AI civ, everything else stock. Proves the whole chain — export → watcher → Claude → plan file → callback — on the cheapest possible decision.
+5. ✅ **Done, as `AI_chooseProduction` instead of `AI_chooseTech`.** One callback, one hardcoded decision, one AI civ, everything else stock. Proved callback dispatch, identity gating, and the override sticking turn after turn — see [Spike: `AI_chooseProduction`](#spike-ai_chooseproduction--confirmed-live-2026-09-18). Not yet proven: the watcher → Claude → plan-file legs of the chain (item C) — this spike used a hardcoded constant, no LLM involved.
 6. **C** (the full loop) and the mirrored-map platform.
 7. **E** (evaluation) once games run end to end.
 
