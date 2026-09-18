@@ -10,21 +10,34 @@
 ## indirection point from CvEventInterface.py (which the advisor mod already
 ## modifies) - see docs/AI_OPPONENT_PLAN.md "The two entry points don't collide".
 ##
-## SPIKE SCOPE (docs/AI_OPPONENT_PLAN.md, "Spike: AI_chooseTech only", adapted to
-## AI_chooseProduction): prove that overriding one AI callback for one AI player
-## sticks, by always choosing the same unit. No LLM, no watcher, no plan files -
-## the "decision" is a hardcoded constant. Every other AI_* callback falls through
-## to stock (return 0) untouched.
+## SPIKE SCOPE (docs/AI_OPPONENT_PLAN.md, item C, external-process step): prove a
+## synchronous, blocking round-trip to a separate Python 3 process from inside
+## AI_chooseProduction. The "decision" is still hand-set by a human editing a
+## plain text config file - ai-opponent/decision_config.txt - read by
+## ai-opponent/decide_production.py, which prints the unit type key to stdout.
+## No LLM, no JSON schema, no watcher/plan-file polling pattern. Deliberately a
+## blocking call inside the callback rather than the poll-a-plan-file pattern
+## item C otherwise describes - accepting "the game waits" over "the game might
+## miss a turn" for this test only.
 
 from CvPythonExtensions import *
 import CvUtil
 import CvGameUtils
+import os
 
 gc = CyGlobalContext()
 
-## Cheap and available turn 1 in every ruleset checked - good enough for "does the
-## callback fire and stick", which is all this spike needs to prove.
-SPIKE_UNIT_KEY = 'UNIT_WARRIOR'
+## ai-opponent/ lives at the repo root, i.e. two levels up from mod/Assets/Python
+## (this file's deployed location, via the mod/ -> Mods junction - see CLAUDE.md
+## "Paths can't be derived at runtime" for why LocalConfig.MOD_PYTHON_DIR, not
+## __file__, is the source of truth for repo-relative paths in this interpreter).
+DECIDE_SCRIPT_NAME = 'decide_production.py'
+
+## Wall-clock budget for the external process, documented rather than
+## code-enforced (see _decideProduction). decide_production.py currently
+## sleeps 5s before answering as a stand-in for real LLM latency, hence the
+## margin above near-zero.
+DECIDE_TIMEOUT_SECONDS = 10
 
 
 def _advisorPlayerId():
@@ -60,6 +73,49 @@ def _advisorPlayerId():
 	return None
 
 
+def _repoRoot():
+	'''Repo root, derived from LocalConfig.MOD_PYTHON_DIR (mod/Assets/Python), or
+	None if that setting is missing. See the module docstring above for why this
+	is read from LocalConfig rather than __file__ - the same dead end CLAUDE.md
+	already documents for MOD_PYTHON_DIR itself.'''
+	try:
+		import LocalConfig
+	except ImportError:
+		return None
+	modPythonDir = getattr(LocalConfig, 'MOD_PYTHON_DIR', None)
+	if not modPythonDir:
+		return None
+	# mod/Assets/Python -> repo root is three levels up.
+	return os.path.dirname(os.path.dirname(os.path.dirname(modPythonDir)))
+
+
+def _decideProduction():
+	'''Blocking round-trip to the external decide_production.py - see module
+	docstring for why that's acceptable here and not in the real loop. Returns
+	a unit type key string, or None on any failure (missing repo root, spawn
+	failure, non-zero exit, empty output). Uses os.popen, confirmed working
+	in this interpreter; see docs/AI_OPPONENT_PLAN.md item C for the
+	os.spawnv alternative this was checked against.'''
+	repoRoot = _repoRoot()
+	if not repoRoot:
+		return None
+	scriptPath = os.path.join(repoRoot, 'ai-opponent', DECIDE_SCRIPT_NAME)
+	if not os.path.isfile(scriptPath):
+		return None
+	# DECIDE_TIMEOUT_SECONDS above is not enforced here - os.popen has no
+	# timeout in Python 2.4 without threading. A hang is this spike's finding
+	# to report, not something to route around silently.
+	pipe = os.popen('python "%s"' % scriptPath, 'r')
+	try:
+		output = pipe.read()
+	finally:
+		pipe.close()
+	unitKey = output.strip()
+	if not unitKey:
+		return None
+	return unitKey
+
+
 class CvAdvisorGameUtils(CvGameUtils.CvGameUtils):
 
 	def AI_chooseProduction(self, argsList):
@@ -67,21 +123,25 @@ class CvAdvisorGameUtils(CvGameUtils.CvGameUtils):
 		try:
 			advisorPlayerId = _advisorPlayerId()
 			if advisorPlayerId is not None and pCity.getOwner() == advisorPlayerId:
-				unitType = gc.getInfoTypeForString(SPIKE_UNIT_KEY)
-				if unitType != -1:
-					# Signature is (eOrder, iData1, iData2, bSave, bPop, bAppend,
-					# bForce) - verified against CvCity::pushOrder in the bundled
-					# SDK source (CvCity.cpp), not assumed from position. iData2=-1
-					# (no specific unit AI - the engine fills in the unit's default).
-					# CvCityAI::AI_chooseProduction (CvCityAI.cpp) already calls
-					# clearOrderQueue() before invoking this callback, so the queue
-					# is empty here regardless; bPop=True is defensive, not load-
-					# bearing. bForce=False: UNIT_WARRIOR should be legitimately
-					# trainable, so there's no reason to bypass canTrain.
-					pCity.pushOrder(OrderTypes.ORDER_TRAIN, unitType, -1, False, True, False, False)
-					CvUtil.pyPrint('civ4-advisor (opponent spike): forced %s in city %s (player %d)'
-						% (SPIKE_UNIT_KEY, pCity.getName(), advisorPlayerId))
-					return 1
+				unitKey = _decideProduction()
+				if unitKey:
+					unitType = gc.getInfoTypeForString(unitKey)
+					if unitType != -1:
+						# Signature is (eOrder, iData1, iData2, bSave, bPop, bAppend,
+						# bForce) - verified against CvCity::pushOrder in the bundled
+						# SDK source (CvCity.cpp), not assumed from position. iData2=-1
+						# (no specific unit AI - the engine fills in the unit's default).
+						# CvCityAI::AI_chooseProduction (CvCityAI.cpp) already calls
+						# clearOrderQueue() before invoking this callback, so the queue
+						# is empty here regardless; bPop=True is defensive, not load-
+						# bearing. bForce=False: an externally-chosen unit should be
+						# legitimately trainable, so there's no reason to bypass
+						# canTrain.
+						pCity.pushOrder(OrderTypes.ORDER_TRAIN, unitType, -1, False, True, False, False)
+						CvUtil.pyPrint('civ4-advisor (opponent spike): forced %s in city %s (player %d), via external process'
+							% (unitKey, pCity.getName(), advisorPlayerId))
+						return 1
+				CvUtil.pyPrint('civ4-advisor (opponent spike): external process gave no usable unit key, falling through')
 		except:
 			# Never crash or hang the game - fall through to stock AI on any failure.
 			try:

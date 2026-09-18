@@ -115,7 +115,7 @@ Goal: mirrored map, one LLM civ, one stock civ, no human, runs unattended.
 
 `Game.AIPlay` in batches is the better fit for a harness that needs to pause and read state; `Autorun` is simpler but effectively write-only once started.
 
-✅ **Driving one civ's production via `AI_chooseProduction` confirmed live** (2026-09-18) — see [Work items](#work-items) "Spike" below. **Not yet tested**: the rest of the decision loop (watcher, plan files, an actual LLM call) — item C.
+✅ **Driving one civ's production via `AI_chooseProduction` confirmed live** (2026-09-18), including a synchronous external-process round-trip — see [Work items](#work-items) "Spike" below. **Not yet tested**: the poll-a-plan-file pattern and an actual LLM call — item C.
 
 Observation is free — the existing exporter already writes every turn, and `calculateScore` gives a crude per-turn metric immediately (the cheap version of CivBench's victory-probability estimator).
 
@@ -223,6 +223,22 @@ Validates the whole previously-unproven chain for this callback: dispatch reache
 
 `LocalConfig.AI_OPPONENT_PLAYER_KEY` was later switched from `LEADER_HANNIBAL` (used for this run) to `LEADER_ALEXANDER` - first in the in-game leader-pick list and easier to select without hunting - purely a test-setup convenience, no code change.
 
+### Spike: external-process round-trip — ✅ confirmed live (2026-09-18)
+
+Second leg of the same spike: `AI_chooseProduction` now calls out to a separate Python 3 process synchronously on every build decision, instead of the hardcoded `UNIT_WARRIOR` constant. Still no LLM — the "decision" is a plain text file a human hand-edits.
+
+- `ai-opponent/decide_production.py` (new, Python 3): reads `ai-opponent/decision_config.txt` (a single unit type key, default `UNIT_WARRIOR`), prints it to stdout, nothing else.
+- `CvAdvisorGameUtils._decideProduction()`: builds the script path from `LocalConfig.MOD_PYTHON_DIR` (repo root is three levels up — same dead end on `__file__`/`sys.path` that `MOD_PYTHON_DIR` itself exists to route around, see `CLAUDE.md` "Paths can't be derived at runtime"), spawns it via `os.popen('python "..."', 'r')`, reads stdout, resolves it through `getInfoTypeForString`. Falls through to stock (return 0) on any failure — missing `LocalConfig`, missing script, spawn failure, unresolvable key — all inside the existing `try/except`.
+- `os.popen` chosen over `os.spawnv` for this leg — simpler for capturing stdout synchronously, and calling plain `python` relies on PATH (a deliberate simplification for the spike; a real loop would want `LocalConfig`-pinned interpreter path per the open question below).
+
+**Observed live (near-instant round-trip):** ✅ confirms `os.popen` works synchronously inside the embedded Python 2.4 interpreter and `AI_chooseProduction` blocks correctly for the round-trip. City built whatever `decision_config.txt` said; editing the file mid-game (no restart) switched subsequent builds; an invalid unit key correctly fell through to stock AI (`unitType == -1` → `getInfoTypeForString` failure → base-class call), confirming the fall-through safety net works for this failure mode specifically, not just in theory. At sub-second latency, no visible hitch.
+
+**Also observed, expected rather than a finding:** the callback only fires when a build *completes* (order queue empties), never mid-build — `AI_chooseProduction` is a "what's next" hook, not a per-turn one. Consistent with the turn-after-turn Warriors behavior already seen in the first spike leg. Nothing currently interrupts an in-progress order; that's a different mechanism, out of scope here.
+
+**Observed live (5s artificial delay) — ⚠️ the game freezes completely.** `decide_production.py` was given a `time.sleep(DECISION_DELAY_SECONDS)` (5s) before answering, as a cheap stand-in for real LLM latency — no mod-side code change needed, since a fresh `python <path>` process re-reads the script from disk every call. **Confirmed live: the game is completely unresponsive for the full duration of the blocking call**, the exact risk the plan already called out, now measured rather than reasoned about. Item D's real-LLM measurements are 71–142s wall clock per call — at that duration this is a multi-minute freeze, likely tripping Windows' "not responding" state.
+
+**Still open:** only the happy-path and invalid-key failure modes were exercised, not a missing script/`LocalConfig.MOD_PYTHON_DIR`/PATH entry. Freeze duration wasn't stopwatched independently of the 5s delay itself.
+
 ### C. The decision loop
 
 **Never call the LLM synchronously inside a callback.** These are blocking C++→Python calls inside turn processing; a live call freezes the game and violates the standing "mod must never crash or hang the game" constraint.
@@ -286,7 +302,7 @@ Branch first; everything below lands on it.
 2. ✅ **Done.** `Autorun` and `Game.AIPlay` both confirmed live from a normal game start — no special launch path. See [The test platform](#the-test-platform) for the full comparison and the recommended `Game.AIPlay` + kill-the-extra-civ setup.
 3. **A** (exporter for non-active players) — prerequisite for everything else; nothing can be observed without it. Shared-code change, so it lands before the mode scaffolding.
 4. **B2** (mode gating + callback surface), with the advisor-path-unchanged test written *first*.
-5. ✅ **Done, as `AI_chooseProduction` instead of `AI_chooseTech`.** One callback, one hardcoded decision, one AI civ, everything else stock. Proved callback dispatch, identity gating, and the override sticking turn after turn — see [Spike: `AI_chooseProduction`](#spike-ai_chooseproduction--confirmed-live-2026-09-18). Not yet proven: the watcher → Claude → plan-file legs of the chain (item C) — this spike used a hardcoded constant, no LLM involved.
+5. ✅ **Done, as `AI_chooseProduction` instead of `AI_chooseTech`, in two legs.** First leg: one callback, one hardcoded decision, one AI civ, everything else stock — proved callback dispatch, identity gating, and the override sticking turn after turn (see [Spike: `AI_chooseProduction`](#spike-ai_chooseproduction--confirmed-live-2026-09-18)). Second leg: swapped the hardcoded constant for a synchronous, blocking round-trip to a separate Python 3 process — `os.popen` works inside the embedded interpreter, but a multi-second delay **froze the game completely** (see [Spike: external-process round-trip](#spike-external-process-round-trip--confirmed-live-2026-09-18)), confirming the blocking approach can't carry a real LLM call and item C's poll-a-plan-file pattern is required, not optional.
 6. **C** (the full loop) and the mirrored-map platform.
 7. **E** (evaluation) once games run end to end.
 
