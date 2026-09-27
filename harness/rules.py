@@ -3827,6 +3827,57 @@ def view_promotion(rules, promotion_type, state, show_known, max_depth):
     return "\n".join(out)
 
 
+def view_available_techs(rules, state):
+    """Every tech immediately researchable right now - closure(...) empty and
+    not already known or in progress. Presentation, not decision: this is the
+    same "what are the options" shape as `city` (what can this city build
+    right now), not "what should I research" - it never ranks, sorts by
+    anything but name, or recommends one. Built for a caller (human or
+    scripted) that already knows what it wants to evaluate CANDIDATES against,
+    the same way `tech TYPE` answers about one candidate already in mind - the
+    difference is this enumerates the candidate set instead of requiring the
+    caller to already have a name to check to it.
+
+    Deliberately excludes the tech in progress even though effective_known()
+    would call it "acquired" for costing purposes elsewhere in this module:
+    what is being researched is not available to START researching, it is
+    already underway, and `tech TYPE` already reports that case distinctly
+    via `researching()`.
+    """
+    known = set((state.get("player") or {}).get("knownTechs") or [])
+    current = researching(state)
+    available = sorted(
+        tech_type for tech_type in rules.techs
+        if tech_type not in known
+        and tech_type != current
+        and not closure(rules, tech_type, known)
+    )
+
+    out = []
+    out.append("%d tech%s immediately researchable"
+               % (len(available), "" if len(available) == 1 else "s"))
+    out.append("  against %s" % state_summary(state))
+    out.append("")
+    if current:
+        out.append("(researching %s now - excluded above, not a candidate to"
+                   " start)" % current)
+        out.append("")
+    if available:
+        for tech_type in available:
+            entry = rules.techs[tech_type]
+            out.append("  %-26s %5d beakers  %s"
+                       % (tech_type, rules.cost(tech_type), entry["era"] or ""))
+    else:
+        out.append("  (none - every unresearched tech still has an unmet"
+                   " prerequisite)")
+    out.append("")
+    out.append("Rows are alphabetical and deliberately unranked - which to")
+    out.append("research is your judgement. `tech TYPE` on any row above gives")
+    out.append("its full closure, cost breakdown and what it unlocks.")
+    out.append("  " + MOD_WARNING)
+    return "\n".join(out)
+
+
 def view_tech(rules, tech_type, state, show_known, max_depth):
     entry = rules.techs.get(tech_type)
     if entry is None:
@@ -5395,6 +5446,13 @@ def build_parser():
         help="include prerequisites you already have (hidden by default)",
     )
     parser.add_argument(
+        "--available", action="store_true",
+        help="`tech` only, TYPE omitted: list every tech immediately "
+             "researchable right now (no unmet prerequisite), unranked. "
+             "For evaluating a candidate you already have in mind, use "
+             "`tech TYPE` instead - this only enumerates the candidate set.",
+    )
+    parser.add_argument(
         "--depth", type=int, default=None,
         help="truncate the printed tree at this depth. Totals always cover the "
              "full walk - a partial total is a wrong number.",
@@ -5494,6 +5552,15 @@ def main(argv=None):
     if args.popped_by is not None and args.subject != "goody":
         sys.stderr.write("--popped-by only applies to `goody`\n")
         return 2
+    if args.available and args.subject != "tech":
+        sys.stderr.write("--available only applies to `tech`\n")
+        return 2
+    if args.available and type_key is not None:
+        sys.stderr.write(
+            "--available enumerates every candidate - it does not take a "
+            "TYPE as well: %s\n" % type_key
+        )
+        return 2
     if args.at is not None and args.subject not in ("goody", "improvement"):
         sys.stderr.write("--at only applies to `goody` and `improvement`\n")
         return 2
@@ -5521,7 +5588,10 @@ def main(argv=None):
             # `improvement --at X,Y` reports on the tile rather than one named
             # improvement, so a missing TYPE is correct there - same shape as
             # `promotion --for-unit`.
-            and not (args.subject == "improvement" and args.at is not None)):
+            and not (args.subject == "improvement" and args.at is not None)
+            # `tech --available` enumerates every candidate rather than
+            # reporting on one - same shape again.
+            and not (args.subject == "tech" and args.available)):
         # `city` takes a plain name rather than a TYPE key, so the "did they
         # forget the state file" test cannot key off a prefix - a bare word is
         # exactly what a city argument looks like. Anything not ending .json is
@@ -5559,9 +5629,12 @@ def main(argv=None):
                 raise RulesError("`unit` needs a type, e.g. UNIT_AXEMAN")
             text = view_unit(rules, type_key, state, args.show_known, args.depth)
         elif args.subject == "tech":
-            if not type_key:
-                raise RulesError("`tech` needs a type, e.g. TECH_MONARCHY")
-            text = view_tech(rules, type_key, state, args.show_known, args.depth)
+            if args.available:
+                text = view_available_techs(rules, state)
+            else:
+                if not type_key:
+                    raise RulesError("`tech` needs a type, e.g. TECH_MONARCHY")
+                text = view_tech(rules, type_key, state, args.show_known, args.depth)
         elif args.subject == "building":
             if not type_key:
                 raise RulesError("`building` needs a type, e.g. BUILDING_BARRACKS")

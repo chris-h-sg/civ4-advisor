@@ -29,7 +29,7 @@ Files are numbered for the turn **about to be played**, so a run starts at `turn
 | about to say... | run this first |
 |---|---|
 | "tech X reveals/unlocks resource Y" | `rules.py tech X` |
-| "research X next" | `rules.py tech X` — it prints each prereq `[have]`/`[NEED]`, so an unselectable pick is visible before you recommend it |
+| "research X next" | `rules.py tech X` — it prints each prereq `[have]`/`[NEED]`, so an unselectable pick is visible before you recommend it. No candidate in mind yet? `rules.py tech --available` lists everything legal right now. |
 | "unit A beats/loses to unit B" | `rules.py unit A` and `rules.py unit B` |
 | "this city can build Z" | `rules.py city NAME` |
 | "promotion P does..." | `rules.py promotion P` |
@@ -135,6 +135,7 @@ The tool **exits non-zero on a run that isn't one continuous game**. That's a re
 
 ```
 python harness/rules.py unit|tech|building|promotion|city|handicap|goody|improvement [TYPE] <state.json> [--show-known] [--depth N]
+python harness/rules.py tech <state.json> --available
 python harness/rules.py promotion <state.json> --for-unit ID [--eligible]
 python harness/rules.py goody <state.json> [--for-unit ID | --popped-by UNIT_SCOUT] [--at X,Y]
 python harness/rules.py improvement <state.json> --at X,Y
@@ -146,6 +147,7 @@ python harness/rules.py improvement <state.json> --at X,Y
 |---|---|
 | `unit UNIT_AXEMAN` | What does this unit need — tech, resources — and what does *that* tech need? Plus its full combat profile and everything else the same tech unlocks. |
 | `tech TECH_MONARCHY` | What does this tech need, transitively, and **everything** it unlocks — units, buildings, civics, worker actions, resources revealed, and abilities like bridge-building. |
+| `tech <state> --available` | Every tech immediately researchable right now — no unmet prerequisite, not already known, not the one in progress. Reach for this BEFORE naming a candidate to `tech TYPE`, same shape as `city` for production: it says what the options are, never which is best. |
 | `building BUILDING_PYRAMID` | Buildings and wonders: cost in hammers and turns *per city*, prerequisites, effects, and whether it's an ordinary building, a national wonder or one-per-world. |
 | `promotion PROMOTION_COMBAT1` | What a promotion actually does — combat/terrain/movement modifiers, which unit-combat classes can take it, its own prerequisite chain. |
 | `promotion <state> --for-unit ID` | One of your own units, by engine id (as `intel` prints it, e.g. "id 16385"): their combined effect, then each promotion's own detail — no need to type each name yourself. Add `--eligible` to also list what it could take next and why not for the rest. Put `--for-unit` after the state file. |

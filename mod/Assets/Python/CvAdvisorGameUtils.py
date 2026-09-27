@@ -10,15 +10,25 @@
 ## indirection point from CvEventInterface.py (which the advisor mod already
 ## modifies) - see docs/AI_OPPONENT_PLAN.md "The two entry points don't collide".
 ##
-## SPIKE SCOPE (docs/AI_OPPONENT_PLAN.md, item C, external-process step): prove a
-## synchronous, blocking round-trip to a separate Python 3 process from inside
-## AI_chooseProduction. The "decision" is still hand-set by a human editing a
-## plain text config file - ai-opponent/decision_config.txt - read by
-## ai-opponent/decide_production.py, which prints the unit type key to stdout.
-## No LLM, no JSON schema, no watcher/plan-file polling pattern. Deliberately a
-## blocking call inside the callback rather than the poll-a-plan-file pattern
-## item C otherwise describes - accepting "the game waits" over "the game might
-## miss a turn" for this test only.
+## SPIKE SCOPE (docs/AI_OPPONENT_PLAN.md, item C): AI_chooseTech is a real Claude
+## call - the first callback in this mod backed by an actual LLM decision rather
+## than a human-edited stand-in. AI_chooseProduction, by contrast, is back to
+## stock (returns 0 unconditionally) - the earlier hardcoded-Warrior/external-
+## process spike proved the round-trip mechanism and is retired now that
+## AI_chooseTech carries it for real; re-introducing production would double the
+## callback surface this task needs to reason about for no new proof.
+##
+## AI_chooseTech calls out to ai-opponent/decide_tech.py (Python 3) synchronously
+## via os.popen - same mechanism decide_production.py proved live, same
+## "blocking call inside the callback" tradeoff accepted for this spike (see
+## docs/AI_OPPONENT_PLAN.md item C and "Spike: external-process round-trip").
+## decide_tech.py reads the latest exported turn_NNNN.json for the current game,
+## calls `claude -p`, and prints a single TECH_ key to stdout.
+##
+## RETURN-CONTRACT TRAP (AI_OPPONENT_PLAN.md "B2"): AI_chooseTech returns a
+## TechTypes int, not a 1/0 boolean - CvPlayerAI does
+## `eBestTech = (TechTypes)lResult` and only falls back to stock AI_bestTech() on
+## NO_TECH (-1). Returning True/False here would silently order tech 0.
 
 from CvPythonExtensions import *
 import CvUtil
@@ -31,19 +41,21 @@ gc = CyGlobalContext()
 ## (this file's deployed location, via the mod/ -> Mods junction - see CLAUDE.md
 ## "Paths can't be derived at runtime" for why LocalConfig.MOD_PYTHON_DIR, not
 ## __file__, is the source of truth for repo-relative paths in this interpreter).
-DECIDE_SCRIPT_NAME = 'decide_production.py'
+DECIDE_TECH_SCRIPT_NAME = 'decide_tech.py'
 
 ## Wall-clock budget for the external process, documented rather than
-## code-enforced (see _decideProduction). decide_production.py currently
-## sleeps 5s before answering as a stand-in for real LLM latency, hence the
-## margin above near-zero.
-DECIDE_TIMEOUT_SECONDS = 10
+## code-enforced (see _decideTech). Real Claude calls measured 71-142s wall
+## clock (AI_OPPONENT_PLAN.md item D); this is a margin above that, not a
+## timeout os.popen can actually enforce in Python 2.4 (see _decideTech).
+DECIDE_TIMEOUT_SECONDS = 180
+
+NO_TECH = -1
 
 
 def opponentModeActive():
 	'''True when LocalConfig.MODE drives an AI opponent - either 'opponent' alone
 	or 'both' alongside the advisor. Shared by CvCustomEventManager (gates the
-	human-facing export) and this module's own AI_chooseProduction gating, so the
+	human-facing export) and this module's own AI_chooseTech gating, so the
 	two modules agree on what "opponent mode is on" means without duplicating the
 	LocalConfig lookup.'''
 	try:
@@ -112,63 +124,61 @@ def _repoRoot():
 	return os.path.dirname(os.path.dirname(os.path.dirname(modPythonDir)))
 
 
-def _decideProduction():
-	'''Blocking round-trip to the external decide_production.py - see module
+def _decideTech(playerId):
+	'''Blocking round-trip to the external decide_tech.py - see module
 	docstring for why that's acceptable here and not in the real loop. Returns
-	a unit type key string, or None on any failure (missing repo root, spawn
-	failure, non-zero exit, empty output). Uses os.popen, confirmed working
-	in this interpreter; see docs/AI_OPPONENT_PLAN.md item C for the
-	os.spawnv alternative this was checked against.'''
+	a tech type key string, or None on any failure (missing repo root, missing
+	script, spawn failure, empty output). Uses os.popen, same mechanism
+	decide_production.py proved live; see docs/AI_OPPONENT_PLAN.md item C for
+	the os.spawnv alternative this was checked against.
+
+	playerId is passed as a command-line argument so decide_tech.py can find
+	the right game's latest state file without guessing - see that script for
+	how it locates state/<leader>_<gameId>/.'''
 	repoRoot = _repoRoot()
 	if not repoRoot:
 		return None
-	scriptPath = os.path.join(repoRoot, 'ai-opponent', DECIDE_SCRIPT_NAME)
+	scriptPath = os.path.join(repoRoot, 'ai-opponent', DECIDE_TECH_SCRIPT_NAME)
 	if not os.path.isfile(scriptPath):
 		return None
 	# DECIDE_TIMEOUT_SECONDS above is not enforced here - os.popen has no
-	# timeout in Python 2.4 without threading. A hang is this spike's finding
-	# to report, not something to route around silently.
-	pipe = os.popen('python "%s"' % scriptPath, 'r')
+	# timeout in Python 2.4 without threading. A hang is a finding to report,
+	# not something to route around silently (same as the production spike).
+	pipe = os.popen('python "%s" %d' % (scriptPath, playerId), 'r')
 	try:
 		output = pipe.read()
 	finally:
 		pipe.close()
-	unitKey = output.strip()
-	if not unitKey:
+	techKey = output.strip()
+	if not techKey:
 		return None
-	return unitKey
+	return techKey
 
 
 class CvAdvisorGameUtils(CvGameUtils.CvGameUtils):
 
-	def AI_chooseProduction(self, argsList):
-		pCity = argsList[0]
+	def AI_chooseTech(self, argsList):
+		ePlayer, bFree = argsList
 		try:
 			advisorPlayerId = _advisorPlayerId()
-			if advisorPlayerId is not None and pCity.getOwner() == advisorPlayerId:
-				unitKey = _decideProduction()
-				if unitKey:
-					unitType = gc.getInfoTypeForString(unitKey)
-					if unitType != -1:
-						# Signature is (eOrder, iData1, iData2, bSave, bPop, bAppend,
-						# bForce) - verified against CvCity::pushOrder in the bundled
-						# SDK source (CvCity.cpp), not assumed from position. iData2=-1
-						# (no specific unit AI - the engine fills in the unit's default).
-						# CvCityAI::AI_chooseProduction (CvCityAI.cpp) already calls
-						# clearOrderQueue() before invoking this callback, so the queue
-						# is empty here regardless; bPop=True is defensive, not load-
-						# bearing. bForce=False: an externally-chosen unit should be
-						# legitimately trainable, so there's no reason to bypass
-						# canTrain.
-						pCity.pushOrder(OrderTypes.ORDER_TRAIN, unitType, -1, False, True, False, False)
-						CvUtil.pyPrint('civ4-advisor (opponent spike): forced %s in city %s (player %d), via external process'
-							% (unitKey, pCity.getName(), advisorPlayerId))
-						return 1
-				CvUtil.pyPrint('civ4-advisor (opponent spike): external process gave no usable unit key, falling through')
+			if advisorPlayerId is not None and ePlayer == advisorPlayerId:
+				techKey = _decideTech(ePlayer)
+				if techKey:
+					techType = gc.getInfoTypeForString(techKey)
+					# Validate before trusting: must resolve, and must not already
+					# be known - is_error: false from the external process is not a
+					# validity check (AI_OPPONENT_PLAN.md item D), and a fluent,
+					# well-formed, already-known tech is a real failure mode, not a
+					# hypothetical one.
+					if techType != NO_TECH and not gc.getTeam(gc.getPlayer(ePlayer).getTeam()).isHasTech(techType):
+						CvUtil.pyPrint('civ4-advisor (opponent spike): AI_chooseTech ordering %s for player %d, via external process'
+							% (techKey, advisorPlayerId))
+						return techType
+					CvUtil.pyPrint('civ4-advisor (opponent spike): external process gave unusable tech key %s, falling through' % techKey)
 		except:
 			# Never crash or hang the game - fall through to stock AI on any failure.
 			try:
-				CvUtil.pyPrint('civ4-advisor (opponent spike): AI_chooseProduction FAILED, falling through')
+				CvUtil.pyPrint('civ4-advisor (opponent spike): AI_chooseTech FAILED, falling through')
 			except:
 				pass
-		return CvGameUtils.CvGameUtils.AI_chooseProduction(self, argsList)
+		return CvGameUtils.CvGameUtils.AI_chooseTech(self, argsList)

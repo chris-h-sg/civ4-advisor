@@ -2049,6 +2049,149 @@ def test_tech_view_reports_a_root_as_having_no_prereqs(xml_root, tmp_path):
     assert "tech-tree root" in rules.view_tech(r, "TECH_ROOT_A", state, False, None)
 
 
+# ---------------------------------------------------------------------------
+# tech --available
+# ---------------------------------------------------------------------------
+
+
+def test_available_lists_only_roots_when_nothing_is_known(xml_root, tmp_path):
+    """Fresh game, nothing known: only the two roots (ROOT_A, ROOT_B) have an
+    empty closure. LEFT/RIGHT/TARGET/SIMPLE all need at least one of them."""
+    _, state = make_state(tmp_path, known=[])
+    r = build_rules(xml_root, state)
+    text = rules.view_available_techs(r, state)
+
+    assert "TECH_ROOT_A" in text
+    assert "TECH_ROOT_B" in text
+    for blocked in ("TECH_LEFT", "TECH_RIGHT", "TECH_TARGET", "TECH_SIMPLE"):
+        assert blocked not in text
+
+
+def test_available_excludes_a_tech_with_an_unmet_and_prereq(xml_root, tmp_path):
+    """TECH_RIGHT needs BOTH ROOT_A and ROOT_B (and-list). Holding only one
+    must not be enough - this is the exact shape that let a live spike push
+    TECH_BRONZE_WORKING (needs TECH_MINING) while only unrelated techs were
+    known."""
+    _, state = make_state(tmp_path, known=["TECH_ROOT_A"])
+    r = build_rules(xml_root, state)
+    text = rules.view_available_techs(r, state)
+
+    assert "TECH_RIGHT" not in text
+    # ROOT_A is already known, so it drops out; ROOT_B and the two techs
+    # whose sole prereq is now satisfied (LEFT via its or-list, SIMPLE via
+    # its own or-list) become available.
+    assert "TECH_ROOT_A" not in text
+    assert "TECH_ROOT_B" in text
+    assert "TECH_LEFT" in text
+    assert "TECH_SIMPLE" in text
+
+
+def test_available_includes_a_tech_once_its_and_prereqs_are_both_met(xml_root, tmp_path):
+    _, state = make_state(tmp_path, known=["TECH_ROOT_A", "TECH_ROOT_B"])
+    r = build_rules(xml_root, state)
+    text = rules.view_available_techs(r, state)
+
+    assert "TECH_RIGHT" in text
+
+
+def test_available_excludes_an_already_known_tech(xml_root, tmp_path):
+    """Known techs are never candidates to START researching - this is the
+    exact shape that let a live spike propose TECH_POTTERY when it was
+    already in knownTechs (is_error: false is not a validity check)."""
+    _, state = make_state(tmp_path, known=["TECH_ROOT_A", "TECH_ROOT_B", "TECH_RIGHT"])
+    r = build_rules(xml_root, state)
+    text = rules.view_available_techs(r, state)
+
+    assert "TECH_RIGHT" not in text
+
+
+def test_available_excludes_the_tech_currently_being_researched(xml_root, tmp_path):
+    """In progress is neither 'have' nor 'need' - researching() already draws
+    this distinction elsewhere in the module (see effective_known's
+    docstring); --available must not offer it as a fresh candidate to start,
+    since starting it is not a meaningful action."""
+    _, state = make_state(
+        tmp_path, known=["TECH_ROOT_A"],
+        research={"current": "TECH_LEFT", "turnsLeft": 3})
+    r = build_rules(xml_root, state)
+    text = rules.view_available_techs(r, state)
+
+    # TECH_LEFT legitimately appears once, in the "researching ... now"
+    # notice - the assertion that matters is it's not ALSO listed as a row.
+    assert "  TECH_LEFT " not in text
+    assert "researching TECH_LEFT now" in text
+
+
+def test_available_reports_none_when_every_root_is_already_known(xml_root, tmp_path):
+    _, state = make_state(tmp_path, known=[
+        "TECH_ROOT_A", "TECH_ROOT_B", "TECH_LEFT", "TECH_RIGHT",
+        "TECH_TARGET", "TECH_SIMPLE",
+    ])
+    r = build_rules(xml_root, state)
+    text = rules.view_available_techs(r, state)
+
+    assert "0 techs immediately researchable" in text
+    assert "none" in text.lower()
+
+
+def test_available_never_ranks_the_candidates(xml_root, tmp_path):
+    """Same decide-line as view_tech's route costs: this enumerates options,
+    it does not choose between them."""
+    _, state = make_state(tmp_path, known=[])
+    r = build_rules(xml_root, state)
+    text = rules.view_available_techs(r, state)
+
+    for word in ("cheapest", "recommend", "best", "should research"):
+        assert word not in text.lower()
+    # Alphabetical, not cost order: ROOT_A (cost 100) before ROOT_B (cost 200)
+    # is coincidentally also cost order here, so assert on the row order
+    # actually being alphabetical rather than the numbers.
+    assert text.index("TECH_ROOT_A") < text.index("TECH_ROOT_B")
+
+
+def test_available_prints_cost_and_era_per_row(xml_root, tmp_path):
+    _, state = make_state(tmp_path, known=[])
+    r = build_rules(xml_root, state)
+    text = rules.view_available_techs(r, state)
+
+    assert "%d beakers" % r.cost("TECH_ROOT_A") in text
+    assert "ERA_ANCIENT" in text
+
+
+def test_cli_tech_available_only_applies_to_tech(xml_root, config, tmp_path, capsys):
+    state_path, _ = make_state(tmp_path)
+    code = rules.main(["unit", "UNIT_TESTER", state_path, "--available",
+                       "--config", config])
+    assert code == 2
+    assert "only applies to" in capsys.readouterr().err
+
+
+def test_cli_tech_available_rejects_a_type_argument(xml_root, config, tmp_path, capsys):
+    state_path, _ = make_state(tmp_path)
+    code = rules.main(["tech", "TECH_ROOT_A", state_path, "--available",
+                       "--config", config])
+    assert code == 2
+    assert "does not take a TYPE" in capsys.readouterr().err
+
+
+def test_cli_tech_without_type_or_available_still_errors(xml_root, config, tmp_path, capsys):
+    """Existing behaviour must survive --available's carve-out of the
+    missing-TYPE guard: a bare `tech <state>` is still an error."""
+    state_path, _ = make_state(tmp_path)
+    code = rules.main(["tech", state_path, "--config", config])
+    assert code == 2
+    assert "needs both a TYPE and a state file" in capsys.readouterr().err
+
+
+def test_cli_tech_available_runs_end_to_end(xml_root, config, tmp_path, capsys):
+    state_path, _ = make_state(tmp_path, known=[])
+    code = rules.main(["tech", state_path, "--available", "--config", config])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "TECH_ROOT_A" in out
+    assert "TECH_ROOT_B" in out
+
+
 def test_tech_view_resolves_every_category_not_just_units(xml_root, tmp_path):
     """Two trials filled civics, chopping and resource reveals in from memory
     because UNLOCKS printed only units - which the guide explicitly forbids.

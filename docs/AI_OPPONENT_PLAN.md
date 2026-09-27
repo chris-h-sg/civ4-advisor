@@ -1,344 +1,166 @@
 # Plan — an LLM-controlled AI opponent
 
-**Status: research complete, nothing built.** This is a *sibling project* to the advisor, not a phase of it — different runtime, different prompts, different output contract. The advisor's era cutoff is meaningless to a civ that has to play to turn 300, and its fog-honesty rules are inverted here. Keep it out of `ROADMAP.md`, which is the advisor's queue.
+A *sibling project* to the advisor, on branch `ai-opponent`: one AI civ's strategic decisions are made by Claude, and everything else stays stock procedural AI. Different runtime, prompts and output contract from the advisor. The advisor's era cutoff doesn't apply, and its fog-honesty rules are inverted. Keep it out of `ROADMAP.md`, which is the advisor's queue.
 
-**Sibling in runtime, shared in the mod** — see [Repo layout](#repo-layout) for why those pull in opposite directions.
+Prompted by [CivBench](https://arxiv.org/html/2604.07733v1) / [Vox Deorum](https://arxiv.org/abs/2512.18564), which did this for Civ V's strategic layer but needed a modified DLL. Civ 4 exposes the same seam in Python.
 
-Prompted by [CivBench](https://arxiv.org/html/2604.07733v1) / [Vox Deorum](https://arxiv.org/abs/2512.18564), which put an LLM in charge of Civ V's *strategic* layer and left tactical execution to the existing procedural AI. The question was whether Civ 4 allows the same. It does, and with a finer-grained seam than Civ V offered — but Civ V's team still needed a modified DLL, and the shape of the Civ 4 version is different enough to be worth writing down.
+Markers: ✅ confirmed (live, unless marked "source") · ⚠️ needs confirmation · ❓ open.
 
-Everything below is read from the BTS SDK source bundled at `Beyond the Sword/Mods/The Road to War/CvGameCoreDLL` (stock for these files) and cross-checked against `Rhye's and Fall of Civilization/CvGameCoreDLL` where they differ. **Almost none of it has been run in-game.** Items are marked ✅ verified in source / ⚠️ needs live confirmation / ❓ open question.
+## Where we stand
 
----
+| Piece | State |
+| --- | --- |
+| Mode switch (`LocalConfig.MODE`: `advisor` / `opponent` / `both`) and targeting one AI by leader | ✅ live. The advisor path is unchanged when the mode is `advisor`, which `mod/tests/` asserts. |
+| Per-turn export of the AI civ's own fog-honest state | ✅ live, `state/<leader>_<gameId>/turn_NNNN.json` |
+| **Tech choice by Claude** (`AI_chooseTech`) | ✅ live — 100 turns, 13/13 decisions applied, ~10s per call |
+| Production, city sites, war, diplomacy, unit orders, civics/sliders | stock AI |
+| Unattended test platform (mirrored map, `Game.AIPlay` batches) | ✅ live, driven by hand |
+| Plan-file decision loop (**C**), evaluation (**E**) | not started |
 
-## What the engine gives us
+## Next increments
 
-### The five AI callbacks
+Not yet scheduled, in no fixed order:
 
-Civ 4 ships Python override points for AI decisions in `Assets/Python/CvGameUtils.py`. Stock BTS dispatches all five; RFC comments them out for speed, which is itself evidence about cost.
+- **Timing and performance.** Break the ~10s per call down into API time, process startup and the `rules.py` call. `claude -p --output-format json` already returns `duration_api_ms` and similar; `decide_tech.py` discards them. Do this before any per-turn callback, where the freeze would repeat every turn.
+- **Production.** Fires once per city per completed build, so it needs the plan-file loop (**C**), not a synchronous call.
+- **City sites.** There is no callback for this. Where a Settler goes is decided in the engine's unit AI, so it most likely means taking over Settler orders via `AI_unitUpdate`, which needs **B** measured first, or by pushing missions to the Settler directly.
+- **Richer context for the tech call.** It currently sees only known techs, current research, civics and the candidate list. Whether more context (connected resources, cities, what each candidate unlocks) improves the choices is an evaluation question (**E**).
 
-| Callback | Receives | Returns | Fires |
+## How tech choice works
+
+```
+AI_chooseTech(ePlayer, bFree)                 ← gated: opponent mode + matching leader
+  └── os.popen: python ai-opponent/decide_tech.py <playerId>          (blocking)
+        ├── latest state/<leader>_<gameId>/turn_NNNN.json
+        ├── python harness/rules.py tech <state> --available          ← legal candidates
+        ├── claude -p --output-format json --json-schema {enum: candidates}
+        └── stdout: one TECH_ key            (+ a line in decide_tech_log.jsonl)
+  └── resolves, not already known → return the TechTypes int
+      anything else → base class → stock AI
+```
+
+The mod falls through to stock AI on any failure, so a broken call means ordinary play rather than a stuck game. **That also makes failures invisible in-game — the log is the only way to see them.**
+
+## Lessons that constrain what comes next
+
+**Getting a usable answer out of the LLM**
+- **Constrain the output structurally; asking in the prompt isn't enough.** A first run asked for "only the bare key" and applied only 4 of 12 decisions. Five times Claude corrected itself in prose (`"TECH_AGRICULTURE... wait, that's already known... TECH_WRITING"`). Three times it picked a tech that was illegal (missing prerequisite) or already known. Two fixes brought it to 13/13: offer a pre-filtered candidate list (`rules.py tech --available`), and constrain the reply with `--json-schema` using an `enum` built from that same list. Apply the same pattern to every future decision: enumerate the legal options in code, then have the model choose one.
+- **`is_error: false` is not a validity check.** Haiku on low effort returned fluent, well-formatted, entirely fabricated plans and reported success. The mod still re-validates every answer independently.
+- **Don't economise on model or effort; shrink the context instead.** Haiku was unusable, and Sonnet on low effort broke the output contract. Cost is dominated by reading the input, not generating the answer.
+
+**Calling `claude -p` from a script**
+- **Call `claude.cmd` directly**, resolved with `shutil.which` and given an argument list via `subprocess.run`. Routing through `powershell -Command` breaks on a JSON schema: PowerShell reads `{`/`}` as a script block. It also avoids Git Bash's first-call shell-snapshot cost (measured at 12–38s).
+- **Run with `cwd` outside this repo.** From inside, `claude -p` auto-loads CLAUDE.md and memory: ~67k tokens and ~$0.27 before the prompt is read.
+- A tool-free call with a small prompt takes 9–14s. A tool-using advisor-style call took 71–142s.
+
+**Blocking calls inside callbacks**
+- A blocking call freezes the whole game for its duration (confirmed with an artificial 5s delay). The limit is how often the callback fires, not whether a freeze happens at all:
+
+| Callback | Receives → returns | Fires | Synchronous LLM call? |
 | --- | --- | --- | --- |
-| `AI_chooseTech(ePlayer, bFree)` | player id | **a `TechTypes` int**; `-1` → fall through | per research choice |
-| `AI_chooseProduction(pCity)` | `CyCity` | `1` = handled / `0` = fall through | per city, per build |
-| `AI_doWar(eTeam)` | **team** id | `1` / `0` | once per team per turn |
-| `AI_doDiplo(ePlayer)` | player id | `1` / `0` | once per player per turn |
-| `AI_unitUpdate(pUnit)` | `CyUnit` | `1` = abort loop, wait for next slice / `0` | **every unit, every update slice** |
+| `AI_chooseTech(ePlayer, bFree)` | player id → **`TechTypes` int**, `-1` falls through | per research choice | ✅ tolerable, confirmed |
+| `AI_doWar(eTeam)` | **team** id → `1`/`0` | per team per turn | ⚠️ ~10s every turn |
+| `AI_doDiplo(ePlayer)` | player id → `1`/`0` | per player per turn | ⚠️ ~10s every turn |
+| `AI_chooseProduction(pCity)` | `CyCity` → `1`/`0` | per city, **only when its queue empties** | ❌ scales with cities |
+| `AI_unitUpdate(pUnit)` | `CyUnit` → `1` = wait for next slice / `0` | per unit, per update slice | ❌ |
 
-✅ The contract is real delegation: return 0 and the built-in AI runs exactly as before. That makes every level of adoption optional — you can take over tech alone and leave everything else stock.
+**The mod side**
+- **`AI_chooseTech` returns a tech index, not a boolean.** `CvPlayerAI` casts the return value straight to `TechTypes`, so `return True` silently orders tech 0 (source ✅, tested). The other four callbacks return `1`/`0`.
+- **Returning `0` from a callback hands the decision back to stock AI**, which makes taking over one decision at a time viable. The callbacks are global dispatch points, so gate on identity inside each: `pCity.getOwner()` / `pUnit.getOwner()`, the player id, or the team id for `AI_doWar`.
+- **Exporting a non-active player's state:** flip `CyGame.setActivePlayer(id, False)` around the export and restore it in a `finally`. Two getters (`calculateYield(bDisplay=True)`, `getVisualOwner()`) answer only for the active player. Safe for a non-human target: the password/net-ID branch is gated on `isHuman()` (source ✅), and no UI side effects were seen over 20+ turns. Verified fog-honest: two civs' turn-0 revealed tiles don't overlap.
+- **`onBeginPlayerTurn(N)` fires at the end of turn N**, so exports use `N + 1`, same as the advisor's `onEndGameTurn`. Turn 0 has to come from `onGameStart`/`onLoadGame`, since no player-turn hook fires before turn 1.
+- **`pushOrder(eOrder, iData1, iData2, bSave, bPop, bAppend, bForce)`** is the real signature (source ✅, live).
+- The `AI_*` callbacks enter through `EntryPoints/CvGameInterfaceFile.py`, a hook the base game ships for this purpose, so they never touch the advisor's `CvEventInterface.py` (✅ live).
+- Python 2.4 in the game has `os.popen`/`os.spawnv` but no `subprocess`.
 
-✅ They are **not** in the `USE_*_CALLBACK` gating list in `XML/PythonCallbackDefines.xml` (25 flags, all defaulting to 0). The `AI_*` five are always live.
+## Engine facts (from the BTS SDK source)
 
-⚠️ `AI_unitUpdate` fires per unit per slice, from `CvGame.cpp:6564`. RFC disabled it for performance on 2007 hardware with *empty* Python stubs, so the cost is call overhead, not our work. **Unmeasured. Measure before relying on it.**
+Read from `Beyond the Sword/Mods/The Road to War/CvGameCoreDLL` (stock for these files); not yet exercised live unless marked.
 
-### Three tiers of control, not one
-
-Not everything has a callback. `AI_doTurnPre()` (`CvPlayerAI.cpp:296`) calls a set of pure-C++ methods with **zero** Python dispatch — verified by grepping each for `callFunction`:
-
-```
-AI_doResearch()   AI_doCommerce()   AI_doMilitary()
-AI_doCivics()     AI_doReligion()   AI_doCheckFinancialTrouble()
-```
-
-`AI_doCommerce` is where the science/gold/culture/espionage sliders get set; `AI_doCivics` is government; `AI_doReligion` is state religion.
-
-But ✅ every corresponding **setter** is exposed to Python on `CyPlayer`: `setCommercePercent`, `changeCommercePercent`, `setCivics`, `revolution`, `setEspionageSpendingWeightAgainstTeam`, `doEspionageMission`, `setLastStateReligion`. Also `AI_civicValue`, so the AI's own valuation is readable.
-
-So:
+**Three tiers of control.** `AI_doTurnPre()` calls `AI_doResearch`, `AI_doCommerce` (sliders), `AI_doMilitary`, `AI_doCivics`, `AI_doReligion` and `AI_doCheckFinancialTrouble` with no Python dispatch at all. But every matching setter is exposed on `CyPlayer` (`setCommercePercent`, `setCivics`, `revolution`, `setLastStateReligion`, espionage), so:
 
 | Tier | Mechanism | Covers |
 | --- | --- | --- |
-| **Authoritative** | the 5 callbacks, return 1 | tech, production, war, diplo, unit orders |
-| **Last-writer-wins** | Python setters, applied *after* `AI_doTurnPre` | sliders, civics, religion, espionage targeting |
-| **Unreachable** | pure C++, no setter | attitude internals, `AI_doMilitary` posture, war-plan scoring |
+| Authoritative | the 5 callbacks | tech, production, war, diplo, unit orders |
+| Last-writer-wins | setters applied *after* `AI_doTurnPre` | sliders, civics, religion, espionage |
+| Unreachable | pure C++ | attitude internals, military posture, war-plan scoring |
 
-The middle tier is overwrite-not-intercept: you re-assert each turn rather than replacing the logic. Cheap (`setCommercePercent` is one call), and ✅ `AI_doCivics` early-outs on `AI_getCivicTimer()`, so civics don't thrash.
+`AI_doCivics` early-outs on a civic timer, so re-asserting civics each turn doesn't cause flip-flopping.
 
-Nothing in the third tier is early-game critical, and `AI_chooseProduction` largely neutralises `AI_doMilitary` by simply choosing what gets built.
-
-### Execution order — the trap
-
-✅ Traced through `CvPlayer::doTurn()` and `CvPlayer::setTurnActive()`. **In sequential (single-player) games `doTurn()` runs on turn *deactivation*, not activation** — the activation-branch call is gated on `MPOPTION_SIMULTANEOUS_TURNS`.
+**Execution order.** In single-player, `doTurn()` runs when a turn *ends*, not when it starts:
 
 ```
-setTurnActive(TRUE)                       ← AI turn begins
-  └── doTurnUnits()
-        └── AI_unitUpdate()  ×many        ← PYTHON callback #5
-
-      ... AI plays ...
-
-setTurnActive(FALSE)                      ← turn ends
-  └── doTurn()
-        ├── onBeginPlayerTurn             ← PYTHON event   (CvPlayer.cpp:2492)
-        ├── AI_doTurnPre()                ← sliders/civics set HERE (2498)
-        ├── pLoopCity->doTurn()
-        │     └── AI_chooseProduction()   ← PYTHON callback #2
-        ├── AI_doTurnPost()
-        │     └── AI_doDiplo()            ← PYTHON callback #4
-        └── onEndPlayerTurn               ← PYTHON event
+setTurnActive(TRUE)  → doTurnUnits → AI_unitUpdate ×many
+setTurnActive(FALSE) → doTurn:
+    onBeginPlayerTurn → AI_doTurnPre (sliders/civics) → city doTurn → AI_chooseProduction
+    → AI_doTurnPost → AI_doDiplo → onEndPlayerTurn
+team level: CvTeamAI::AI_doTurnPre → AI_doWar
 ```
 
-Team level, separately: `CvTeamAI::AI_doTurnPre()` → `AI_doWar()` → callback #3.
+Consequences: a plan computed at `onBeginPlayerTurn` reaches production and diplomacy the same turn but **unit orders only the next turn** (⚠️ not measured). Sliders and civics must be set at `onEndPlayerTurn`, or `AI_doTurnPre` overwrites them.
 
-**Two consequences.**
+⚠️ **`AI_unitUpdate` cost is unmeasured.** RFC disabled it for speed even with empty stubs. **B** (below) measures it; it gates city sites and any tactical control.
 
-1. This is the same misleading naming the advisor already documents in `CLAUDE.md` for the human player. It does **not** go away for AI players. An earlier read in this research said it did; that was wrong.
-2. **A plan computed at `onBeginPlayerTurn` reaches production and diplomacy the same turn, but unit orders only next turn** — `AI_unitUpdate` already ran, during activation. There is a structural **one-turn lag on the tactical layer**. Probably acceptable given the pace and the fall-through safety net, but design around it rather than discovering it.
-3. Global settings (sliders, civics) must be applied at **`onEndPlayerTurn`**, after `AI_doTurnPre` has had its say. Setting them at `onBeginPlayerTurn` gets overwritten the same turn.
+## Architecture
 
-### Targeting one AI only
-
-✅ The callbacks are global dispatch points, not per-player registrations — every AI flows through the same five functions, so gate on identity inside each:
-
-- `AI_chooseTech` / `AI_doDiplo` → player id passed directly
-- `AI_chooseProduction` / `AI_unitUpdate` → `pCity.getOwner()` / `pUnit.getOwner()` (both verified exposed)
-- `AI_doWar` → **team** id. 1:1 with players in a standard game, but in a team game this covers several civs. Check explicitly.
-
-Everyone else returns 0 and plays stock, with no special casing.
-
-For *which* AI is ours: ✅ `getScriptData`/`setScriptData` are exposed on `CyPlayer`. Tag the chosen AI once at `onGameStart` and read the tag thereafter — same trick the mod already uses for `gameId`, and it survives save/reload for the same reason. `getLeaderType()` is the simpler alternative if no two civs share a leader.
-
----
-
-## The test platform
-
-Goal: mirrored map, one LLM civ, one stock civ, no human, runs unattended.
-
-✅ **Mirrored map ships with the game.** `PublicMaps/Mirror.py` — "Generates half a map, then mirrors it," by Bob Thomas. Three custom options, four reflection modes in source (horizontal, rotational, two offset variants). Nothing to build.
-
-✅ **Setup and observation confirmed live — the game-control half of the platform, not the LLM-driving half.** Two routes tested on this machine (Steam BTS install), both start from a normal game with no special launch path:
-
-- **`Autorun = 1`** (ini, `[DEBUG]`): plays itself from turn 1, no console needed. Never kills any civ — confirmed live (775 turns, untouched) and in source (`killUnits`/`killCities` only appear in `setAIAutoPlay`'s block, unrelated to `GetAutorun()`). But: `AutorunTurnLimit` **does not work** (set to 1, kept running), there's **no way to stop it** short of closing the window (no console command found), and the **UI is almost entirely locked** while running (map/minimap only, no menus, no city screens).
-- **`Game.AIPlay N`** (debug console, `CheatCode = chipotle`; = `CyGame.setAIAutoPlay(N)`): runs exactly N turns and stops, repeatable for more batches, **full UI access between batches** (can open AI city screens). But it **kills the calling player's civ** on activation, exactly as source predicted — harmless since that slot is never played, but each batch call re-kills the replacement unit it gives you. Doesn't stop early on victory.
-- Two separate consoles exist, both behind tilde: `` ` `` alone = cheat console (`Game.AIPlay N`), `Shift+` `` ` `` = Python console (`gc.getPlayer(id).killCities()` etc.) — easy to confuse.
-- **Symmetric 2-civ map, confirmed live**: start 4 civs in 2 teams on `Mirror.py`, `Game.AIPlay N` to remove your own slot, then in the Python console `gc.getPlayer(X).killCities()` **and** `.killUnits()` (both required — a leftover Settler keeps the civ alive) to remove the extra civ on the other team. Leaves exactly 2 confirmed-mirrored AI civs.
-- Nothing stops a run automatically under either route — a harness needs its own stopping condition (batch count, or a score check between `Game.AIPlay` batches).
-
-`Game.AIPlay` in batches is the better fit for a harness that needs to pause and read state; `Autorun` is simpler but effectively write-only once started.
-
-✅ **Driving one civ's production via `AI_chooseProduction` confirmed live** (2026-09-18), including a synchronous external-process round-trip — see [Work items](#work-items) "Spike" below. **Not yet tested**: the poll-a-plan-file pattern and an actual LLM call — item C.
-
-Observation is free — the existing exporter already writes every turn, and `calculateScore` gives a crude per-turn metric immediately (the cheap version of CivBench's victory-probability estimator).
-
----
-
-## Repo layout
-
-Built on a branch, framed as **"add AI-opponent mode"** rather than "add a second mod" — that keeps the diff honest about what is actually changing, and the exporter fix (item A) is a change to *shared* code both projects then depend on.
+**One mode-switched mod, separate runtime folders.** `AdvisorStateWriter.py` is ~90% of the mod and the opponent needs it unchanged. A second mod folder would fork it, and would add a second junction on top of the one `CLAUDE.md` already records as hazardous. The runtimes share nothing: `ai-opponent/` sits beside `advisor/`, and `harness/` is shared.
 
 ```
-mod/                          ← ONE mod, mode-switched
-  Assets/Python/
-    AdvisorStateWriter.py     ← shared; untouched except item A
-    CvCustomEventManager.py   ← gains 2 hooks + mode guards (~65 lines)
-    CvAdvisorGameUtils.py     ← NEW: the five AI_* callbacks
-    LocalConfig.py            ← gains MODE + which civ we drive
-    EntryPoints/
-      CvEventInterface.py     ← unchanged
-      CvGameInterfaceFile.py  ← NEW: one-line indirection (see below)
-harness/                      ← shared, unchanged
-advisor/                      ← human-advisor runtime
-ai-opponent/                  ← NEW: opponent runtime, prompts, watcher
-docs/AI_OPPONENT_PLAN.md
+mod/Assets/Python/
+  AdvisorStateWriter.py       shared, unchanged
+  CvCustomEventManager.py     + opponent export, mode guards
+  CvAdvisorGameUtils.py       AI_* callback overrides
+  LocalConfig.py              MODE, AI_OPPONENT_PLAYER_KEY
+  EntryPoints/CvGameInterfaceFile.py   points GameUtils at CvAdvisorGameUtils
+ai-opponent/                  decide_tech.py, decide_tech_log.jsonl
+harness/rules.py              tech --available serves both projects
 ```
 
-### One mod, not two
+**The mode check is folded into the identity check** (`_advisorPlayerId()` returns `None` when opponent mode is off), so hot callbacks pay one branch, not two.
 
-The runtime halves share nothing worth sharing — different prompts, triggers and output contract, and `advisor/CLAUDE.md` is 9 KB of human-facing formatting rules that are pure per-turn cost to an opponent. So `ai-opponent/` is a clean sibling.
+`decide_production.py` and `decision_config.txt` in `ai-opponent/` are leftovers from the production stub spike; nothing calls them.
 
-The **mod** goes the other way:
+## Test platform
 
-1. **The overlap is nearly total.** 1,805 of the mod's 2,004 lines are `AdvisorStateWriter.py`, which the opponent needs *unchanged*. What differs is a ~65-line event-manager delta and a new `CvGameUtils` subclass.
-2. **`buildState(gameTurn, playerId, trigger)` is already parameterised by player.** Only `_requireActivePlayer` (item A) stops it serving an AI civ; a second caller with a different id is not a modification.
-3. **A Civ 4 mod is a whole-directory switch.** Two mod folders could never both be live, so separate mods buy isolation you can't use while costing two `.ini`s, two junctions, two `setup.ps1` paths and two `LocalConfig.py`s. Sharing between them means junctions-within-junctions or a copy step — and `CLAUDE.md` records the junction as load-bearing and quietly hazardous (the OneDrive ReadOnly discovery). Do not add a second layer to it.
-4. **It would fork the file we most want single** — two copies of the 1,805-line hot-reloadable writer, against `CLAUDE.md`'s rule that new extraction logic goes in `AdvisorStateWriter` (hot-reloadable) rather than `CvCustomEventManager` (isn't).
+Two AI civs on a mirrored map, no human playing, running unattended.
 
-### The two entry points don't collide
-
-✅ The `AI_*` callbacks do **not** route through `CvEventInterface.py`. They go via `EntryPoints/CvGameInterface.py`, which delegates through an indirection file the base game ships *for exactly this purpose*:
-
-> "MODDERS - If you create a GameUtils file, update the CvGameInterfaceFile reference to point to your new file"
-
-So `CvGameInterface.py` is never modified; we add:
-
-```python
-import CvAdvisorGameUtils
-GameUtils = CvAdvisorGameUtils.CvAdvisorGameUtils()   # was CvGameUtils.CvGameUtils()
-```
-
-A cleaner seam than the advisor got — `CvEventInterface.py` had to be copied and edited; this one is a designated hook. The two projects never contend for the same file.
-
-### Mode gating
-
-```python
-MODE = 'advisor'   # | 'opponent' | 'both'   (LocalConfig.py, default 'advisor')
-```
-
-Sketched against the real file, the delta to `CvCustomEventManager.py` is **+62 lines added, ~3 changed** (one `if _advising():` per existing hook), **0 removed**.
-
-Two rules the sketch settled:
-
-- **Default `advisor`, and every new branch dead when it is.** The advisor path must be byte-identical with opponent mode off — a property `mod/tests/` should *assert*, not one we claim. ⚠️ This is the mitigation for adding a second mode to a mod whose hard constraint is never crashing the game; treat it as a requirement, not a nicety.
-- **No separate mode check on the hot path.** `AI_unitUpdate` fires per unit per slice, so `isDriven()` returns False for everyone when the mode is off — folding the mode test into the ownership test. One branch, not two.
-
----
+- **Map:** `PublicMaps/Mirror.py` ships with the game. For a symmetric two-civ game: start 4 civs in 2 teams, run `Game.AIPlay N` once (this kills your own civ, as expected), then in the Python console run **both** `gc.getPlayer(X).killCities()` and `.killUnits()` on the extra civ. A leftover Settler keeps a civ alive.
+- **Driving:** `Game.AIPlay N` (cheat console, `` ` ``, needs `CheatCode = chipotle`) runs exactly N turns with full UI between batches. `Autorun = 1` runs forever with the UI locked, and `AutorunTurnLimit` doesn't work, so prefer `AIPlay` batches. The Python console is the separate `Shift+`` ` ``.
+- Nothing stops a run automatically; the harness needs its own stopping condition.
+- `LocalConfig.AI_OPPONENT_PLAYER_KEY = 'LEADER_ALEXANDER'` — first in the leader list, so easy to pick at setup.
 
 ## Work items
 
-### A. Unblock the exporter for non-active players — ✅ confirmed live (2026-09-18)
+**B. Measure `AI_unitUpdate` overhead.** Empty stub, count units, time a turn. Decides whether city sites and tactical control are affordable at all.
 
-`buildState` refuses to run when the exported player isn't the active player (`_requireActivePlayer`), because two getters (`calculateYield(bDisplay=True)`, `getVisualOwner()`) silently answer for `getActiveTeam()`/`getActivePlayer()` with no team/player parameter exposed through the Python binding for either. Reimplementing their fog-honest branches in the mod was considered and rejected as too much duplicated-formula surface for a spike (`harness/rules.py` already ports the same formula in Python 3 for a different purpose).
-
-**What shipped instead: `CvCustomEventManager._maybeExportOpponentTurn` transiently calls `CyGame.setActivePlayer(targetPlayerId, False)` around the export, then restores the original active player in a `finally`.** Verified against `CvGame.cpp` first: `setActivePlayer`'s password-prompt/net-ID-swap branch is guarded on `GET_PLAYER(eNewValue).isHuman()`, so with a non-human target and `bForceHotSeat=False` (always true here) that branch never runs. **Confirmed live over 20+ turns across two separate test runs: no UI glitch, flicker, or camera jump observed.** The advisor's own export (`_requireActivePlayer` and both getters) is completely untouched — this is a second, independent code path, not a relaxation of the existing guard.
-
-Verified correct, not just crash-free: revealed-tile sets for two different civs at turn 0 had **zero overlap**, each centered on its own (different) starting position — confirming `calculateYield`'s fog-honest branch resolves against the flipped team, not a leftover from whichever player was active before. A captured Settler's turn-0 tile matched its city's turn-1 tile exactly, confirming unit/city identity is genuinely the target player's own, not a mismatched reading. Unit ownership (a controllable barbarian-owned Lion) matched independent live observation.
-
-Also worth exporting later, since the AI consults it and we'd be replacing a decision that had access: `AI_getAttitude`, war plans, `AI_getBonusValue`, financial-trouble flags.
-
-### B. Measure `AI_unitUpdate` overhead — *gate on the tactical layer*
-
-Empty Python stub, count units, time a turn. ~20 minutes. If it's bad, the strategic-only version (callbacks 1–4, no unit hook) is closer to what CivBench actually did anyway and needs none of it.
-
-### B2. Mode gating and the callback surface
-
-Build out the files listed under [Repo layout](#repo-layout), plus a `mod/tests/` case asserting the advisor path is unchanged with `MODE == 'advisor'`. `CvAdvisorGameUtils` subclasses the base `CvGameUtils` — imported, not copied, the same convention the event manager already follows. Sketched and checked for Python 2.4 (no f-strings, ternaries, `with`, decorators, or `except X as e`).
-
-**Return-contract trap.** ✅ `AI_chooseTech` returns a **`TechTypes` int**, not a boolean — `CvPlayerAI` does `eBestTech = (TechTypes)lResult` and falls back to `AI_bestTech()` only on `NO_TECH`. Writing `return False` there by reflex silently means "tech 0". The other four are `1`/`0`.
-
-Every hook and callback needs the never-crash wrapper: one raising in `AI_unitUpdate` would do so once per unit per slice.
-
-### Spike: `AI_chooseProduction` — ✅ confirmed live (2026-09-18)
-
-Ran in place of the planned `AI_chooseTech` spike (same purpose — prove one callback, once, for one AI, sticks — but `AI_chooseProduction` is easier to verify visually and avoids the `TechTypes`-int return-contract trap above). Hardcoded decision only, no LLM: `CvAdvisorGameUtils.AI_chooseProduction` always orders `UNIT_WARRIOR` for one player, matched by `getLeaderType()` against `LocalConfig.AI_OPPONENT_PLAYER_KEY`, gated by `LocalConfig.MODE == 'opponent'`.
-
-Setup: `Game.AIPlay N` (see [The test platform](#the-test-platform)) in a 3-civ game (human + 2 AI, human's civ killed by the first `AIPlay` call as expected), one AI civ set to Hannibal/Carthage.
-
-**Observed over multiple `Game.AIPlay 5` batches:**
-- ✅ The callback fires and the return-1 override sticks turn after turn — Hannibal's city queue showed nothing but Warriors, never advancing to any other build, across repeated batches.
-- ✅ The untargeted AI civ played entirely normally in the same game — confirms the per-city `getOwner()` gate isolates the override correctly, with no cross-talk between civs sharing one dispatch point.
-- ✅ `EntryPoints/CvGameInterfaceFile.py` indirection (the "MODDERS" hook the base game ships for this) works as documented — no collision with `CvEventInterface.py`, which the advisor mod already modifies for the event-manager hook.
-- ✅ `pushOrder`'s real signature — `(eOrder, iData1, iData2, bSave, bPop, bAppend, bForce)`, verified against the bundled SDK source rather than copied from a positional example — produced the expected order.
-
-Validates the whole previously-unproven chain for this callback: dispatch reaches our subclass, identity gating by leader works, the override return value is honored every time rather than just once, and `pushOrder` lands correctly. Confirms the general pattern (see [Mode gating](#mode-gating) and [Targeting one AI only](#targeting-one-ai-only)) is sound for the other four callbacks, though each still has its own return contract and argument shape to verify individually — the `AI_chooseTech` int-return trap noted above hasn't itself been exercised live yet.
-
-`LocalConfig.AI_OPPONENT_PLAYER_KEY` was later switched from `LEADER_HANNIBAL` (used for this run) to `LEADER_ALEXANDER` - first in the in-game leader-pick list and easier to select without hunting - purely a test-setup convenience, no code change.
-
-### Spike: external-process round-trip — ✅ confirmed live (2026-09-18)
-
-Second leg of the same spike: `AI_chooseProduction` now calls out to a separate Python 3 process synchronously on every build decision, instead of the hardcoded `UNIT_WARRIOR` constant. Still no LLM — the "decision" is a plain text file a human hand-edits.
-
-- `ai-opponent/decide_production.py` (new, Python 3): reads `ai-opponent/decision_config.txt` (a single unit type key, default `UNIT_WARRIOR`), prints it to stdout, nothing else.
-- `CvAdvisorGameUtils._decideProduction()`: builds the script path from `LocalConfig.MOD_PYTHON_DIR` (repo root is three levels up — same dead end on `__file__`/`sys.path` that `MOD_PYTHON_DIR` itself exists to route around, see `CLAUDE.md` "Paths can't be derived at runtime"), spawns it via `os.popen('python "..."', 'r')`, reads stdout, resolves it through `getInfoTypeForString`. Falls through to stock (return 0) on any failure — missing `LocalConfig`, missing script, spawn failure, unresolvable key — all inside the existing `try/except`.
-- `os.popen` chosen over `os.spawnv` for this leg — simpler for capturing stdout synchronously, and calling plain `python` relies on PATH (a deliberate simplification for the spike; a real loop would want `LocalConfig`-pinned interpreter path per the open question below).
-
-**Observed live (near-instant round-trip):** ✅ confirms `os.popen` works synchronously inside the embedded Python 2.4 interpreter and `AI_chooseProduction` blocks correctly for the round-trip. City built whatever `decision_config.txt` said; editing the file mid-game (no restart) switched subsequent builds; an invalid unit key correctly fell through to stock AI (`unitType == -1` → `getInfoTypeForString` failure → base-class call), confirming the fall-through safety net works for this failure mode specifically, not just in theory. At sub-second latency, no visible hitch.
-
-**Also observed, expected rather than a finding:** the callback only fires when a build *completes* (order queue empties), never mid-build — `AI_chooseProduction` is a "what's next" hook, not a per-turn one. Consistent with the turn-after-turn Warriors behavior already seen in the first spike leg. Nothing currently interrupts an in-progress order; that's a different mechanism, out of scope here.
-
-**Observed live (5s artificial delay) — ⚠️ the game freezes completely.** `decide_production.py` was given a `time.sleep(DECISION_DELAY_SECONDS)` (5s) before answering, as a cheap stand-in for real LLM latency — no mod-side code change needed, since a fresh `python <path>` process re-reads the script from disk every call. **Confirmed live: the game is completely unresponsive for the full duration of the blocking call**, the exact risk the plan already called out, now measured rather than reasoned about. Item D's real-LLM measurements are 71–142s wall clock per call — at that duration this is a multi-minute freeze, likely tripping Windows' "not responding" state.
-
-**Still open:** only the happy-path and invalid-key failure modes were exercised, not a missing script/`LocalConfig.MOD_PYTHON_DIR`/PATH entry. Freeze duration wasn't stopwatched independently of the 5s delay itself. `DECISION_DELAY_SECONDS` now defaults to `0` (kept in the script for re-use, not deleted) so routine testing isn't paying the 5s tax; only worth turning back on to probe a specific timeout question.
-
-### Spike: per-turn export for a non-active AI player — ✅ confirmed live (2026-09-18)
-
-Closes item A. `_maybeExportOpponentTurn` in `CvCustomEventManager.py` exports the AI opponent's own state every turn, fog of war included, alongside the existing production spike — same `AI_OPPONENT_PLAYER_KEY` target, gated on `LocalConfig.MODE` (`'opponent'`: only the AI export runs; `'advisor'`: only the human export runs, unchanged; `'both'`: both run independently). Wired into `onGameStart`/`onLoadGame` (covers turn 0 / a resumed save, before any turn has been played) and `onBeginPlayerTurn` (every turn after).
-
-**Mechanism, chosen over reimplementing the fog-honest yield formula in the mod:** `_maybeExportOpponentTurn` transiently calls `CyGame.setActivePlayer(targetPlayerId, False)` around the export, restoring the original active player in a `finally`. The alternative — porting `calculateYield`'s fog-honest branch into Python 2.4 using the team-parameterized primitives (`calculateNatureYield`, `calculateImprovementYieldChange`) that *are* exposed, the way `harness/rules.py` already does in Python 3 for a different purpose — was rejected as too much duplicated-formula surface for a spike. `setActivePlayer`'s password-prompt/net-ID-swap branch was verified against `CvGame.cpp` to be skipped entirely for a non-human target with `bForceHotSeat=False` (both always true here), before ever running it live.
-
-**Two real defects found and fixed during this spike, both confirmed against genuine turn-0 game state, not just plausible-looking:**
-
-1. **Off-by-one in every exported file.** `onBeginPlayerTurn(N, ...)` fires at the *end* of turn N, same trap `CLAUDE.md` already documents for `onEndPlayerTurn` — a first version without a `+1` correction produced a `turn_0000.json` that already showed the AI's capital founded, one turn ahead of its own filename. Fixed to match `onEndGameTurn`'s existing `+1` convention. Caught by comparing the exported Settler's turn-0 tile against the same city's turn-1 tile — identical coordinates, confirming genuine same-unit continuity once the fix landed.
-2. **Turn 0 was unreachable in pure `'opponent'` mode.** With the human export silenced, nothing exported the AI's pre-founding state, since `onBeginPlayerTurn` structurally can't fire before a turn has been played. Fixed by also routing the opponent export through `onGameStart`/`onLoadGame` — the same hooks that already solve this for the human, now serving both targets independently.
-
-**Verified correct after both fixes, over two live runs (11 and 22 turns):**
-- Only the target AI's export folder is written in `'opponent'` mode — no advisor-export folder appears alongside it.
-- `turn_0000.json` correctly shows the pre-founding Settler, not the founded city.
-- Revealed-tile sets for two different civs at turn 0 have **zero overlap**, each centered on a different starting position — the strongest evidence the fog-honest branch is resolving against the *flipped* team, not a leftover from whichever player was active before.
-- Revealed-tile count is monotonically non-decreasing across 21 turns (fog never un-reveals).
-- Unit ownership (a controllable barbarian-owned Lion) matched independent live observation from the same session.
-- No UI glitch, flicker, or camera jump observed across either run.
-
-New test coverage: `mod/tests/test_custom_event_manager.py` (12 tests) locks in mode gating, player-targeting, the `+1` turn correction, and the active-player flip/restore — including restore-on-exception. Confirmed to actually catch regressions, not just pass: temporarily reverting the `+1` fix was caught immediately by `test_on_begin_player_turn_exports_only_the_matching_player`.
-
-### C. The decision loop
-
-**Never call the LLM synchronously inside a callback.** These are blocking C++→Python calls inside turn processing; a live call freezes the game and violates the standing "mod must never crash or hang the game" constraint.
+**C. The plan-file loop** — for every decision that fires too often to call synchronously:
 
 ```
 onBeginPlayerTurn(turn, aiPlayerId)
   → mod writes turn_NNNN.json, polls (bounded, ~30s) for plan_NNNN.json
-  → watcher (ai-opponent/, Python 3, outside the game) sees state, calls Claude
-  → watcher validates, writes plan_NNNN.json atomically
-  → mod caches plan, returns
-callbacks → dict lookup by unit/city id → push order, return 1
-          → miss or timeout → return 0 → stock AI plays it
-onEndPlayerTurn → apply sliders/civics (after AI_doTurnPre has had its say)
+  → watcher (ai-opponent/, outside the game) calls Claude, validates, writes plan atomically
+callbacks → look up the plan by unit/city id → push order, return 1
+          → miss or timeout → return 0 → stock AI
+onEndPlayerTurn → apply sliders/civics
 ```
 
-The fall-through is the whole safety design: a missing plan means the game plays normally.
+A missing plan means the game plays normally — the same fall-through safety tech choice relies on.
 
-`ai-opponent/` holds the watcher, the prompt, the plan schema and the validator. Nothing in it is shared with `advisor/`.
+**E. Evaluation.** `calculateScore` per turn is free. Start with score curves and win rate over repeated mirrored runs. **One game is not a result**: identical inputs swung API time 39→74s, and behaviour varied a lot between runs.
 
-⚠️ Python 2.4 side: `socket`, `threading`, `httplib`, `urllib` ship in `Assets/Python/System/` (185 modules); **`subprocess` does not**. Use `os.spawnv(os.P_NOWAIT, ...)` or `os.popen` if spawning, though file-based needs neither.
-
-❓ Whether `setCommercePercent` from Python triggers the same dirty flags / cache recalculation as the C++ path. The binding calls straight through so it probably does — "probably" isn't measured.
-
-### D. Headless Claude — measured, with caveats
-
-Verified working: `claude -p` with `--output-format json` and `--json-schema` returns a validated `structured_output` object. `--permission-mode acceptEdits` plus a pre-seeded allowlist ran 9–18 tool-using turns with zero denials, unattended.
-
-Measured on a real advisor call (turn 34, `d:\joao`):
-
-| | |
-| --- | --- |
-| wall clock | 71–142 s per call |
-| model time | ~40–75 s (the dominant term) |
-| tool time | ~23 s |
-| fixed startup | ~5 s |
-| **first Bash call** | **12.5–37.7 s** |
-| API-equivalent cost | $0.37–0.67 |
-
-Findings that matter for a 300-turn loop:
-
-- ⚠️ **Use PowerShell, not Git Bash.** `CLAUDE_CODE_USE_POWERSHELL_TOOL=1` plus `--disallowed-tools "Bash"`, and parallel `PowerShell(...)` allowlist rules — the existing ones are Bash-specific. Git Bash pays a one-off **shell snapshot** on first Bash call, base64-encoding each of 84 shell functions in its own ~86 ms process, then **fails and discards the work**. Measured: 112 s → 88 s wall, worst tool call 12.5 s → 4.9 s.
-- ⚠️ **Run the watcher's cwd *outside* this repo.** `claude -p` from here auto-loads CLAUDE.md + auto-memory: 66,722 cache-creation tokens, ~$0.27, *before reading the prompt*. A trivial prompt exhausted a $0.15 budget cap and returned `error_max_budget_usd`.
-- ⚠️ **`is_error: false` is not a validity check.** Haiku/low produced fluent, well-formatted, entirely fabricated output — wrong turn number, invented units, invented sites — and reported success. **Validate every plan against the state file** (turn number, unit ids, coordinates) before acting on it.
-- **Don't economise on model or effort.** Haiku cost 58% of Sonnet's price and was unusable; Sonnet/low twice broke the output contract (85- and 111-character answers). The floor is context ingestion, not generation, so **shrink the context instead** — pre-render the diff and map in the watcher and hand the model a compact brief.
-- ❓ Subscription vs API key. This ran on Pro, so `total_cost_usd` is a usage meter, not a bill — but 300 turns × ~450k tokens would exhaust rate limits mid-game and silently corrupt a benchmark run. Probably: subscription for interactive work, API key for unattended runs.
-- Fast mode is unavailable headlessly (`sdk_opt_in_required`); no CLI flag or env var reaches it.
-
-### E. Evaluation
-
-`calculateScore` per turn is free and immediate. CivBench's contribution was a trained per-turn victory-probability estimator over 24 features; that's a much later concern. Start with score curves and win rate across repeated mirrored runs.
-
-⚠️ **n=1 is not a result.** Repeated runs in this research showed `api_ms` swinging 39 → 74 s on *identical* inputs, and the two Sonnet/low runs differed wildly in behaviour. Any claim about LLM-vs-stock needs many games.
-
----
-
-## Sequence
-
-Branch first; everything below lands on it.
-
-1. **B** (measure `AI_unitUpdate`) — cheapest, and decides whether the tactical layer is in scope at all.
-2. ✅ **Done.** `Autorun` and `Game.AIPlay` both confirmed live from a normal game start — no special launch path. See [The test platform](#the-test-platform) for the full comparison and the recommended `Game.AIPlay` + kill-the-extra-civ setup.
-3. ✅ **Done.** `_maybeExportOpponentTurn` exports the AI opponent's own state every turn, fog of war included, via a transient `setActivePlayer` flip rather than reimplementing the fog-honest yield formula — see [Spike: per-turn export for a non-active AI player](#spike-per-turn-export-for-a-non-active-ai-player--confirmed-live-2026-09-18). Mode-gated (`advisor`/`opponent`/`both`) alongside the existing production spike, with test coverage in `mod/tests/test_custom_event_manager.py`.
-4. **B2** (mode gating + callback surface) — the `MODE` scaffolding itself is done (advisor/opponent/both, byte-identical advisor path when off); the rest of the callback surface (`AI_chooseTech`, `AI_doWar`, `AI_doDiplo`, `AI_unitUpdate`) is still untouched.
-5. ✅ **Done, as `AI_chooseProduction` instead of `AI_chooseTech`, in two legs.** First leg: one callback, one hardcoded decision, one AI civ, everything else stock — proved callback dispatch, identity gating, and the override sticking turn after turn (see [Spike: `AI_chooseProduction`](#spike-ai_chooseproduction--confirmed-live-2026-09-18)). Second leg: swapped the hardcoded constant for a synchronous, blocking round-trip to a separate Python 3 process — `os.popen` works inside the embedded interpreter, but a multi-second delay **froze the game completely** (see [Spike: external-process round-trip](#spike-external-process-round-trip--confirmed-live-2026-09-18)), confirming the blocking approach can't carry a real LLM call and item C's poll-a-plan-file pattern is required, not optional.
-6. **C** (the full loop) and the mirrored-map platform — the only remaining piece before a real LLM can drive a decision without freezing the game. Nothing today connects the per-turn export (step 3) to the production decision (step 5): they run on independent hooks with no shared data yet.
-7. **E** (evaluation) once games run end to end.
-
-Steps 1 and 2 are both throwaway measurements that can kill or reshape the design; do them before writing anything that assumes the answer.
+Worth exporting before taking over decisions the AI makes with them: `AI_getAttitude`, war plans, `AI_getBonusValue`, financial-trouble flags.
 
 ## Open questions
 
-- ❓ Does `setCommercePercent` from Python fire the same side effects as the C++ path? (C)
-- ❓ Subscription or API key for unattended runs? (D)
-- ❓ Is the one-turn unit-order lag acceptable, or does it want a same-turn workaround?
+- ❓ Does `setCommercePercent` from Python trigger the same recalculation as the C++ path?
+- ❓ Subscription or API key for unattended runs? At the ~450k tokens per turn a tool-using call measured, a 300-turn game would hit a subscription's rate limits mid-run; the lean tech call is far smaller.
+- ❓ Is the one-turn lag on unit orders acceptable?
 - ❓ `AI_doWar` is team-scoped — what happens in a team game?
-- ❓ Does `setup.ps1` / `new_game.ps1` need an `ai-opponent` equivalent, or a `--mode` flag? Those are written for a non-coding player; a benchmark harness has a different audience and probably wants its own entry point.
-- ⚠️ The `AI_unitUpdate` lag specifically is a reading of the source, not measured. Confirm with a logging stub before building on it.
+- ❓ Does the opponent need its own setup entry point, separate from the player-facing `setup.ps1`?
+- `decide_tech.py` has no unit tests; it was verified live against real state files.
 
 ## Deliberately not doing
 
-- **A custom DLL.** Vox Deorum needed one because Civ V's strategic module lives in C++; Civ 4 hands us the callbacks in Python. If a design ever seems to require recompiling `CvGameCoreDLL`, that is the signal to re-scope, not to start compiling.
-- **Pathfinding / turns-to-arrive.** Already on the advisor's not-building list; the engine repaths each turn and caches no ETA.
-- **Replacing the whole AI.** The point of the CivBench result is the *hybrid*: LLM on strategy, procedural AI on execution. Taking over everything discards the thing that makes it work.
+- **A custom DLL.** If a design seems to need recompiling `CvGameCoreDLL`, re-scope instead.
+- **Pathfinding or turns-to-arrive.** The engine repaths every turn and caches no ETA.
+- **Replacing the whole AI.** CivBench's result comes from the hybrid: LLM on strategy, procedural AI on execution.

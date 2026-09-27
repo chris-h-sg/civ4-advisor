@@ -29,8 +29,8 @@ LOG_TIMINGS = False
 ## Spike only (see docs/AI_OPPONENT_PLAN.md): 'advisor' (default) exports only the
 ## human player's state (onGameStart/onLoadGame/onEndGameTurn) and leaves every AI
 ## on stock behavior. 'opponent' exports only AI_OPPONENT_PLAYER_KEY's own state
-## (onBeginPlayerTurn, fog of war included) and overrides its production; the
-## human export is silent. 'both' runs both exports side by side, still no
+## (onBeginPlayerTurn, fog of war included) and has Claude choose its research
+## (ai-opponent/decide_tech.py); the human export is silent. 'both' runs both exports side by side, still no
 ## human-vs-AI interaction beyond what stock AI already does. Not yet a real
 ## opponent mode - this is the proof-of-concept spike only.
 MODE = 'advisor'
