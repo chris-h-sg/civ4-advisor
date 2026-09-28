@@ -43,7 +43,7 @@ Do not implement action execution until explicitly asked — that is a future ph
 - **`harness/` targets modern Python 3.** Normal tooling, `json`, type hints, etc. all fine.
 - File writes from the mod go to a temp file, then rename over the target, so the harness never reads a half-written file. Not a fully atomic *replace*, deliberately — see the design decision below.
 - The mod must never crash or hang the actual game — it writes a file and returns control, full stop. Everything fragile lives outside it.
-- Nothing in this repo holds an API key or talks to a network service. The agentic tool brings its own auth; `harness/` is offline file processing.
+- Nothing in this repo holds an API key. The agentic tool brings its own auth; `harness/` is offline file processing. On the `ai-opponent` branch, `ai-opponent/` launches the `claude` CLI, which calls the API under its own auth, and its worker listens on a localhost port.
 
 ## Design decisions already made (don't relitigate without reason)
 

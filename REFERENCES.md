@@ -258,6 +258,7 @@ The design consequences are in `docs/AI_OPPONENT_PLAN.md` "Calling `claude -p` f
   - One message followed by closing stdin gives a single-message session that then exits.
 - **The CLI keeps running ~0.6s after printing its result** (telemetry flush, then process exit). A caller that stops reading at the `result` event doesn't pay it.
 - **Claude Code writes its prompt cache with a 1-hour TTL:** the session transcripts' `usage.cache_creation` shows `ephemeral_1h_input_tokens` and 0 `ephemeral_5m_input_tokens`.
+- **Sonnet 5.5 (`claude-sonnet-5-5`, released 2026-09-28) works with `--json-schema` on CLI 2.1.284**, which 2.1.283 predates (its binary has no entry for the model). Its release notes list forced tool use as an error, yet all 11 structured answers came back valid. At medium effort it used no thinking tokens ([model overview](https://platform.claude.com/docs/en/models/sonnet-5-5/overview)).
 - **`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` changes the prompt,** not only network traffic: the same call dropped from 25.3k to 20.9k tokens.
 - **A Claude Code session exports ~25 `CLAUDE_*`/`MCP_*` variables to its children,** including `CLAUDE_EFFORT`, `CLAUDE_CODE_ENTRYPOINT`, auth-refresh and messaging-socket settings. Anything it launches, a game included, passes them on to `claude -p`, whose transcript then records the session's entrypoint (`claude-desktop`).
 - **Timing composition of one isolated call** (debug trace, 5.05s wall):

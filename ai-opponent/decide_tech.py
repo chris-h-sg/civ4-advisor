@@ -115,8 +115,12 @@ CLAUDE_CMD = shutil.which('claude')
 # Pinned rather than inherited from the user's own Claude Code settings, which
 # would otherwise choose them (and change them silently whenever those
 # settings change) - timings and decisions are only comparable across runs at
-# a fixed model and effort.
-CLAUDE_MODEL = 'claude-opus-5-5'
+# a fixed model and effort. Sonnet 5.5 rather than Opus 5.5: on the same
+# inputs it answered ~0.8s faster at ~40% lower cost, with the same pick 9
+# times in 10 (docs/AI_OPPONENT_PLAN.md "Timing and performance").
+# CIV4_ADVISOR_CLAUDE_MODEL overrides the model for a comparison run (see
+# devtools/bench_decide_tech.py --models); the game never sets it.
+CLAUDE_MODEL = os.environ.get('CIV4_ADVISOR_CLAUDE_MODEL') or 'claude-sonnet-5-5'
 CLAUDE_EFFORT = 'medium'
 
 # What claude -p would otherwise load from the user's own Claude Code setup,
@@ -370,6 +374,7 @@ def _claude_stats(payload):
     waiting on the API (duration_api_ms), model round trips (num_turns),
     token usage including prompt-cache reads/writes, and which models ran."""
     usage = payload.get('usage') or {}
+    modelUsage = payload.get('modelUsage') or {}
     return {
         'durationMs': payload.get('duration_ms'),
         'durationApiMs': payload.get('duration_api_ms'),
@@ -379,7 +384,8 @@ def _claude_stats(payload):
         'outputTokens': usage.get('output_tokens'),
         'cacheReadTokens': usage.get('cache_read_input_tokens'),
         'cacheCreationTokens': usage.get('cache_creation_input_tokens'),
-        'models': sorted((payload.get('modelUsage') or {}).keys()),
+        'thinkingTokens': sum(m.get('thinkingTokens') or 0 for m in modelUsage.values()),
+        'models': sorted(modelUsage.keys()),
     }
 
 

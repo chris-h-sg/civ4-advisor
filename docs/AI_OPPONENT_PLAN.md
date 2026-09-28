@@ -12,7 +12,7 @@ Markers: ✅ confirmed (live, unless marked "source") · ⚠️ needs confirmati
 | --- | --- |
 | Mode switch (`LocalConfig.MODE`: `advisor` / `opponent` / `both`) and targeting one AI by leader | ✅ live. The advisor path is unchanged when the mode is `advisor`, which `mod/tests/` asserts. |
 | Per-turn export of the AI civ's own fog-honest state | ✅ live, `state/<leader>_<gameId>/turn_NNNN.json` |
-| **Tech choice by Claude** (`AI_chooseTech`) | ✅ live — 100 turns, 13/13 decisions applied; ~4.5s game freeze per call on Opus 5.5 (see "Timing and performance") |
+| **Tech choice by Claude** (`AI_chooseTech`) | ✅ live — trials up to 500 turns, every call valid and applied; ~3s game freeze per call on Sonnet 5.5, 4–5s on Opus 5.5 (see "Timing and performance") |
 | Production, city sites, war, diplomacy, unit orders, civics/sliders | stock AI |
 | Unattended test platform (mirrored map, autoplay) | ✅ live, unattended: `devtools/run_trial.py` |
 | Plan-file decision loop (**C**), evaluation (**E**) | not started |
@@ -46,14 +46,14 @@ The mod falls through to stock AI on any failure, so a broken call means ordinar
 
 **Getting a usable answer out of the LLM**
 - **Constrain the output structurally; asking in the prompt isn't enough.** A first run asked for "only the bare key" and applied only 4 of 12 decisions. Five times Claude corrected itself in prose (`"TECH_AGRICULTURE... wait, that's already known... TECH_WRITING"`). Three times it picked a tech that was illegal (missing prerequisite) or already known. Two fixes brought it to 13/13: offer a pre-filtered candidate list (`rules.py tech --available`), and constrain the reply with `--json-schema`. Apply the same pattern to every future decision: enumerate the legal options in code, then have the model choose one.
-- **Keep the schema constant and put the per-call options in the prompt.** The enum was first built from the candidate list, which re-created the whole prompt cache on every call (see "Timing and performance"). It is now every tech in the XML, so it still blocks invented keys; an off-list pick is caught by `decide_tech.py`'s candidate check and falls through to stock AI. 26/26 on-list since the change (11 benchmark calls, 15 in trials).
+- **Keep the schema constant and put the per-call options in the prompt.** The enum was first built from the candidate list, which re-created the whole prompt cache on every call (see "Timing and performance"). It is now every tech in the XML, so it still blocks invented keys; an off-list pick is caught by `decide_tech.py`'s candidate check and falls through to stock AI. 165/165 on-list since the change (133 in trials, 32 in benchmarks).
 - **`is_error: false` is not a validity check.** Haiku on low effort returned fluent, well-formatted, entirely fabricated plans and reported success. The mod still re-validates every answer independently.
-- **Don't economise on model or effort; shrink the context instead.** Haiku was unusable, and Sonnet on low effort broke the output contract. Cost is dominated by reading the input, not generating the answer.
+- **Don't economise on effort; shrink the context instead.** Haiku was unusable, and an older Sonnet on low effort broke the output contract before the schema existed. Sonnet 5.5 at medium, schema-constrained, has not (14/14). Cost is dominated by reading the input, not generating the answer.
 
 **Calling `claude -p` from a script**
 - **Call `claude.cmd` directly**, resolved with `shutil.which` and given an argument list via `subprocess.run`. Routing through `powershell -Command` breaks on a JSON schema: PowerShell reads `{`/`}` as a script block. It also avoids Git Bash's first-call shell-snapshot cost (measured at 12–38s).
 - **Run with `cwd` outside this repo.** From inside, `claude -p` auto-loads CLAUDE.md and memory: ~67k tokens and ~$0.27 before the prompt is read.
-- **Pin the model and effort** (`--model claude-opus-5-5 --effort medium`). Unpinned, the user's own settings choose, and they had silently been choosing Sonnet. Opus 5.5 needs CLI **2.1.280 or newer**; older versions fail with an API 400.
+- **Pin the model and effort** (`--model claude-sonnet-5-5 --effort medium`). Unpinned, the user's own settings choose. A new model can need a newer CLI: Opus 5.5 needed 2.1.280, Sonnet 5.5 2.1.284, and older ones fail with an API 400.
 - **Isolate the call from the user's own Claude Code setup:** `--settings '{"disableAllHooks": true}' --strict-mcp-config --disable-slash-commands`. Hooks, MCP servers and skills all load in `-p` mode even with `cwd` outside the repo, and none are used here. What each cost is in "Timing and performance".
 - **With `--output-format json` an error arrives on stdout, not stderr.** An API 400 left stderr empty, so `decide_tech.py` logs stdout too.
 - **A process started from a Claude Code session passes its `CLAUDE_*`/`MCP_*` variables down.** A game launched from a session hands them to `claude -p`, changing its effort, entrypoint and auth path. `devtools/` launches the game and the benchmark without them.
@@ -107,6 +107,16 @@ Warm calls only: 5 from two trials, then 2 after the `rules` change; a game's fi
 | The same, first call after the cache expires | ~26k | ~$0.21 |
 
 The cache is written with a 1-hour TTL, so a game whose tech choices are under an hour apart pays the full price once. The 100-turn run's 13 decisions would cost about $3 at baseline and about $0.46 now.
+
+**Model: Sonnet 5.5 since 2026-09-28; everything above was measured on Opus 5.5.** Same five inputs, interleaved, 10 calls each, medium effort:
+
+| Median | Opus 5.5 | Sonnet 5.5 |
+| --- | --- | --- |
+| API time | 2.19s | 1.40s |
+| Output tokens | 98 | 63 |
+| Cost per call, cache warm | $0.015 | $0.009 |
+
+Thinking tokens were 0 on both but one Opus call, and the picks agreed 9 times in 10. In-game, a 30-turn trial on Sonnet froze the game for 2.2–3.3s per warm call (median 2.8s).
 
 Every call is `num_turns` 2: one API request, then the local `StructuredOutput` tool call (~1ms).
 

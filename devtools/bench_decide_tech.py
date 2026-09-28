@@ -56,7 +56,7 @@ echo {"type":"result","is_error":false,"duration_ms":0,"duration_api_ms":0,"num_
 
 COMPONENTS = ["startupToMain", "stateLoad", "rules", "promptBuild", "claudeCli", "total", "outer"]
 CLAUDE_FIELDS = ["durationMs", "durationApiMs", "numTurns", "inputTokens", "outputTokens",
-                 "cacheReadTokens", "cacheCreationTokens", "costUsd"]
+                 "thinkingTokens", "cacheReadTokens", "cacheCreationTokens", "costUsd"]
 
 
 def run_once(state_file, work, env):
@@ -100,6 +100,10 @@ def main(argv=None):
                     help="seconds to wait between repetitions: real tech choices are minutes apart, "
                          "which gives ai-opponent/claude_worker.py time to pre-start the next claude")
     ap.add_argument("--inputs", nargs="*", help="turn files (default: the saved trials' research turns)")
+    ap.add_argument("--models", nargs="+",
+                    help="compare models: repetitions alternate between them, each input going to every "
+                         "model back to back, so drift in API speed hits all alike. Each switch makes the "
+                         "worker's spare a mismatch, so compare API time rather than totals")
     args = ap.parse_args(argv)
 
     inputs = args.inputs or [os.path.join(RUNS, p) for p in DEFAULT_INPUTS]
@@ -125,7 +129,12 @@ def main(argv=None):
         for i in range(args.n):
             if i and args.gap:
                 time.sleep(args.gap)
-            state_file = inputs[i % len(inputs)]
+            models = args.models or [None]
+            model = models[i % len(models)]
+            state_file = inputs[(i // len(models)) % len(inputs)]
+            env.pop("CIV4_ADVISOR_CLAUDE_MODEL", None)
+            if model:
+                env["CIV4_ADVISOR_CLAUDE_MODEL"] = model
             if args.stub_claude:
                 with open(state_file, encoding="utf-8") as f:
                     known = set(json.load(f)["player"]["knownTechs"])
@@ -134,6 +143,7 @@ def main(argv=None):
                 env["STUB_TECH"] = next(t for t in ("TECH_MASONRY", "TECH_MYSTICISM", "TECH_SAILING") if t not in known)
             entry = run_once(state_file, work, env)
             entry["input"] = os.path.relpath(state_file, RUNS)
+            entry["benchModel"] = model
             entries.append(entry)
             t, c = entry["timing"], entry.get("claude", {})
             print("%2d  %-55s %-22s total %6.2fs  cli %6.2fs  api %s  turns %s  %s  %s" % (
@@ -143,25 +153,28 @@ def main(argv=None):
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
-    summary = {
-        "label": args.label,
-        "stub": args.stub_claude,
-        "n": len(entries),
-        "when": time.strftime("%Y-%m-%dT%H:%M:%S"),
-        "timing": {k: spread([e["timing"].get(k) for e in entries]) for k in COMPONENTS},
-        "claude": {k: spread([e.get("claude", {}).get(k) for e in entries]) for k in CLAUDE_FIELDS},
-        "valid": sum(1 for e in entries if e.get("inCandidateList")),
-        "models": sorted({m for e in entries for m in e.get("claude", {}).get("models", [])}),
-    }
-    print("\n%s (n=%d, %d valid, models %s)" % (args.label, summary["n"], summary["valid"], summary["models"]))
-    print("%-22s %9s %9s %9s" % ("component", "median", "min", "max"))
-    for group in ("timing", "claude"):
-        for k, s in summary[group].items():
-            if s:
-                print("%-22s %9.3f %9.3f %9.3f" % (k, s["median"], s["min"], s["max"]))
     os.makedirs(RUNS, exist_ok=True)
-    with open(RESULTS, "a", encoding="utf-8") as f:
-        f.write(json.dumps(dict(summary, entries=entries)) + "\n")
+    for model in (args.models or [None]):
+        group = [e for e in entries if e["benchModel"] == model]
+        label = args.label + (":" + model if model else "")
+        summary = {
+            "label": label,
+            "stub": args.stub_claude,
+            "n": len(group),
+            "when": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "timing": {k: spread([e["timing"].get(k) for e in group]) for k in COMPONENTS},
+            "claude": {k: spread([e.get("claude", {}).get(k) for e in group]) for k in CLAUDE_FIELDS},
+            "valid": sum(1 for e in group if e.get("inCandidateList")),
+            "models": sorted({m for e in group for m in e.get("claude", {}).get("models", [])}),
+        }
+        print("\n%s (n=%d, %d valid, models %s)" % (label, summary["n"], summary["valid"], summary["models"]))
+        print("%-22s %9s %9s %9s" % ("component", "median", "min", "max"))
+        for part in ("timing", "claude"):
+            for k, s in summary[part].items():
+                if s:
+                    print("%-22s %9.3f %9.3f %9.3f" % (k, s["median"], s["min"], s["max"]))
+        with open(RESULTS, "a", encoding="utf-8") as f:
+            f.write(json.dumps(dict(summary, entries=group)) + "\n")
     return 0
 
 
