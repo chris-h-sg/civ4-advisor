@@ -10,7 +10,7 @@ Hand-edit decision_config.txt mid-game to change what gets built without
 restarting Civ 4.
 
 Can sleep DECISION_DELAY_SECONDS before answering, as a stand-in for real LLM
-latency (docs/AI_OPPONENT_PLAN.md item D measured 71-142s wall clock per
+latency (docs/AI_OPPONENT_PLAN.md "Lessons that constrain what comes next": 71-142s wall clock per
 call) - useful for checking whether anything in the round-trip (os.popen, the
 callback, the game itself) has a timeout shorter than that. 0 by default so
 routine testing (e.g. the ai-opponent-mode export spike) isn't paying for it.

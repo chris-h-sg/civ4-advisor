@@ -8,9 +8,9 @@ Two properties this file exists to guard:
 1. MODE == 'advisor' (the shipped default - see LocalConfig.py.example) must
    leave AI_chooseTech byte-identical to the base game's own stock behavior,
    for EVERY player, not just ones matching the configured leader. See
-   AI_OPPONENT_PLAN.md "Mode gating" - this is the test that section says
-   should exist, not just be claimed.
-2. THE RETURN-CONTRACT TRAP (AI_OPPONENT_PLAN.md "B2"): AI_chooseTech must
+   AI_OPPONENT_PLAN.md "Where we stand" - this is the test that row says
+   asserts it, not just a claim.
+2. THE RETURN-CONTRACT TRAP (AI_OPPONENT_PLAN.md "The mod side"): AI_chooseTech must
    return a TechTypes int on success, not a 1/0 boolean - CvPlayerAI does
    `eBestTech = (TechTypes)lResult` and only falls back to stock AI_bestTech()
    on NO_TECH (-1). A regression to `return True`/`return 1` here would
@@ -181,7 +181,7 @@ class AdvisorPathUnchangedTests(unittest.TestCase):
     def test_advisor_mode_reaches_base_class_with_unmodified_argsList(self):
         # The property that actually matters: the base CvGameUtils sees exactly
         # what the engine passed it, unchanged - "byte-identical to stock" per
-        # AI_OPPONENT_PLAN.md "Mode gating".
+        # AI_OPPONENT_PLAN.md "Architecture".
         ns = loadModule([FakePlayer(1)], mode='advisor')
         utils = ns["CvAdvisorGameUtils"]()
         argsList = [0, True]

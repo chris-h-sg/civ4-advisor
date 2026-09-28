@@ -1119,6 +1119,38 @@ def test_cost_matches_every_sample_turn(sample):
     assert checked, "no turn in %s reported a research cost" % sample
 
 
+@pytest.mark.parametrize("sample", sorted(
+    os.path.basename(p) for p in
+    (os.listdir(SAMPLES) if os.path.isdir(SAMPLES) else [])
+    if os.path.isdir(os.path.join(SAMPLES, p))
+))
+def test_techs_only_rules_print_the_same_available_techs(sample):
+    """`tech --available` and ai-opponent/decide_tech.py build a techs_only
+    Rules to skip parsing ~20 files they never read. That is only safe while
+    it prints exactly what the full Rules prints, on every real turn - and
+    while anything it skipped stays absent rather than quietly empty."""
+    try:
+        xml_root = rules.resolve_xml_root()
+    except rules.RulesError as exc:
+        pytest.skip("no Civ IV install: %s" % exc)
+
+    folder = os.path.join(SAMPLES, sample)
+    turns = sorted(f for f in os.listdir(folder) if f.startswith("turn_"))
+    if not turns:
+        pytest.skip("%s has no turn files" % sample)
+
+    full = rules.Rules(xml_root, {})
+    lean = rules.Rules(xml_root, {}, techs_only=True)
+    assert not hasattr(lean, "units")
+    for name in turns:
+        state = rules.load_state(os.path.join(folder, name))
+        full = rules.Rules(xml_root, state["game"]) if full.setup != state["game"] else full
+        lean = (rules.Rules(xml_root, state["game"], techs_only=True)
+                if lean.setup != state["game"] else lean)
+        assert (rules.view_available_techs(lean, state)
+                == rules.view_available_techs(full, state)), "%s/%s" % (sample, name)
+
+
 # ---------------------------------------------------------------------------
 # Closure
 # ---------------------------------------------------------------------------

@@ -230,6 +230,38 @@ Established in-game 2026-08-01 by controlled test, because nothing in the commun
 - **Cause, not proven:** most likely the game runs the x87 FPU in single-precision mode, which Direct3D 9 does to a process unless it is created with `D3DCREATE_FPU_PRESERVE`. Any double arithmetic in the embedded interpreter is affected, not only `time.time()`.
 - **`time.clock()` is safe** because it counts from near zero (the first call), where float32 still resolves microseconds. `AdvisorStateWriter` already used it for export timing, for its resolution.
 
+## Calling `claude -p` from a script (measured 2026-09-28, CLI 2.1.245 → 2.1.283)
+
+The design consequences are in `docs/AI_OPPONENT_PLAN.md` "Calling `claude -p` from a script" and "Timing and performance". This is the evidence.
+
+- **CLI 2.1.245 cannot call Opus 5.5.** It failed with an API 400: "Claude Code 2.1.245 does not support this model; version 2.1.280 or newer is required". The same old version, run with a Claude Code session's environment inherited, failed differently: `"thinking.type.disabled" is not supported for this model`. That came from the user setting `alwaysThinkingEnabled: false`, and it disappeared on 2.1.283.
+- **With `--output-format json`, a failure is reported on stdout, not stderr:** exit code 1, empty stderr, and a JSON result with `is_error: true`, `api_error_status` and the message in `result`. Even that failing call made a separate Haiku request (1,168 input tokens).
+- **Hooks from the user's `~/.claude/settings.json` run in `-p` mode.** A `--debug-file` trace showed the `Stop` hook ("Hook output does not start with {") finishing 4.0s after the answer's `StructuredOutput` tool call. `--settings '{"disableAllHooks": true}'` removes it. Prompt token totals were identical with and without, per input: 28827 / 28803 / 28813 / 28846 / 28770.
+- **The user's claude.ai MCP connectors load in `-p` mode, with `cwd` outside any project,** and connect asynchronously: "[claudeai-mcp] Fetched 7 servers", then "claude.ai connectors running fully async (nonblocking)". The first turn doesn't wait for them, so whether their tools reach the prompt is a race. With identical flags, one call read 28.8k prompt tokens and a traced call whose turn started before three connectors had connected read 25.3k, the same as `--strict-mcp-config`. `--strict-mcp-config` with no `--mcp-config` loads none of them.
+- **`--json-schema` becomes a `StructuredOutput` tool**, so every structured answer is `num_turns` 2: one API request plus a local tool call of ~1ms. Its definition is part of the cached prompt prefix, ahead of the user message:
+  - with the MCP connectors present and a schema enum that changed per call, 5 of 5 calls re-created the whole ~28.8k-token prefix (0 read);
+  - with MCP off and a per-call enum, 3 calls read ~17.4k and re-created ~7.8k;
+  - with a constant enum, calls read 24.2k and re-created ~1.9k.
+- **Plain `claude -p` cannot be pre-started; `--input-format stream-json` can.**
+  - A `-p` process spawned with an open but empty stdin did ~0.3s of startup (settings, certificates), then logged nothing for ~3s, then exited without calling the API; writing the prompt 6s after spawn failed on a closed pipe. Plugins, skills and the bootstrap fetch all come after the stdin read.
+  - With `--input-format stream-json --output-format stream-json --verbose`, the process finished its whole startup (bootstrap done ~1.4s after spawn) and waited. A user message written 6s later started the first turn 0.12s after it arrived, and the `result` event arrived 2.46s after the prompt, against 2.25s of API time. The prompt tokens matched the plain `-p` call exactly: 24,151 read and 1,891 created.
+  - One message followed by closing stdin gives a single-message session that then exits.
+- **The CLI keeps running ~0.6s after printing its result** (telemetry flush, then process exit). A caller that stops reading at the `result` event doesn't pay it.
+- **Claude Code writes its prompt cache with a 1-hour TTL:** the session transcripts' `usage.cache_creation` shows `ephemeral_1h_input_tokens` and 0 `ephemeral_5m_input_tokens`.
+- **`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` changes the prompt,** not only network traffic: the same call dropped from 25.3k to 20.9k tokens.
+- **A Claude Code session exports ~25 `CLAUDE_*`/`MCP_*` variables to its children,** including `CLAUDE_EFFORT`, `CLAUDE_CODE_ENTRYPOINT`, auth-refresh and messaging-socket settings. Anything it launches, a game included, passes them on to `claude -p`, whose transcript then records the session's entrypoint (`claude-desktop`).
+- **Timing composition of one isolated call** (debug trace, 5.05s wall):
+
+  | Span | Time |
+  | --- | --- |
+  | spawn → first log line | 0.24s |
+  | init to first turn (MCP config 0.36s awaited, commands and plugins 0.1s, a bootstrap fetch ~0.4s) | 1.25s |
+  | API (first byte 1.27s) | 2.6s |
+  | session end (telemetry flush 0.2s) | 0.32s |
+  | process exit | ~0.6s |
+
+  `claude --version` alone returns in 0.04s, so the executable's own load is not the cost.
+
 ## Prior art (context, not direct dependencies)
 
 These informed the design but nothing here is being reused directly as of this point in the project:

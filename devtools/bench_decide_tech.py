@@ -96,6 +96,9 @@ def main(argv=None):
     ap.add_argument("-n", type=int, default=5, help="repetitions (cycles through the inputs)")
     ap.add_argument("--label", default="unlabelled", help="name for this configuration in the results file")
     ap.add_argument("--stub-claude", action="store_true", help="replace claude with an instant fake (free)")
+    ap.add_argument("--gap", type=float, default=0,
+                    help="seconds to wait between repetitions: real tech choices are minutes apart, "
+                         "which gives ai-opponent/claude_worker.py time to pre-start the next claude")
     ap.add_argument("--inputs", nargs="*", help="turn files (default: the saved trials' research turns)")
     args = ap.parse_args(argv)
 
@@ -120,6 +123,8 @@ def main(argv=None):
     entries = []
     try:
         for i in range(args.n):
+            if i and args.gap:
+                time.sleep(args.gap)
             state_file = inputs[i % len(inputs)]
             if args.stub_claude:
                 with open(state_file, encoding="utf-8") as f:
@@ -131,9 +136,10 @@ def main(argv=None):
             entry["input"] = os.path.relpath(state_file, RUNS)
             entries.append(entry)
             t, c = entry["timing"], entry.get("claude", {})
-            print("%2d  %-55s %-22s total %6.2fs  cli %6.2fs  api %s  turns %s  %s" % (
+            print("%2d  %-55s %-22s total %6.2fs  cli %6.2fs  api %s  turns %s  %s  %s" % (
                 i + 1, entry["input"], entry.get("rawAnswer", "-"), t.get("total", 0), t.get("claudeCli", 0),
-                c.get("durationApiMs"), c.get("numTurns"), entry.get("benchError", "")), flush=True)
+                c.get("durationApiMs"), c.get("numTurns"), entry.get("claudePath", ""),
+                entry.get("benchError", "")), flush=True)
     finally:
         shutil.rmtree(work, ignore_errors=True)
 

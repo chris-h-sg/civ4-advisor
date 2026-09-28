@@ -14,6 +14,7 @@ state/
 
 # Per-call decision log written by ai-opponent/ during live runs, like state/
 ai-opponent/*_log.jsonl
+ai-opponent/claude_worker.json
 
 # Per-run working files of the dev/debug tooling (see devtools/README.md)
 devtools/runs/

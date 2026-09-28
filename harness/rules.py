@@ -1400,20 +1400,43 @@ def research_cost(base, speed_pct, world_pct, handicap_pct):
 
 
 class Rules(object):
-    """The XML, parsed, plus the cost multipliers for one game's setup."""
+    """The XML, parsed, plus the cost multipliers for one game's setup.
 
-    def __init__(self, roots, game):
+    `techs_only=True` parses just the techs and the cost multipliers - what
+    available_techs() and cost() need - and none of the other ~20 files, which
+    are ~90% of the parse time (units and buildings alone ~0.25s). Every other
+    attribute is then ABSENT, not empty, so a view handed one by mistake
+    fails loudly instead of reporting "nothing unlocked". Used only by
+    `tech --available` and ai-opponent/decide_tech.py; the test suite checks
+    both forms print the same `tech --available` for every sample turn.
+    """
+
+    def __init__(self, roots, game, techs_only=False):
         self.roots = roots
         self.xml_root = roots[0]
         tech_text, self.tech_path, _ = read_xml(roots, TECH_FILE)
-        unit_text, self.unit_path, _ = read_xml(roots, UNIT_FILE)
         handicap_text, self.handicap_path, _ = read_xml(roots, HANDICAP_FILE)
         speed_text, _, _ = read_xml(roots, GAMESPEED_FILE)
         world_text, _, _ = read_xml(roots, WORLD_FILE)
 
         self.techs = parse_techs(tech_text)
-        self.units = parse_units(unit_text)
         self.handicaps = parse_handicap(handicap_text)
+
+        speeds = parse_percent_table(speed_text, "GameSpeedInfo")
+        worlds = parse_percent_table(world_text, "WorldInfo")
+        trains = parse_percent_table(speed_text, "GameSpeedInfo", "iTrainPercent")
+
+        self.train_pct = trains.get(game.get("gameSpeed"), 100)
+        self.speed_pct = speeds.get(game.get("gameSpeed"), 100)
+        self.world_pct = worlds.get(game.get("worldSize"), 100)
+        handicap = self.handicaps.get(game.get("handicap"), {})
+        self.handicap_pct = handicap.get("iResearchPercent", 100)
+        self.setup = game
+        if techs_only:
+            return
+
+        unit_text, self.unit_path, _ = read_xml(roots, UNIT_FILE)
+        self.units = parse_units(unit_text)
         self._fill_inherited_unit_costs()
 
         # Everything a tech reveals. Each source is optional so a partial
@@ -1472,17 +1495,6 @@ class Rules(object):
             for key, entry in self.building_classes.items()
             if entry["default"]
         )
-
-        speeds = parse_percent_table(speed_text, "GameSpeedInfo")
-        worlds = parse_percent_table(world_text, "WorldInfo")
-        trains = parse_percent_table(speed_text, "GameSpeedInfo", "iTrainPercent")
-
-        self.train_pct = trains.get(game.get("gameSpeed"), 100)
-        self.speed_pct = speeds.get(game.get("gameSpeed"), 100)
-        self.world_pct = worlds.get(game.get("worldSize"), 100)
-        handicap = self.handicaps.get(game.get("handicap"), {})
-        self.handicap_pct = handicap.get("iResearchPercent", 100)
-        self.setup = game
 
     def _fill_inherited_unit_costs(self):
         """Recover a cost that BTS blanked and vanilla still holds.
@@ -3827,6 +3839,20 @@ def view_promotion(rules, promotion_type, state, show_known, max_depth):
     return "\n".join(out)
 
 
+def available_techs(rules, state):
+    """The techs view_available_techs lists, as a sorted list of keys - for a
+    caller that wants the candidates themselves rather than the printout
+    (ai-opponent/decide_tech.py). Needs only a techs_only Rules."""
+    known = set((state.get("player") or {}).get("knownTechs") or [])
+    current = researching(state)
+    return sorted(
+        tech_type for tech_type in rules.techs
+        if tech_type not in known
+        and tech_type != current
+        and not closure(rules, tech_type, known)
+    )
+
+
 def view_available_techs(rules, state):
     """Every tech immediately researchable right now - closure(...) empty and
     not already known or in progress. Presentation, not decision: this is the
@@ -3844,14 +3870,8 @@ def view_available_techs(rules, state):
     already underway, and `tech TYPE` already reports that case distinctly
     via `researching()`.
     """
-    known = set((state.get("player") or {}).get("knownTechs") or [])
+    available = available_techs(rules, state)
     current = researching(state)
-    available = sorted(
-        tech_type for tech_type in rules.techs
-        if tech_type not in known
-        and tech_type != current
-        and not closure(rules, tech_type, known)
-    )
 
     out = []
     out.append("%d tech%s immediately researchable"
@@ -5622,7 +5642,8 @@ def main(argv=None):
 
     try:
         state = load_state(state_path)
-        rules = Rules(resolve_xml_root(args.config), state.get("game", {}))
+        rules = Rules(resolve_xml_root(args.config), state.get("game", {}),
+                      techs_only=(args.subject == "tech" and args.available))
 
         if args.subject == "unit":
             if not type_key:

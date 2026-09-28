@@ -17,10 +17,11 @@ right game; see _find_latest_state_file). Not currently used to disambiguate
 beyond "read the most recently modified game folder", since this spike's test
 setup only ever has one game running at a time - see the mtime caveat below.
 
-TWO-STEP FLOW, SCRIPT-SIDE FIRST: before ever calling Claude, this shells out
-to `harness/rules.py tech --available` (no LLM involved - it's the mod's own
-XML-prerequisite walk, run as a subprocess) to get the actual legal candidate
-set for this exact game state, then hands Claude that menu to choose from
+TWO-STEP FLOW, SCRIPT-SIDE FIRST: before ever calling Claude, this asks
+harness/rules.py for the same list `rules.py tech --available` prints (no LLM
+involved - its XML-prerequisite walk, imported and run in-process on a
+techs-only Rules, see _tech_rules) to get the actual legal candidate set for
+this exact game state, then hands Claude that menu to choose from
 rather than asking it to invent a TECH_ key from scratch. This replaces an
 earlier version that prompted from knownTechs alone: a live 120-turn run
 found it twice proposed a tech missing a prerequisite (TECH_POTTERY without
@@ -37,7 +38,8 @@ the invalid options already removed gives that reasoning nothing to trip on.
 STRUCTURED OUTPUT, NOT A PROMPT REQUEST: `claude -p --output-format json
 --json-schema ...` forces the response into a JSON object matching the given
 schema - here {"tech": "TECH_..."}, with `tech` constrained to an `enum` of
-exactly the candidate list. This replaces asking nicely in the prompt text
+every tech in the game's XML (see _tech_choice_schema for why not the
+candidate list). This replaces asking nicely in the prompt text
 ("no explanation, no punctuation, just the bare key"), which a live run
 measured failing 5 of 12 times: Claude would notice its first instinct was
 already known and reason out loud to a corrected answer ("TECH_AGRICULTURE...
@@ -45,14 +47,14 @@ wait, that's already known... TECH_WRITING"), breaking the bare-key contract
 even though the FINAL answer was often fine. The schema makes that shape of
 response impossible to produce - the model can still think as much as it
 wants internally, but what comes back on stdout is `structured_output`, a
-literal enum member, never prose. The `enum` constraint also means the model
-cannot even in principle return a well-formed TECH_ key outside the offered
-list - a second, redundant backstop against the illegal-pick failure mode
-_available_techs already closes structurally.
+literal enum member, never prose. The enum also rules out an invented key;
+an off-list but real tech is caught by the "not in candidates" check in
+main() and falls through to stock AI, same as any other failure.
 
-Uses `claude -p`, run from a cwd OUTSIDE this repo (AI_OPPONENT_PLAN.md item D:
-running from inside civ4-advisor auto-loads CLAUDE.md + auto-memory, ~66k
-cache-creation tokens and ~$0.27 before the prompt is even read).
+Uses `claude -p`, run from a cwd OUTSIDE this repo (AI_OPPONENT_PLAN.md
+"Lessons that constrain what comes next": running from inside civ4-advisor
+auto-loads CLAUDE.md + auto-memory, ~66k cache-creation tokens and ~$0.27
+before the prompt is even read).
 
 Calls the claude.cmd shim DIRECTLY via subprocess, not through `powershell
 -Command claude -p ...`: PowerShell's own command-line parser treats `{`/`}`
@@ -61,8 +63,14 @@ in an unquoted argument as a script block, so passing a JSON schema through
 confirmed live. Calling the .cmd path directly sidesteps a shell parser
 entirely (Python's subprocess spawns it without invoking cmd.exe or
 powershell.exe to interpret the argument list), which also sidesteps Git
-Bash's shell-snapshot tax from item D's measurement without needing to name
+Bash's shell-snapshot tax measured there without needing to name
 PowerShell as the shell explicitly - there is no shell in the loop at all.
+
+PRE-STARTED WHEN POSSIBLE: the call goes to claude_worker.py (this
+directory), which keeps a claude process already started and waiting, so the
+game's freeze doesn't include the CLI's ~3s of startup. With no worker running
+this script starts one for next time and calls claude directly - see
+_call_claude and claude_worker.py's docstring.
 
 Every call is logged to decide_tech_log.jsonl (this directory) - the request
 (state excerpt, turn, candidate list), response (raw answer, resolved
@@ -79,6 +87,7 @@ docs/AI_OPPONENT_PLAN.md "Timing and performance".
 import json
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -87,7 +96,9 @@ AI_OPPONENT_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(AI_OPPONENT_DIR)
 STATE_DIR = os.environ.get('CIV4_ADVISOR_STATE_DIR', os.path.join(REPO_ROOT, 'state'))
 LOG_PATH = os.environ.get('CIV4_ADVISOR_TECH_LOG', os.path.join(AI_OPPONENT_DIR, 'decide_tech_log.jsonl'))
-RULES_SCRIPT = os.path.join(REPO_ROOT, 'harness', 'rules.py')
+HARNESS_DIR = os.path.join(REPO_ROOT, 'harness')
+WORKER_SCRIPT = os.path.join(AI_OPPONENT_DIR, 'claude_worker.py')
+WORKER_FILE = os.path.join(AI_OPPONENT_DIR, 'claude_worker.json')
 
 # claude -p must not run with cwd inside this repo - see module docstring.
 # Any directory outside civ4-advisor works; the user's home directory is
@@ -107,6 +118,19 @@ CLAUDE_CMD = shutil.which('claude')
 # a fixed model and effort.
 CLAUDE_MODEL = 'claude-opus-5-5'
 CLAUDE_EFFORT = 'medium'
+
+# What claude -p would otherwise load from the user's own Claude Code setup,
+# none of which this call uses (docs/AI_OPPONENT_PLAN.md "Timing and
+# performance"):
+# - hooks: a Stop hook playing a notification sound through PowerShell
+#   measured ~4s of an ~11s call, and changed nothing the model saw;
+# - MCP servers, including claude.ai connectors (--strict-mcp-config with no
+#   --mcp-config loads none): ~1.4s of startup, and a race - whether their
+#   tools reached the prompt depended on connection timing;
+# - skills (--disable-slash-commands): a listing of every skill the user has,
+#   none of them about Civ IV.
+CLAUDE_SETTINGS = json.dumps({'disableAllHooks': True})
+CLAUDE_ISOLATION_FLAGS = ['--settings', CLAUDE_SETTINGS, '--strict-mcp-config', '--disable-slash-commands']
 
 
 def _process_start_time():
@@ -170,35 +194,38 @@ def _find_latest_state_file():
     return candidates[-1][1]
 
 
-def _available_techs(stateFilePath):
-    """Shells out to `rules.py tech --available` (no LLM - a subprocess call
-    to the same prerequisite-walk logic the mod itself will validate against)
-    and parses the TECH_ keys out of its output. Returns a sorted list, or []
-    on any failure (missing script, non-zero exit, nothing parseable) - the
-    caller treats an empty list as "give up", same as any other decide_tech.py
-    failure mode, rather than falling back to the old free-form prompt."""
-    if not os.path.isfile(RULES_SCRIPT):
-        return []
+def _tech_rules(state):
+    """A techs-only rules.Rules for this game's setup - the techs and the
+    research-cost multipliers, which is all the candidate list and the schema
+    enum need - or None on any failure. Imported and run in-process: spawning
+    `rules.py tech --available` cost ~0.6s per call, ~0.3s of it parsing ~20
+    XML files this never reads (docs/AI_OPPONENT_PLAN.md "Timing and
+    performance"). Refuses a state whose schemaVersion rules.py would refuse,
+    exactly as the command line's load_state does."""
     try:
-        result = subprocess.run(
-            [sys.executable, RULES_SCRIPT, 'tech', stateFilePath, '--available'],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-    except (OSError, subprocess.TimeoutExpired):
+        if HARNESS_DIR not in sys.path:
+            sys.path.insert(0, HARNESS_DIR)
+        import rules
+        if (state.get('meta') or {}).get('schemaVersion') != rules.STATE_SCHEMA_VERSION:
+            return None
+        return rules.Rules(rules.resolve_xml_root(), state.get('game', {}), techs_only=True)
+    except Exception:
+        return None
+
+
+def _available_techs(techRules, state):
+    """Every tech immediately legal to start - the rows `rules.py tech
+    --available` prints, from the same function - as a sorted list, or []
+    without rules. The caller treats [] as "give up", same as any other
+    decide_tech.py failure mode, rather than falling back to the old
+    free-form prompt."""
+    if techRules is None:
         return []
-    if result.returncode != 0:
+    import rules
+    try:
+        return rules.available_techs(techRules, state)
+    except Exception:
         return []
-    # Each candidate row is "  TECH_FOO   123 beakers  ERA_ANCIENT" - the
-    # leading two-space indent (view_available_techs) distinguishes a row
-    # from the tech names that can also appear in prose lines elsewhere in
-    # the output (e.g. "researching TECH_LEFT now").
-    candidates = []
-    for line in result.stdout.splitlines():
-        if line.startswith('  TECH_'):
-            candidates.append(line.split()[0])
-    return sorted(candidates)
 
 
 def _build_prompt(state, candidates):
@@ -212,63 +239,129 @@ def _build_prompt(state, candidates):
     )
 
 
-def _tech_choice_schema(candidates):
-    """JSON Schema constraining the response to exactly one candidate key.
+def _tech_choice_schema(enum):
+    """JSON Schema constraining the response to one key from `enum`.
 
-    The `enum` is the real teeth here, not just `pattern: ^TECH_[A-Z0-9_]+$`:
-    a pattern alone would still let the model return a syntactically valid
-    but off-menu tech (or a hallucinated one), which is exactly the failure
-    _available_techs's post-hoc "not in candidates" check exists to catch.
-    Building the enum from the SAME list handed to the model in the prompt
-    means the schema and the prompt can never quietly drift apart into
-    offering different candidate sets."""
+    `enum` is every tech in the game (the techs_only Rules' `techs`), NOT
+    the candidate list,
+    for the prompt cache: claude -p turns the schema into a tool definition
+    that sits ahead of our prompt, so a per-call enum changed that prefix on
+    every call and re-created thousands of cached tokens each time
+    (docs/AI_OPPONENT_PLAN.md "Timing and performance"). A constant enum keeps
+    the prefix identical across calls; the legal candidates are in the prompt,
+    which comes last. The cost: the schema no longer makes an off-list pick
+    impossible, only an invented key - main()'s "not in candidates" check
+    catches the rest, and the mod falls through to stock AI."""
     return json.dumps({
         'type': 'object',
         'properties': {
-            'tech': {'type': 'string', 'enum': list(candidates)},
+            'tech': {'type': 'string', 'enum': list(enum)},
         },
         'required': ['tech'],
         'additionalProperties': False,
     })
 
 
-def _call_claude(prompt, candidates):
-    """Runs claude -p with the prompt and a JSON schema constraining the
-    reply to {"tech": "<one of candidates>"}, cwd outside this repo. Returns
-    (tech_key, wall_clock_seconds, claude_stats) - see _claude_stats. Raises
-    on a non-zero exit, unparseable JSON, or a missing structured_output -
-    the caller decides what to print on failure.
+def _claude_argv(enum, streaming):
+    """The claude command line. `streaming` is the form claude_worker.py
+    pre-starts (stream-json in and out); the other is a one-shot call. Both
+    send the same prompt and get the same `result` fields back.
 
-    Invokes CLAUDE_CMD (the resolved claude.cmd path) directly rather than
+    CLAUDE_CMD is the resolved claude.cmd path, run directly rather than
     through a shell - see module docstring for why routing this through
     `powershell -Command` breaks on the JSON schema's braces."""
-    if not CLAUDE_CMD:
-        raise RuntimeError('claude not found on PATH')
-    start = time.time()
+    io = (['--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose']
+          if streaming else ['--output-format', 'json'])
+    return ([CLAUDE_CMD, '-p'] + io + ['--model', CLAUDE_MODEL, '--effort', CLAUDE_EFFORT]
+            + CLAUDE_ISOLATION_FLAGS + ['--json-schema', _tech_choice_schema(enum)])
+
+
+def _start_worker(argv):
+    """Starts claude_worker.py detached, for the NEXT call to use, pre-starting
+    a claude process for `argv` straight away. It must
+    not inherit this process's stdout: that is the game's os.popen pipe, and
+    the game blocks until every holder of it has closed it - a worker holding
+    it would freeze the game for the worker's whole life."""
+    try:
+        subprocess.Popen(
+            [sys.executable, WORKER_SCRIPT, json.dumps({'argv': argv, 'cwd': CLAUDE_CWD})],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            close_fds=True,
+            creationflags=(getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+                           | getattr(subprocess, 'CREATE_NEW_PROCESS_GROUP', 0)))
+    except OSError:
+        pass
+
+
+def _ask_worker(prompt, enum):
+    """(result event, path) from claude_worker.py, or (None, why) when there
+    is no usable worker - the caller then calls claude directly. Starts a
+    worker when none is listening. path is 'warm' (a pre-started process
+    answered) or 'cold' (the worker had to start one, e.g. after a code
+    change)."""
+    try:
+        with open(WORKER_FILE, encoding='utf-8') as f:
+            info = json.load(f)
+        conn = socket.create_connection(('127.0.0.1', info['port']), timeout=1)
+    except (OSError, ValueError, KeyError, TypeError):
+        _start_worker(_claude_argv(enum, True))
+        return None, 'direct (no worker)'
+    with conn:
+        conn.settimeout(180)
+        request = {'token': info.get('token'), 'argv': _claude_argv(enum, True),
+                   'cwd': CLAUDE_CWD, 'prompt': prompt}
+        conn.sendall((json.dumps(request) + '\n').encode('utf-8'))
+        reply = json.loads(conn.makefile('r', encoding='utf-8').readline())
+    if not reply.get('ok'):
+        return None, 'direct (worker error: %s)' % reply.get('error')
+    return reply['result'], 'warm' if reply.get('warm') else 'cold'
+
+
+def _ask_direct(prompt, enum):
     result = subprocess.run(
-        [CLAUDE_CMD, '-p', '--output-format', 'json',
-         '--model', CLAUDE_MODEL, '--effort', CLAUDE_EFFORT,
-         '--json-schema', _tech_choice_schema(candidates)],
+        _claude_argv(enum, False),
         input=prompt,
         cwd=CLAUDE_CWD,
         capture_output=True,
         text=True,
         timeout=180,
     )
-    elapsed = time.time() - start
     if result.returncode != 0:
         # With --output-format json the error is reported on stdout, not
         # stderr - an API error left stderr empty and the log said nothing.
         raise RuntimeError('claude -p exited %d: %s %s' % (
             result.returncode, result.stderr.strip(), result.stdout.strip()[:2000]))
     try:
-        payload = json.loads(result.stdout)
+        return json.loads(result.stdout)
     except ValueError as exc:
         raise RuntimeError('claude -p did not return valid JSON: %s' % exc)
+
+
+def _call_claude(prompt, enum):
+    """Asks Claude, with a JSON schema constraining the reply to
+    {"tech": "<one of enum>"}, cwd outside this repo - through the
+    pre-started claude_worker.py when one is running, else directly. Returns
+    (tech_key, wall_clock_seconds, claude_stats, path); path says which route
+    answered. Raises on a failed call or a missing structured_output - the
+    caller decides what to print on failure."""
+    if not CLAUDE_CMD:
+        raise RuntimeError('claude not found on PATH')
+    start = time.time()
+    try:
+        payload, path = _ask_worker(prompt, enum)
+    except (OSError, ValueError, KeyError):
+        # A worker that took the request may have spent a call on it; asking
+        # again directly costs a second one, which beats no decision.
+        payload, path = None, 'direct (worker connection failed)'
+    if payload is None:
+        payload = _ask_direct(prompt, enum)
+    elapsed = time.time() - start
+    if payload.get('is_error'):
+        raise RuntimeError('claude reported an error: %s' % str(payload.get('result'))[:2000])
     structured = payload.get('structured_output')
     if not isinstance(structured, dict) or 'tech' not in structured:
         raise RuntimeError('claude -p response had no structured_output.tech: %r' % payload)
-    return structured['tech'], elapsed, _claude_stats(payload)
+    return structured['tech'], elapsed, _claude_stats(payload), path
 
 
 def _claude_stats(payload):
@@ -336,7 +429,8 @@ def main():
         state = json.load(stateFile)
     timer.mark('stateLoad')
 
-    candidates = _available_techs(stateFilePath)
+    techRules = _tech_rules(state)
+    candidates = _available_techs(techRules, state)
     timer.mark('rules')
 
     logEntry = {
@@ -353,16 +447,19 @@ def main():
         # researchable) - nothing for Claude to choose between, so don't
         # spend a call on it. Same "give up cleanly" contract as every other
         # failure mode here: empty stdout, the mod falls through to stock.
-        logEntry['error'] = 'no available techs (rules.py --available returned none)'
+        logEntry['error'] = 'no available techs (rules.available_techs returned none)'
         _log_decision(logEntry, timer)
-        sys.stderr.write('decide_tech.py: no available techs found via rules.py --available\n')
+        sys.stderr.write('decide_tech.py: no available techs found via rules.available_techs\n')
         sys.exit(1)
 
     prompt = _build_prompt(state, candidates)
     timer.mark('promptBuild')
 
+    enum = sorted(techRules.techs) if techRules is not None else None
+    logEntry['schemaEnum'] = 'allTechs' if enum else 'candidates'
+
     try:
-        rawAnswer, elapsed, claudeStats = _call_claude(prompt, candidates)
+        rawAnswer, elapsed, claudeStats, claudePath = _call_claude(prompt, enum or candidates)
     except Exception as exc:
         timer.mark('claudeCli')
         logEntry['error'] = str(exc)
@@ -374,16 +471,19 @@ def main():
     logEntry['rawAnswer'] = rawAnswer
     logEntry['wallClockSeconds'] = elapsed
     logEntry['claude'] = claudeStats
+    logEntry['claudePath'] = claudePath
 
-    # The JSON schema in _call_claude already constrains structured_output.tech
-    # to an enum of `candidates`, so a well-formed response cannot fail either
-    # check below in practice. Kept anyway as defense-in-depth against a
-    # schema the model quietly ignored or a claude CLI version that stops
-    # enforcing --json-schema as strictly - is_error: false is not a validity
-    # check (AI_OPPONENT_PLAN.md item D), so nothing here is trusted on faith
+    # The JSON schema in _call_claude constrains structured_output.tech to a
+    # real tech key, so the shape check below cannot fail in practice; it is
+    # defense-in-depth against a schema the model quietly ignored or a claude
+    # CLI version that stops enforcing --json-schema as strictly. The
+    # candidate check CAN fail - the enum is every tech, not just the legal
+    # ones (see _tech_choice_schema) - and is logged when it does.
+    # is_error: false is not a validity check (AI_OPPONENT_PLAN.md "Lessons
+    # that constrain what comes next"), so nothing here is trusted on faith
     # alone. The mod re-validates resolution and isHasTech independently
-    # regardless - this is a tighter, earlier gate, not a replacement for that
-    # one.
+    # regardless - this is a tighter, earlier gate, not a replacement for
+    # that one.
     if not rawAnswer.startswith('TECH_') or ' ' in rawAnswer or '\n' in rawAnswer:
         logEntry['shapeValid'] = False
         _log_decision(logEntry, timer)

@@ -8,7 +8,7 @@
 ## Wired in via Assets/Python/EntryPoints/CvGameInterfaceFile.py, which points
 ## GameUtils at this class instead of the base CvGameUtils. This is a different
 ## indirection point from CvEventInterface.py (which the advisor mod already
-## modifies) - see docs/AI_OPPONENT_PLAN.md "The two entry points don't collide".
+## modifies) - see docs/AI_OPPONENT_PLAN.md "The mod side".
 ##
 ## SPIKE SCOPE (docs/AI_OPPONENT_PLAN.md, item C): AI_chooseTech is a real Claude
 ## call - the first callback in this mod backed by an actual LLM decision rather
@@ -21,11 +21,11 @@
 ## AI_chooseTech calls out to ai-opponent/decide_tech.py (Python 3) synchronously
 ## via os.popen - same mechanism decide_production.py proved live, same
 ## "blocking call inside the callback" tradeoff accepted for this spike (see
-## docs/AI_OPPONENT_PLAN.md item C and "Spike: external-process round-trip").
+## docs/AI_OPPONENT_PLAN.md "Blocking calls inside callbacks").
 ## decide_tech.py reads the latest exported turn_NNNN.json for the current game,
 ## calls `claude -p`, and prints a single TECH_ key to stdout.
 ##
-## RETURN-CONTRACT TRAP (AI_OPPONENT_PLAN.md "B2"): AI_chooseTech returns a
+## RETURN-CONTRACT TRAP (AI_OPPONENT_PLAN.md "The mod side"): AI_chooseTech returns a
 ## TechTypes int, not a 1/0 boolean - CvPlayerAI does
 ## `eBestTech = (TechTypes)lResult` and only falls back to stock AI_bestTech() on
 ## NO_TECH (-1). Returning True/False here would silently order tech 0.
@@ -45,9 +45,10 @@ gc = CyGlobalContext()
 DECIDE_TECH_SCRIPT_NAME = 'decide_tech.py'
 
 ## Wall-clock budget for the external process, documented rather than
-## code-enforced (see _decideTech). Real Claude calls measured 71-142s wall
-## clock (AI_OPPONENT_PLAN.md item D); this is a margin above that, not a
-## timeout os.popen can actually enforce in Python 2.4 (see _decideTech).
+## code-enforced (see _decideTech). The tech call itself takes ~5s, but a
+## tool-using Claude call measured 71-142s (AI_OPPONENT_PLAN.md "Timing and
+## performance", "Lessons that constrain what comes next"); this is a margin
+## above that, not a timeout os.popen can actually enforce in Python 2.4.
 DECIDE_TIMEOUT_SECONDS = 180
 
 NO_TECH = -1
@@ -81,9 +82,8 @@ def _advisorPlayerId():
 
 	None whenever opponent mode isn't active or AI_OPPONENT_PLAYER_KEY isn't set,
 	which folds the mode check into the identity check per AI_OPPONENT_PLAN.md
-	"Mode gating" - no separate "is opponent mode on" branch needed on the hot
-	path. Matched by leader type per AI_OPPONENT_PLAN.md "Targeting one AI only"
-	(the scriptData tagging trick is for the real loop, not this spike).'''
+	"Architecture" - no separate "is opponent mode on" branch needed on the hot
+	path. Matched by leader type (LocalConfig.AI_OPPONENT_PLAYER_KEY).'''
 	if not opponentModeActive():
 		return None
 	try:
@@ -179,8 +179,8 @@ class CvAdvisorGameUtils(CvGameUtils.CvGameUtils):
 					techType = gc.getInfoTypeForString(techKey)
 					# Validate before trusting: must resolve, and must not already
 					# be known - is_error: false from the external process is not a
-					# validity check (AI_OPPONENT_PLAN.md item D), and a fluent,
-					# well-formed, already-known tech is a real failure mode, not a
+					# validity check (AI_OPPONENT_PLAN.md "Lessons that constrain
+					# what comes next"), and a fluent, well-formed, already-known tech is a real failure mode, not a
 					# hypothetical one.
 					if techType != NO_TECH and not gc.getTeam(gc.getPlayer(ePlayer).getTeam()).isHasTech(techType):
 						CvUtil.pyPrint('civ4-advisor (opponent spike): AI_chooseTech ordering %s for player %d, via external process'
