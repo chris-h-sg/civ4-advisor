@@ -76,6 +76,37 @@ def _refreshStateWriter():
 	return 'execfile %s' % path
 
 
+def _runDevHook(hookName):
+	'''Call hookName() in the file LocalConfig.DEV_HOOKS names, if any.
+
+	The mod's one extension point for development tooling (devtools/ in the
+	repo: unattended trial runs, debugging), so that tooling never has to live
+	in the shipped mod. Inert unless LocalConfig.py sets DEV_HOOKS, which
+	setup.ps1 never writes. The file is execfile'd fresh on every call - same
+	no-restart property as AdvisorStateWriter - with DEV_HOOKS_DIR bound to its
+	own directory, since __file__ is unreliable in this interpreter (see
+	_findSource). A missing function is a no-op; any failure is logged and
+	swallowed, as everywhere else in the mod.'''
+	try:
+		try:
+			import LocalConfig
+		except ImportError:
+			return
+		path = getattr(LocalConfig, 'DEV_HOOKS', None)
+		if not path:
+			return
+		ns = {'DEV_HOOKS_DIR': os.path.dirname(path)}
+		execfile(path, ns)
+		hook = ns.get(hookName)
+		if hook is not None:
+			hook()
+	except:
+		try:
+			CvUtil.pyPrint('civ4-advisor: dev hook %s FAILED\n%s' % (hookName, traceback.format_exc()))
+		except:
+			pass
+
+
 class CvCustomEventManager(CvEventManager.CvEventManager):
 
 	def onGameStart(self, argsList):
@@ -111,6 +142,7 @@ class CvCustomEventManager(CvEventManager.CvEventManager):
 			CvUtil.pyPrint('civ4-advisor: exporting state at onLoadGame')
 			self._exportState(gameTurn, gc.getGame().getActivePlayer(), 'onLoadGame')
 		self._maybeExportOpponentTurn(gameTurn, 'onLoadGame')
+		_runDevHook('onLoadGame')
 		return result
 
 	def onBeginPlayerTurn(self, argsList):

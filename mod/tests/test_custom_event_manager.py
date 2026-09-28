@@ -152,7 +152,7 @@ class FakeBaseEventManager(object):
         pass
 
 
-def loadModule(players, game, tmpDir, mode=None, leaderKey=None):
+def loadModule(players, game, tmpDir, mode=None, leaderKey=None, devHooks=None):
     """Exec the real mod source with the game API, AdvisorStateWriter and
     CvAdvisorGameUtils shimmed. AdvisorStateWriter is faked rather than the
     real module (unlike CvAdvisorGameUtils, loaded for real) - its own
@@ -199,6 +199,8 @@ def loadModule(players, game, tmpDir, mode=None, leaderKey=None):
         localConfig.MODE = mode
         if leaderKey is not None:
             localConfig.AI_OPPONENT_PLAYER_KEY = leaderKey
+    if devHooks is not None:
+        localConfig.DEV_HOOKS = devHooks
     sys.modules["LocalConfig"] = localConfig
 
     # CvAdvisorGameUtils loaded for real (not faked): opponentModeActive/
@@ -242,10 +244,58 @@ class _LoadModuleTestCase(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
 
-    def load(self, players, game, mode=None, leaderKey=None):
-        ns = loadModule(players, game, self._tmp.name, mode=mode, leaderKey=leaderKey)
+    def load(self, players, game, mode=None, leaderKey=None, devHooks=None):
+        ns = loadModule(players, game, self._tmp.name, mode=mode, leaderKey=leaderKey, devHooks=devHooks)
+        self.ns = ns
         manager = ns["CvCustomEventManager"]()
         return manager, sys.modules["AdvisorStateWriter"]
+
+
+class DevHookTests(_LoadModuleTestCase):
+    """_runDevHook is the mod's only crossing into devtools/ - it must be inert
+    unless LocalConfig.DEV_HOOKS is set, and must never break a load."""
+
+    def writeHooks(self, source):
+        path = os.path.join(self._tmp.name, "DevHooks.py")
+        with open(path, "w") as f:
+            f.write(source)
+        return path
+
+    def test_nothing_happens_without_dev_hooks(self):
+        game = FakeGame(activePlayerId=0)
+        manager, _ = self.load([FakePlayer(1)], game, mode='advisor')
+
+        self.assertEqual(manager.onLoadGame([]), "base-onLoadGame-result")
+        self.assertFalse([m for m in self.ns["_testPyPrintCalls"] if "dev hook" in m])
+
+    def test_on_load_game_calls_the_hook_with_its_directory_bound(self):
+        record = os.path.join(self._tmp.name, "called.txt")
+        path = self.writeHooks(
+            "def onLoadGame():\n"
+            "    open(%r, 'w').write(DEV_HOOKS_DIR)\n" % record)
+        manager, _ = self.load([FakePlayer(1)], FakeGame(activePlayerId=0), mode='advisor', devHooks=path)
+
+        manager.onLoadGame([])
+
+        with open(record) as f:
+            self.assertEqual(f.read(), self._tmp.name)
+
+    def test_a_missing_hook_function_is_a_no_op(self):
+        path = self.writeHooks("x = 1\n")
+        manager, _ = self.load([FakePlayer(1)], FakeGame(activePlayerId=0), mode='advisor', devHooks=path)
+
+        self.assertEqual(manager.onLoadGame([]), "base-onLoadGame-result")
+        self.assertFalse([m for m in self.ns["_testPyPrintCalls"] if "dev hook" in m])
+
+    def test_a_failing_hook_is_logged_and_the_load_still_completes(self):
+        path = self.writeHooks("def onLoadGame():\n    raise RuntimeError('boom')\n")
+        manager, stateWriter = self.load([FakePlayer(1)], FakeGame(activePlayerId=0), mode='advisor', devHooks=path)
+
+        self.assertEqual(manager.onLoadGame([]), "base-onLoadGame-result")
+        self.assertEqual(stateWriter.calls, [(0, 0, 'onLoadGame')])
+        logged = [m for m in self.ns["_testPyPrintCalls"] if "dev hook onLoadGame FAILED" in m]
+        self.assertEqual(len(logged), 1)
+        self.assertIn("boom", logged[0])
 
 
 class HumanExportModeGatingTests(_LoadModuleTestCase):

@@ -11,3 +11,7 @@ samples/**/*.json text eol=lf
 # Screenshots for docs/. The `* text=auto` rule above would otherwise treat these
 # as text and corrupt them on checkout.
 docs/images/** binary
+
+# Civ IV saves used as test fixtures (devtools/fixtures/). Binary; text=auto
+# above could rewrite line endings inside them and corrupt the save.
+*.CivBeyondSwordSave binary

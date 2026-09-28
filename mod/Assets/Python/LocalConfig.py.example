@@ -41,3 +41,7 @@ MODE = 'advisor'
 ## is a LeaderHeadTypes string key, e.g. 'LEADER_ALEXANDER' (Greece - first in
 ## the leader-pick list, easy to select at game setup).
 AI_OPPONENT_PLAYER_KEY = None
+
+## Development tooling only - leave unset for normal play. Names the in-game
+## automation file under devtools/ (unattended trial runs); see devtools/README.md.
+## DEV_HOOKS = r'C:\path\to\civ4-advisor\devtools\game_hooks\DevHooks.py'

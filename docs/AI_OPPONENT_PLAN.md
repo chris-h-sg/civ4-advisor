@@ -14,7 +14,7 @@ Markers: ✅ confirmed (live, unless marked "source") · ⚠️ needs confirmati
 | Per-turn export of the AI civ's own fog-honest state | ✅ live, `state/<leader>_<gameId>/turn_NNNN.json` |
 | **Tech choice by Claude** (`AI_chooseTech`) | ✅ live — 100 turns, 13/13 decisions applied, ~10s per call |
 | Production, city sites, war, diplomacy, unit orders, civics/sliders | stock AI |
-| Unattended test platform (mirrored map, `Game.AIPlay` batches) | ✅ live, driven by hand |
+| Unattended test platform (mirrored map, autoplay) | ✅ live, unattended: `devtools/run_trial.py` |
 | Plan-file decision loop (**C**), evaluation (**E**) | not started |
 
 ## Next increments
@@ -114,6 +114,7 @@ mod/Assets/Python/
   EntryPoints/CvGameInterfaceFile.py   points GameUtils at CvAdvisorGameUtils
 ai-opponent/                  decide_tech.py, decide_tech_log.jsonl
 harness/rules.py              tech --available serves both projects
+devtools/                     dev-only: unattended launch/autoplay, never shipped
 ```
 
 **The mode check is folded into the identity check** (`_advisorPlayerId()` returns `None` when opponent mode is off), so hot callbacks pay one branch, not two.
@@ -124,9 +125,9 @@ harness/rules.py              tech --available serves both projects
 
 Two AI civs on a mirrored map, no human playing, running unattended.
 
-- **Map:** `PublicMaps/Mirror.py` ships with the game. For a symmetric two-civ game: start 4 civs in 2 teams, run `Game.AIPlay N` once (this kills your own civ, as expected), then in the Python console run **both** `gc.getPlayer(X).killCities()` and `.killUnits()` on the extra civ. A leftover Settler keeps a civ alive.
-- **Driving:** `Game.AIPlay N` (cheat console, `` ` ``, needs `CheatCode = chipotle`) runs exactly N turns with full UI between batches. `Autorun = 1` runs forever with the UI locked, and `AutorunTurnLimit` doesn't work, so prefer `AIPlay` batches. The Python console is the separate `Shift+`` ` ``.
-- Nothing stops a run automatically; the harness needs its own stopping condition.
+- **Map:** `PublicMaps/Mirror.py` ships with the game. A symmetric two-civ game is set up as 4 civs in 2 teams: autoplay removes the human and `KILL_LEADERS` removes the fourth civ (`devtools/README.md` "Fixtures"). By hand, run **both** `gc.getPlayer(X).killCities()` and `.killUnits()` in the Python console: a leftover Settler keeps a civ alive.
+- **Driving by hand:** `Game.AIPlay N` (cheat console, `` ` ``, needs `CheatCode = chipotle`) runs exactly N turns with full UI between batches. `Autorun = 1` runs forever with the UI locked, and `AutorunTurnLimit` doesn't work, so prefer `AIPlay` batches. The Python console is the separate `Shift+`` ` ``.
+- **Driving unattended** (✅ live, 2026-09-28): `devtools/` launches straight into a save with `/FXSLOAD`, and its in-game hook starts autoplay from a one-shot control file, with no clicks. `devtools/run_trial.py` stops at a target turn (or on a stall or timeout) and writes a report. The launch command, prerequisites and pitfalls are in `devtools/README.md`.
 - `LocalConfig.AI_OPPONENT_PLAYER_KEY = 'LEADER_ALEXANDER'` — first in the leader list, so easy to pick at setup.
 
 ## Work items
