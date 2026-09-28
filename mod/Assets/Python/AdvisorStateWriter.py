@@ -88,12 +88,40 @@ def _gameId(ctx):
 
 	Once written, every later load of this save - including a full game
 	restart - returns the same value, which is what makes the folder
-	assignment stable for the life of the game rather than just the session.'''
+	assignment stable for the life of the game rather than just the session.
+	Only a NEW game's ID comes from _newGameId; an existing one is returned
+	untouched whatever shape it has.'''
 	gameId = ctx.game.getScriptData()
 	if not gameId:
-		gameId = '%d' % int(time.time() * 1000)
+		gameId, source = _newGameId()
 		ctx.game.setScriptData(gameId)
+		_log('new game ID %s (suffix from %s)' % (gameId, source))
 	return gameId
+
+
+def _newGameId():
+	'''(id, source): a coarse millisecond timestamp followed by six random digits.
+
+	The timestamp alone is NOT unique: in-game, time.time() carries only float32
+	precision (see REFERENCES.md "The game's time.time() has float32
+	precision"), so it moves in steps of 131072 ms and two real games have
+	already shared one. It stays as the prefix only so IDs still roughly sort by
+	age; uniqueness comes from the suffix, drawn from os.urandom, which is
+	integer-only and so untouched by FPU precision. Digits only, because
+	new_game.ps1 recovers the leader by stripping a trailing _<digits>.
+
+	The fallback, should os.urandom be missing or refuse, mixes the process ID
+	with time.clock - small values since process start, so float32 still
+	leaves them sub-millisecond - which separates games started in one session
+	as well as across sessions.'''
+	try:
+		import struct
+		suffix = struct.unpack('>I', os.urandom(4))[0]
+		source = 'os.urandom'
+	except:
+		suffix = os.getpid() * 1000003 + int(_clock() * 1000000)
+		source = 'pid+clock fallback'
+	return '%d%06d' % (int(time.time() * 1000), suffix % 1000000), source
 
 
 def getTurnFilePath(gameTurn, playerId):

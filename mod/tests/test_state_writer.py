@@ -16,8 +16,10 @@ import json
 import os
 import sys
 import tempfile
+import time
 import types
 import unittest
+from unittest import mock
 
 import jsonschema
 
@@ -3320,6 +3322,47 @@ class StateFilePathTests(unittest.TestCase):
         mod["getTurnFilePath"](2, PLAYER_ID)
         self.assertEqual(game.scriptDataSets, [])
         self.assertEqual(game.getScriptData(), "existing-id")
+
+
+class NewGameIdTests(unittest.TestCase):
+    # In-game time.time() is float32-precise, so it steps in 131072 ms and two
+    # real games already shared an ID. Pinning the clock to one such value is
+    # that collision, reproduced.
+    FROZEN_TIME = 1789719871.488
+
+    def newIds(self, count):
+        ids = []
+        with mock.patch.object(time, "time", return_value=self.FROZEN_TIME):
+            for _ in range(count):
+                game = Game(scriptData="")
+                loadModule(stateDir=r"C:\somewhere", game=game)["getTurnFilePath"](0, PLAYER_ID)
+                ids.append(game.scriptDataSets[0])
+        return ids
+
+    def test_games_started_in_the_same_clock_step_get_different_ids(self):
+        ids = self.newIds(20)
+        self.assertEqual(len(set(ids)), len(ids))
+
+    def test_id_is_the_millisecond_stamp_then_six_digits(self):
+        # Digits only: new_game.ps1 recovers the leader by stripping _<digits>.
+        gameId = self.newIds(1)[0]
+        self.assertRegex(gameId, r"^\d+$")
+        self.assertEqual(gameId[:-6], "%d" % int(self.FROZEN_TIME * 1000))
+
+    def test_falls_back_when_urandom_is_unavailable(self):
+        def refuse(n):
+            raise NotImplementedError
+        with mock.patch.object(os, "urandom", refuse):
+            gameId, source = loadModule()["_newGameId"]()
+        self.assertRegex(gameId, r"^\d+$")
+        self.assertEqual(source, "pid+clock fallback")
+
+    def test_an_existing_id_is_kept_whatever_its_shape(self):
+        # Every save made before this change carries a bare 13-digit stamp.
+        game = Game(scriptData="1789719871488")
+        loadModule(stateDir=r"C:\somewhere", game=game)["getTurnFilePath"](0, PLAYER_ID)
+        self.assertEqual(game.scriptDataSets, [])
+        self.assertEqual(game.getScriptData(), "1789719871488")
 
 
 if __name__ == "__main__":

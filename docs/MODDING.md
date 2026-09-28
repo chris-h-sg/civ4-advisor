@@ -122,7 +122,7 @@ If there's a real way to resolve a mod's own path at runtime, I'd love to know.
 
 I wanted stable per-game output folders and could not find anything to key them on: no UUID, no save identity, no readable map seed, nothing that survives a save/load and distinguishes two games started the same way.
 
-**So the mod writes one.** It generates an ID from `time.time()` the first time `CvGame.getScriptData()` comes back empty, then writes it back once. Every later load of that save returns what was written, including across a full game restart.
+**So the mod writes one.** It generates an ID (a coarse timestamp plus random digits from `os.urandom`; the timestamp alone collides, because the game's `time.time()` [has float32 precision](../REFERENCES.md#the-games-timetime-has-float32-precision-measured-2026-09-28)) the first time `CvGame.getScriptData()` comes back empty, then writes it back once. Every later load of that save returns what was written, including across a full game restart.
 
 This is the one place the mod writes anything to game state rather than only reading, which I thought hard about before doing. `scriptData` is unused free-form storage with no gameplay effect, so I think it's safe, but if there's a reason not to lean on that field I'd love to hear it. The read-only alternatives I considered and why they failed are in [`REFERENCES.md`](../REFERENCES.md) "No readable persistent game ID".
 
