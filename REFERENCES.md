@@ -223,6 +223,13 @@ Established in-game 2026-08-01 by controlled test, because nothing in the commun
 - **Neither `__file__` nor `sys.path` can locate a mod's own source at runtime.** `__file__` is relative to the engine's `Assets/Python` search root regardless of which physical folder supplied the file (even through a deployment junction). `sys.path` is no better — every entry failed `os.path.isfile` for a module known to exist. An absolute path from a config module is the only route found.
 - **Reloading is per-module and does not rescue the event manager.** `CvCustomEventManager.py` still needs a full game restart no matter the mechanism: the engine holds an already-instantiated object built from the old class, and re-executing the source can't re-class it. Likewise a module imported *by* the re-executed module (our `LocalConfig`) comes back from the import cache and needs a restart.
 
+## The game's `time.time()` has float32 precision (measured 2026-09-28)
+
+- **In-game, `time.time()` is quantised to 128-second steps.** The mod timed the `os.popen` round trip of three `decide_tech.py` calls with `time.time()` and logged exactly `0.000s`, `128.000s` and `0.000s`, for calls the child process itself timed at 9–12s. 128s is the float32 step size at a ~1.79e9 epoch. With `time.clock()` the same three measurements came back 11.236s, 9.033s and 9.759s.
+- **The `gameId`s the mod has written confirm it independently.** `_gameId()` writes `int(time.time() * 1000)`, and every ID in `state/` (24 of them) is exactly float32-representable and a multiple of 131,072ms. Two pairs of games have identical IDs: `1789719871488` and `1789714497536`. Their folders stayed apart only because the leader prefix differed.
+- **Cause, not proven:** most likely the game runs the x87 FPU in single-precision mode, which Direct3D 9 does to a process unless it is created with `D3DCREATE_FPU_PRESERVE`. Any double arithmetic in the embedded interpreter is affected, not only `time.time()`.
+- **`time.clock()` is safe** because it counts from near zero (the first call), where float32 still resolves microseconds. `AdvisorStateWriter` already used it for export timing, for its resolution.
+
 ## Prior art (context, not direct dependencies)
 
 These informed the design but nothing here is being reused directly as of this point in the project:

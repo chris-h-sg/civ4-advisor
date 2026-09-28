@@ -149,14 +149,18 @@ def _decideTech(playerId):
 	# figure is the whole freeze the game sees; decide_tech_log.jsonl's
 	# `timing.total` covers the same call from inside the child, and the
 	# difference is the spawn itself (docs/AI_OPPONENT_PLAN.md "Timing and
-	# performance").
-	start = time.time()
+	# performance"). time.clock(), not time.time(): in-game, time.time()
+	# differences came back as exactly 0 or 128 seconds - 128s is the float32
+	# step at a ~1.79e9 epoch, consistent with the game running the FPU in
+	# single precision. time.clock() counts from near zero, where float32
+	# still resolves microseconds.
+	start = time.clock()
 	pipe = os.popen('python "%s" %d' % (scriptPath, playerId), 'r')
 	try:
 		output = pipe.read()
 	finally:
 		pipe.close()
-		CvUtil.pyPrint('civ4-advisor (opponent spike): decide_tech round trip %.3fs' % (time.time() - start))
+		CvUtil.pyPrint('civ4-advisor (opponent spike): decide_tech round trip %.3fs' % (time.clock() - start))
 	techKey = output.strip()
 	if not techKey:
 		return None
