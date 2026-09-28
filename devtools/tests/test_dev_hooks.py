@@ -87,6 +87,13 @@ class FakeGc(object):
 
     def __init__(self, game, players):
         self.game, self.players = game, players
+        self.defines = {"TECH_COST_EXTRA_TEAM_MEMBER_MODIFIER": 50}
+
+    def getDefineINT(self, name):
+        return self.defines[name]
+
+    def setDefineINT(self, name, value):
+        self.defines[name] = value
 
     def getGame(self):
         return self.game
@@ -193,6 +200,16 @@ class DevHooksTests(unittest.TestCase):
         self.assertEqual(rows, ["turn,player,leader,score",
                                 "0,1,LEADER_ALEXANDER,101", "0,2,LEADER_BOUDICA,102",
                                 "1,1,LEADER_ALEXANDER,101", "1,2,LEADER_BOUDICA,102"])
+
+    def test_defines_are_overridden_and_logged(self):
+        gc = sys.modules["CvPythonExtensions"].CyGlobalContext()
+        self.writeControl("DEFINES = {'TECH_COST_EXTRA_TEAM_MEMBER_MODIFIER': 0}\n")
+
+        self.loadHooks()["onLoadGame"]()
+
+        self.assertEqual(gc.defines["TECH_COST_EXTRA_TEAM_MEMBER_MODIFIER"], 0)
+        self.assertIn("civ4-advisor devtools: define TECH_COST_EXTRA_TEAM_MEMBER_MODIFIER 50 -> 0",
+                      self.printed)
 
     def test_round_end_writes_nothing_without_a_trial(self):
         self.loadHooks()["onEndGameTurn"](0)

@@ -17,6 +17,11 @@
 ##                                    civ of a mirrored-map setup)
 ##   SCORES_FILE = r'...\scores.csv'   append every AI civ's score at the end
 ##                                    of each round (onEndGameTurn)
+##   DEFINES = {'NAME': value, ...}   override GlobalDefines integers with
+##                                    setDefineINT before anything else runs.
+##                                    Not saved with the game, and held for
+##                                    the life of the game process, which the
+##                                    trial runner closes at the end of a run.
 ##
 ## Dev-only, so the scores deliberately ignore fog of war: they are for judging
 ## a run, never for feeding a decision.
@@ -41,6 +46,13 @@ def _consume(path):
 		os.remove(consumed)
 	os.rename(path, consumed)
 	return settings
+
+
+def _applyDefines(gc, defines):
+	for name in sorted(defines):
+		before = gc.getDefineINT(name)
+		gc.setDefineINT(name, defines[name])
+		CvUtil.pyPrint('civ4-advisor devtools: define %s %d -> %d' % (name, before, gc.getDefineINT(name)))
 
 
 def _leaderKey(gc, player):
@@ -120,6 +132,7 @@ def onLoadGame():
 		f = open(scores, 'w')
 		f.write('turn,player,leader,score\n')
 		f.close()
+	_applyDefines(gc, settings.get('DEFINES', {}))
 	_logRoster(gc, 'at load')
 	killLeaders = settings.get('KILL_LEADERS', [])
 	if killLeaders:

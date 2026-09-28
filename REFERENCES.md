@@ -21,6 +21,14 @@ Static reference data (unit stats, building costs, tech tree, civic effects) liv
 
 Layout confirmed against the local install (path in `config.local.json`): tunables in `Assets\XML\GlobalDefines.xml`, and one file per concept under `Assets\XML\GameInfo\` (`CIV4ProcessInfo.xml`, etc.). Each entry carries the `<Type>` key the state schema uses, so state joins against these with no mapping table. BTS expansion content lives under `Beyond the Sword\Assets\XML\` and overrides the base tree.
 
+## Team size and tech cost (verified 2026-09-28, for the AI-opponent test fixtures)
+
+- **A team pays 50% more per tech for each member beyond the first.** `CvTeam::getResearchCost` multiplies the handicap-, world- and speed-scaled cost by `100 + TECH_COST_EXTRA_TEAM_MEMBER_MODIFIER × (getNumMembers() − 1)` percent, and the define is 50 in both `Assets\XML\GlobalDefines.xml` and `Beyond the Sword\Assets\XML\GlobalDefines.xml` (source: the SDK copy bundled at `Beyond the Sword\Mods\The Road to War\CvGameCoreDLL`). Community write-ups describe the same 150% for a two-member team ([CivFanatics, "Permanent Alliances effect on tech cost"](https://forums.civfanatics.com/threads/permanent-alliances-effect-on-tech-cost.312473/)).
+- **Death does not reduce the member count.** `changeNumMembers` is called only from `CvPlayer::init` and `CvPlayer::setTeam`; `setAlive` changes the team's *alive* count instead. So a civ removed with `killCities`/`killUnits`, or the human removed by autoplay, still counts. The team handicap, by contrast, averages only living members (`CvTeam::getHandicapType`).
+- **Measured:** in a 500-turn Mirror Continents trial with one civ per team removed, `player.research.cost` was exactly 1.5× `rules.py`'s solo formula for all 48 techs Alexander researched (1.491–1.499 where the engine's step-by-step integer division truncates, e.g. Mining 50 → 55 → 82).
+- **`CyGlobalContext.setDefineINT` overrides it live.** Bound in `CyGlobalContextInterface2.cpp`; setting `TECH_COST_EXTRA_TEAM_MEMBER_MODIFIER` to 0 at load made the next trial's costs match the solo formula exactly (Mining 55, Bronze Working 132). `getResearchCost` reads the define on every call, so no restart is needed. The override is not saved with the game.
+- **`rules.py`'s cost formula has no team term**, so for a multi-member team it understates the engine's cost by that factor. Single-player advisor games are unaffected.
+
 ## Research-rate mechanics (verified for schema's `beakersPerTurn`/`turnsLeft` semantics)
 
 Verified 2026-08 directly against the vanilla BTS game-core C++ source — **`https://github.com/dguenms/beyond-the-sword-sdk`** ("Unedited CvGameCoreDLL sources for Civ IV Beyond the Sword"), `CvGameCoreDLL/CvPlayer.cpp` — not against forum folklore. Read only, never vendored (per the no-Firaxis-code rule in CLAUDE.md). Key findings:

@@ -40,6 +40,13 @@ FIXTURES = {
     "mirror_continents": ("mirror_continents_t0.CivBeyondSwordSave", ["LEADER_BISMARCK"]),
 }
 
+# Every fixture is a 4-civ, 2-team save with one civ per team removed, and the
+# engine charges a team 50% more per tech for each extra member it ever had -
+# death doesn't reduce the count (CvTeam::getResearchCost, CvPlayer::setTeam).
+# Zeroing the modifier gives both survivors ordinary two-player tech costs.
+# See docs/AI_OPPONENT_PLAN.md "Test platform".
+TRIAL_DEFINES = {"TECH_COST_EXTRA_TEAM_MEMBER_MODIFIER": 0}
+
 TURN_FILE = re.compile(r"turn_(\d{4})\.json$")
 
 
@@ -213,7 +220,8 @@ def run(args, paths, local, run_dir):
     os.makedirs(RUNS, exist_ok=True)
     scores = os.path.join(run_dir, "scores.csv")
     with open(CONTROL, "w", encoding="ascii") as f:
-        f.write("KILL_LEADERS = %r\nAUTOPLAY_TURNS = %d\nSCORES_FILE = %r\n" % (kill, args.turns, scores))
+        f.write("KILL_LEADERS = %r\nAUTOPLAY_TURNS = %d\nSCORES_FILE = %r\nDEFINES = %r\n"
+                % (kill, args.turns, scores, TRIAL_DEFINES))
 
     launched = time.time()
     cmd = '"%s" mod="\\%s" /FXSLOAD="%s"' % (paths["exe"], MOD_NAME, save)
