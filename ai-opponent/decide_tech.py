@@ -68,6 +68,12 @@ Every call is logged to decide_tech_log.jsonl (this directory) - the request
 (state excerpt, turn, candidate list), response (raw answer, resolved
 validity, wall clock, timestamp) - so decisions can be tracked and compared
 across a game rather than trusted blind. See _log_decision.
+
+Each entry also carries a per-call time breakdown - `timing` (seconds per
+phase of this script, from process creation onward) and `claude` (the CLI's
+own duration, API time, turn count and token figures from its JSON result) -
+kept permanently, since they are how we know where a call's time goes. See
+docs/AI_OPPONENT_PLAN.md "Timing and performance".
 """
 
 import json
@@ -80,7 +86,7 @@ import time
 AI_OPPONENT_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(AI_OPPONENT_DIR)
 STATE_DIR = os.environ.get('CIV4_ADVISOR_STATE_DIR', os.path.join(REPO_ROOT, 'state'))
-LOG_PATH = os.path.join(AI_OPPONENT_DIR, 'decide_tech_log.jsonl')
+LOG_PATH = os.environ.get('CIV4_ADVISOR_TECH_LOG', os.path.join(AI_OPPONENT_DIR, 'decide_tech_log.jsonl'))
 RULES_SCRIPT = os.path.join(REPO_ROOT, 'harness', 'rules.py')
 
 # claude -p must not run with cwd inside this repo - see module docstring.
@@ -94,6 +100,34 @@ CLAUDE_CWD = os.path.expanduser('~')
 # Not hardcoded to one machine's npm global path; see module docstring for
 # why this must be the literal .cmd rather than routed through a shell.
 CLAUDE_CMD = shutil.which('claude')
+
+# Pinned rather than inherited from the user's own Claude Code settings, which
+# would otherwise choose them (and change them silently whenever those
+# settings change) - timings and decisions are only comparable across runs at
+# a fixed model and effort.
+CLAUDE_MODEL = 'claude-opus-5-5'
+CLAUDE_EFFORT = 'medium'
+
+
+def _process_start_time():
+    """Epoch seconds at which this process was created, or None if it can't
+    be read. Windows-only (GetProcessTimes), the only platform the mod calls
+    this from; it covers the interpreter's own startup, which time.time() at
+    the top of main() cannot see."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+        creation, exited, kernel, user = (wintypes.FILETIME() for _ in range(4))
+        kernel32 = ctypes.windll.kernel32
+        kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+        kernel32.GetProcessTimes.argtypes = [wintypes.HANDLE] + [ctypes.POINTER(wintypes.FILETIME)] * 4
+        if not kernel32.GetProcessTimes(kernel32.GetCurrentProcess(), ctypes.byref(creation),
+                                        ctypes.byref(exited), ctypes.byref(kernel), ctypes.byref(user)):
+            return None
+        ticks = (creation.dwHighDateTime << 32) | creation.dwLowDateTime
+        return ticks / 1e7 - 11644473600  # FILETIME: 100ns ticks since 1601
+    except Exception:
+        return None
 
 
 # No "answer with ONLY the bare key" instruction needed here - the JSON
@@ -201,9 +235,9 @@ def _tech_choice_schema(candidates):
 def _call_claude(prompt, candidates):
     """Runs claude -p with the prompt and a JSON schema constraining the
     reply to {"tech": "<one of candidates>"}, cwd outside this repo. Returns
-    (tech_key, wall_clock_seconds). Raises on a non-zero exit, unparseable
-    JSON, or a missing structured_output - the caller decides what to print
-    on failure.
+    (tech_key, wall_clock_seconds, claude_stats) - see _claude_stats. Raises
+    on a non-zero exit, unparseable JSON, or a missing structured_output -
+    the caller decides what to print on failure.
 
     Invokes CLAUDE_CMD (the resolved claude.cmd path) directly rather than
     through a shell - see module docstring for why routing this through
@@ -213,6 +247,7 @@ def _call_claude(prompt, candidates):
     start = time.time()
     result = subprocess.run(
         [CLAUDE_CMD, '-p', '--output-format', 'json',
+         '--model', CLAUDE_MODEL, '--effort', CLAUDE_EFFORT,
          '--json-schema', _tech_choice_schema(candidates)],
         input=prompt,
         cwd=CLAUDE_CWD,
@@ -222,7 +257,10 @@ def _call_claude(prompt, candidates):
     )
     elapsed = time.time() - start
     if result.returncode != 0:
-        raise RuntimeError('claude -p exited %d: %s' % (result.returncode, result.stderr.strip()))
+        # With --output-format json the error is reported on stdout, not
+        # stderr - an API error left stderr empty and the log said nothing.
+        raise RuntimeError('claude -p exited %d: %s %s' % (
+            result.returncode, result.stderr.strip(), result.stdout.strip()[:2000]))
     try:
         payload = json.loads(result.stdout)
     except ValueError as exc:
@@ -230,10 +268,53 @@ def _call_claude(prompt, candidates):
     structured = payload.get('structured_output')
     if not isinstance(structured, dict) or 'tech' not in structured:
         raise RuntimeError('claude -p response had no structured_output.tech: %r' % payload)
-    return structured['tech'], elapsed
+    return structured['tech'], elapsed, _claude_stats(payload)
 
 
-def _log_decision(entry):
+def _claude_stats(payload):
+    """The parts of claude -p's JSON result that say where the call's time
+    and tokens went: the CLI's own wall clock (duration_ms), time spent
+    waiting on the API (duration_api_ms), model round trips (num_turns),
+    token usage including prompt-cache reads/writes, and which models ran."""
+    usage = payload.get('usage') or {}
+    return {
+        'durationMs': payload.get('duration_ms'),
+        'durationApiMs': payload.get('duration_api_ms'),
+        'numTurns': payload.get('num_turns'),
+        'costUsd': payload.get('total_cost_usd'),
+        'inputTokens': usage.get('input_tokens'),
+        'outputTokens': usage.get('output_tokens'),
+        'cacheReadTokens': usage.get('cache_read_input_tokens'),
+        'cacheCreationTokens': usage.get('cache_creation_input_tokens'),
+        'models': sorted((payload.get('modelUsage') or {}).keys()),
+    }
+
+
+class _Timer(object):
+    """The per-call `timing` block: seconds from the previous mark (or from
+    process creation, for the first) to each named mark, plus the total."""
+
+    def __init__(self):
+        now = time.time()
+        processStart = _process_start_time()
+        self.timing = {}
+        if processStart is not None:
+            self.timing['startupToMain'] = round(now - processStart, 3)
+        self._start = processStart if processStart is not None else now
+        self._last = now
+
+    def mark(self, name):
+        now = time.time()
+        self.timing[name] = round(now - self._last, 3)
+        self._last = now
+
+    def finish(self):
+        self.timing['total'] = round(time.time() - self._start, 3)
+        return self.timing
+
+
+def _log_decision(entry, timer):
+    entry['timing'] = timer.finish()
     entry['timestamp'] = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
     try:
         with open(LOG_PATH, 'a', encoding='utf-8') as logFile:
@@ -243,6 +324,7 @@ def _log_decision(entry):
 
 
 def main():
+    timer = _Timer()
     playerId = sys.argv[1] if len(sys.argv) > 1 else None
 
     stateFilePath = _find_latest_state_file()
@@ -252,8 +334,10 @@ def main():
 
     with open(stateFilePath, 'r', encoding='utf-8') as stateFile:
         state = json.load(stateFile)
+    timer.mark('stateLoad')
 
     candidates = _available_techs(stateFilePath)
+    timer.mark('rules')
 
     logEntry = {
         'playerId': playerId,
@@ -270,22 +354,26 @@ def main():
         # spend a call on it. Same "give up cleanly" contract as every other
         # failure mode here: empty stdout, the mod falls through to stock.
         logEntry['error'] = 'no available techs (rules.py --available returned none)'
-        _log_decision(logEntry)
+        _log_decision(logEntry, timer)
         sys.stderr.write('decide_tech.py: no available techs found via rules.py --available\n')
         sys.exit(1)
 
     prompt = _build_prompt(state, candidates)
+    timer.mark('promptBuild')
 
     try:
-        rawAnswer, elapsed = _call_claude(prompt, candidates)
+        rawAnswer, elapsed, claudeStats = _call_claude(prompt, candidates)
     except Exception as exc:
+        timer.mark('claudeCli')
         logEntry['error'] = str(exc)
-        _log_decision(logEntry)
+        _log_decision(logEntry, timer)
         sys.stderr.write('decide_tech.py: claude call failed: %s\n' % exc)
         sys.exit(1)
 
+    timer.mark('claudeCli')
     logEntry['rawAnswer'] = rawAnswer
     logEntry['wallClockSeconds'] = elapsed
+    logEntry['claude'] = claudeStats
 
     # The JSON schema in _call_claude already constrains structured_output.tech
     # to an enum of `candidates`, so a well-formed response cannot fail either
@@ -298,7 +386,7 @@ def main():
     # one.
     if not rawAnswer.startswith('TECH_') or ' ' in rawAnswer or '\n' in rawAnswer:
         logEntry['shapeValid'] = False
-        _log_decision(logEntry)
+        _log_decision(logEntry, timer)
         sys.stderr.write('decide_tech.py: answer does not look like a bare TECH_ key: %r\n' % rawAnswer)
         sys.exit(1)
 
@@ -306,12 +394,12 @@ def main():
 
     if rawAnswer not in candidates:
         logEntry['inCandidateList'] = False
-        _log_decision(logEntry)
+        _log_decision(logEntry, timer)
         sys.stderr.write('decide_tech.py: answer %r is not one of the offered candidates\n' % rawAnswer)
         sys.exit(1)
 
     logEntry['inCandidateList'] = True
-    _log_decision(logEntry)
+    _log_decision(logEntry, timer)
     sys.stdout.write(rawAnswer)
 
 

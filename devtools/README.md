@@ -19,16 +19,17 @@ What it does:
 2. **Runs:** writes the one-shot control file, launches into the fixture, and watches turn files arrive.
 3. **Stops:** closes the game at the target turn, or on a stall, load failure or timeout, taking a final screenshot either way.
 4. **Reports** into `runs/<run-id>/`:
-   - `report.md` / `report.json`: status, turns, wall time, Claude's tech calls (valid, applied, fell back to stock AI, timing), every AI civ's score every 5 turns with the final gap (from `scores.csv`), the roster before and after setup, and errors from `PythonDbg.log`;
+   - `report.md` / `report.json`: status, turns, wall time, Claude's tech calls (valid, applied, fell back to stock AI, and a per-call time breakdown beside the game's own round-trip figure), every AI civ's score every 5 turns with the final gap (from `scores.csv`), the roster before and after setup, and errors from `PythonDbg.log`;
    - copies of the run's turn files, its log, and its `decide_tech` entries.
 
-It always removes an unconsumed control file on exit. Exit code 0 means the target turn was reached, 1 means the run failed, 2 means preflight failed. The run needs `MODE = 'opponent'` (or `'both'`) in `LocalConfig.py` for Claude to make decisions; otherwise it's a stock-AI run and the report says so.
+The game is launched without the `CLAUDE_*`/`MCP_*` variables a Claude Code session exports, so a trial started from inside a session calls `claude -p` the way a normally launched game would. It always removes an unconsumed control file on exit. Exit code 0 means the target turn was reached, 1 means the run failed, 2 means preflight failed. The run needs `MODE = 'opponent'` (or `'both'`) in `LocalConfig.py` for Claude to make decisions; otherwise it's a stock-AI run and the report says so.
 
 ## Files
 
 | File | Runs in | Does |
 | --- | --- | --- |
 | `run_trial.py` | Python 3 | The trial runner, above. |
+| `bench_decide_tech.py` | Python 3 | Replays `ai-opponent/decide_tech.py` against the saved trials' research turns N times and reports medians and spread per timing component (see `docs/AI_OPPONENT_PLAN.md` "Timing and performance"). Every repetition is a real `claude -p` call unless `--stub-claude`, which swaps in an instant fake to time everything else for free. Results append to `runs/bench_decide_tech.jsonl`. |
 | `game_hooks/DevHooks.py` | the game (Python 2.4) | On load, reads the one-shot `runs/control.py` and renames it to `control.consumed.py`. It removes the civs listed in `KILL_LEADERS`, starts AI autoplay (`AUTOPLAY_TURNS = N`), and logs the civ list before and after. At the end of every round it appends each AI civ's score to `SCORES_FILE`, the same number as the in-game scoreboard. That deliberately ignores fog of war: it's for judging a run, never for a decision. |
 | `capture_window.ps1` | Windows PowerShell | Screenshots the game window while it's in the background. |
 | `post_input.ps1` | Windows PowerShell | Sends a click or Enter to the game window without moving the real mouse or taking focus. A fallback for popups; prefer Python. |

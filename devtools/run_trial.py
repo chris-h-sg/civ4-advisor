@@ -195,6 +195,18 @@ def read_log(path, since):
         return f.read()
 
 
+def clean_env():
+    """os.environ without the variables a Claude Code session exports to its
+    children (CLAUDE_*, CLAUDECODE, MCP_*, and the desktop app's
+    ANTHROPIC_BASE_URL/NODE_USE_SYSTEM_CA). Launched from inside a session,
+    the game would otherwise pass them down to decide_tech.py's claude -p -
+    changing its effort, entrypoint and auth path - where a game started from
+    Steam has none, so a trial would not be measuring the real thing."""
+    return {k: v for k, v in os.environ.items()
+            if not k.upper().startswith(("CLAUDE", "MCP_"))
+            and k.upper() not in ("ANTHROPIC_BASE_URL", "NODE_USE_SYSTEM_CA")}
+
+
 def run(args, paths, local, run_dir):
     fixture_file, kill = FIXTURES[args.fixture]
     save = os.path.join(DEVTOOLS, "fixtures", fixture_file)
@@ -205,7 +217,7 @@ def run(args, paths, local, run_dir):
 
     launched = time.time()
     cmd = '"%s" mod="\\%s" /FXSLOAD="%s"' % (paths["exe"], MOD_NAME, save)
-    proc = subprocess.Popen(cmd, cwd=os.path.dirname(paths["exe"]))
+    proc = subprocess.Popen(cmd, cwd=os.path.dirname(paths["exe"]), env=clean_env())
     result = {"status": None, "start_turn": None, "target_turn": None, "reached_turn": None,
               "launched": launched, "pid": proc.pid, "screenshot": None}
 
@@ -284,6 +296,9 @@ def parse_log(text):
         "tech_fallbacks": [l.split("PY:", 1)[-1] for l in lines
                            if "falling through" in l or "AI_chooseTech FAILED" in l],
         "errors": [l for l in lines if "FAILED" in l or "Traceback" in l],
+        # CvAdvisorGameUtils._decideTech: the whole os.popen freeze, as the game saw it.
+        "round_trips": [float(m.group(1)) for m in
+                        (re.search(r"decide_tech round trip ([\d.]+)s", l) for l in lines) if m],
     }
 
 
@@ -347,6 +362,26 @@ def score_table(all_scores, every=5):
     return md
 
 
+def timing_table(calls, round_trips):
+    """Markdown lines: each tech call's time breakdown (decide_tech.py's
+    `timing`/`claude` log fields) beside the game's own round-trip figure.
+    Round trips pair with calls by order, which holds as long as every call
+    both logged and returned - an unpaired row shows as blank."""
+    md = ["", "## Tech call timing (seconds)", "",
+          "| Turn | round trip | total | startup | rules | claude CLI | CLI duration | API | turns | cache read / created |",
+          "| --- |" + " --- |" * 9]
+    for i, c in enumerate(calls):
+        t, cl = c.get("timing") or {}, c.get("claude") or {}
+        ms = lambda k: ("%.2f" % (cl[k] / 1000.0)) if isinstance(cl.get(k), (int, float)) else ""
+        sec = lambda k: ("%.2f" % t[k]) if isinstance(t.get(k), (int, float)) else ""
+        md.append("| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s / %s |" % (
+            c.get("gameTurn"), ("%.2f" % round_trips[i]) if i < len(round_trips) else "",
+            sec("total"), sec("startupToMain"), sec("rules"), sec("claudeCli"),
+            ms("durationMs"), ms("durationApiMs"), cl.get("numTurns", ""),
+            cl.get("cacheReadTokens", ""), cl.get("cacheCreationTokens", "")))
+    return md
+
+
 def write_report(args, result, summary, notes, run_dir, elapsed):
     log, calls = summary["log"], summary["tech_calls"]
     secs = [c.get("wallClockSeconds", 0) for c in calls]
@@ -369,6 +404,7 @@ def write_report(args, result, summary, notes, run_dir, elapsed):
     if calls:
         md += ["", "## Tech choices", ""]
         md += ["- turn %s: %s (%.1fs)" % (c.get("gameTurn"), c.get("rawAnswer"), c.get("wallClockSeconds", 0)) for c in calls]
+        md += timing_table(calls, log["round_trips"])
     md += score_table(summary["all_scores"])
     if log["roster"]:
         md += ["", "## Roster", "", "```"] + log["roster"] + ["```"]

@@ -34,6 +34,7 @@ from CvPythonExtensions import *
 import CvUtil
 import CvGameUtils
 import os
+import time
 
 gc = CyGlobalContext()
 
@@ -144,11 +145,18 @@ def _decideTech(playerId):
 	# DECIDE_TIMEOUT_SECONDS above is not enforced here - os.popen has no
 	# timeout in Python 2.4 without threading. A hang is a finding to report,
 	# not something to route around silently (same as the production spike).
+	# Timed from just before the spawn to after the pipe closes, so the logged
+	# figure is the whole freeze the game sees; decide_tech_log.jsonl's
+	# `timing.total` covers the same call from inside the child, and the
+	# difference is the spawn itself (docs/AI_OPPONENT_PLAN.md "Timing and
+	# performance").
+	start = time.time()
 	pipe = os.popen('python "%s" %d' % (scriptPath, playerId), 'r')
 	try:
 		output = pipe.read()
 	finally:
 		pipe.close()
+		CvUtil.pyPrint('civ4-advisor (opponent spike): decide_tech round trip %.3fs' % (time.time() - start))
 	techKey = output.strip()
 	if not techKey:
 		return None

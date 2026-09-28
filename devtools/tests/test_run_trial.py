@@ -20,6 +20,7 @@ PY:civ4-advisor devtools: roster at load
   3 LEADER_PERICLES team=1 human=0 cities=0 units=UNIT_SETTLER@29,12
 PY:civ4-advisor devtools: removed player 3 (LEADER_PERICLES)
 PY:Player 3's alive status set to: 0
+PY:civ4-advisor (opponent spike): decide_tech round trip 7.912s
 PY:civ4-advisor (opponent spike): AI_chooseTech ordering TECH_AGRICULTURE for player 1, via external process
 PY:civ4-advisor (opponent spike): external process gave unusable tech key None, falling through
 PY:civ4-advisor: state export FAILED at onBeginPlayerTurn
@@ -70,6 +71,7 @@ class LogParsingTests(unittest.TestCase):
         self.assertEqual(len(parsed["tech_applied"]), 1)
         self.assertEqual(len(parsed["tech_fallbacks"]), 1)
         self.assertEqual(len(parsed["errors"]), 2)   # the FAILED line and the Traceback
+        self.assertEqual(parsed["round_trips"], [7.912])
 
 
 class ScoreTests(unittest.TestCase):
