@@ -72,6 +72,32 @@ class LogParsingTests(unittest.TestCase):
         self.assertEqual(len(parsed["errors"]), 2)   # the FAILED line and the Traceback
 
 
+class ScoreTests(unittest.TestCase):
+
+    def test_read_scores_and_table(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "scores.csv")
+            with open(path, "w") as f:
+                f.write("turn,player,leader,score\n")
+                for t in range(0, 8):
+                    f.write("%d,1,LEADER_ALEXANDER,%d\n" % (t, 10 * t))
+                    f.write("%d,2,LEADER_BOUDICA,%d\n" % (t, 9 * t))
+            scores = run_trial.read_scores(path)
+            self.assertEqual(run_trial.last_score_turn(path), 7)
+
+        md = "\n".join(run_trial.score_table(scores))
+
+        self.assertIn("| Turn | Alexander | Boudica |", md)
+        self.assertIn("| 5 | 50 | 45 |", md)
+        self.assertIn("| 7 | 70 | 63 |", md)          # the last turn is always shown
+        self.assertNotIn("| 6 |", md)
+        self.assertIn("Alexander leads Boudica by 7 (70 vs 63)", md)
+
+    def test_missing_scores_file(self):
+        self.assertEqual(run_trial.last_score_turn("/nonexistent/scores.csv"), -1)
+        self.assertIn("No scores recorded.", run_trial.score_table({}))
+
+
 class TechCallTests(unittest.TestCase):
 
     def test_only_calls_since_launch_are_kept(self):

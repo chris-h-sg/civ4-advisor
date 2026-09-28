@@ -280,6 +280,19 @@ class DevHookTests(_LoadModuleTestCase):
         with open(record) as f:
             self.assertEqual(f.read(), self._tmp.name)
 
+    def test_on_end_game_turn_passes_the_finished_turn(self):
+        record = os.path.join(self._tmp.name, "called.txt")
+        path = self.writeHooks(
+            "def onEndGameTurn(iGameTurn):\n"
+            "    open(%r, 'w').write(str(iGameTurn))\n" % record)
+        # opponent mode: the human export is silent, the dev hook still runs.
+        manager, _ = self.load([FakePlayer(1)], FakeGame(activePlayerId=0), mode='opponent', devHooks=path)
+
+        manager.onEndGameTurn([7])
+
+        with open(record) as f:
+            self.assertEqual(f.read(), "7")
+
     def test_a_missing_hook_function_is_a_no_op(self):
         path = self.writeHooks("x = 1\n")
         manager, _ = self.load([FakePlayer(1)], FakeGame(activePlayerId=0), mode='advisor', devHooks=path)

@@ -159,6 +159,26 @@ def new_turn_files(state_dir, since):
     return found
 
 
+def read_scores(path):
+    """{leader: {turn: score}} from the scores.csv DevHooks writes."""
+    table = {}
+    if not os.path.isfile(path):
+        return table
+    with open(path, encoding="latin-1") as f:
+        next(f, None)
+        for line in f:
+            parts = line.strip().split(",")
+            if len(parts) == 4:
+                turn, _, leader, score = parts
+                table.setdefault(leader, {})[int(turn)] = int(score)
+    return table
+
+
+def last_score_turn(path):
+    turns = [t for by_turn in read_scores(path).values() for t in by_turn]
+    return max(turns) if turns else -1
+
+
 def screenshot(proc_id, out):
     script = os.path.join(DEVTOOLS, "capture_window.ps1")
     r = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script,
@@ -179,8 +199,9 @@ def run(args, paths, local, run_dir):
     fixture_file, kill = FIXTURES[args.fixture]
     save = os.path.join(DEVTOOLS, "fixtures", fixture_file)
     os.makedirs(RUNS, exist_ok=True)
+    scores = os.path.join(run_dir, "scores.csv")
     with open(CONTROL, "w", encoding="ascii") as f:
-        f.write("KILL_LEADERS = %r\nAUTOPLAY_TURNS = %d\n" % (kill, args.turns))
+        f.write("KILL_LEADERS = %r\nAUTOPLAY_TURNS = %d\nSCORES_FILE = %r\n" % (kill, args.turns, scores))
 
     launched = time.time()
     cmd = '"%s" mod="\\%s" /FXSLOAD="%s"' % (paths["exe"], MOD_NAME, save)
@@ -222,6 +243,11 @@ def run(args, paths, local, run_dir):
                     result["reached_turn"] = newest
                     print("  turn %d" % newest, flush=True)
                 if newest >= result["target_turn"]:
+                    # Scores are written at the very end of a round, after
+                    # that round's turn file; give the last row a moment.
+                    wait_until = time.time() + 15
+                    while last_score_turn(scores) < result["target_turn"] and time.time() < wait_until:
+                        time.sleep(1)
                     return finish("ok")
             if proc.poll() is not None:
                 return finish("game exited early", shot=False)
@@ -287,22 +313,38 @@ def collect(paths, local, result, run_dir):
         result["reached_turn"] = max(files)
     state_out = os.path.join(run_dir, "state")
     os.makedirs(state_out, exist_ok=True)
-    scores = {}
     for turn, path in sorted(files.items()):
         shutil.copy2(path, state_out)
-        try:
-            with open(path, encoding="utf-8") as f:
-                scores[turn] = json.load(f)["player"]["score"]
-        except (ValueError, KeyError):
-            pass
-    log = read_log(paths["log"], launched)
+    log =read_log(paths["log"], launched)
     with open(os.path.join(run_dir, "PythonDbg.log"), "w", encoding="utf-8") as f:
         f.write(log)
     calls = tech_calls(paths["tech_log"], launched)
     with open(os.path.join(run_dir, "decide_tech.jsonl"), "w", encoding="utf-8") as f:
         for c in calls:
             f.write(json.dumps(c) + "\n")
-    return {"log": parse_log(log), "tech_calls": calls, "scores": scores}
+    return {"log": parse_log(log), "tech_calls": calls,
+            "all_scores": read_scores(os.path.join(run_dir, "scores.csv"))}
+
+
+def score_table(all_scores, every=5):
+    """Markdown lines: every civ's score at every `every`th turn plus the last,
+    and the final gap between the top two."""
+    if not all_scores:
+        return ["", "## Score", "", "No scores recorded."]
+    leaders = sorted(all_scores)
+    turns = sorted({t for by_turn in all_scores.values() for t in by_turn})
+    shown = [t for t in turns if t % every == 0 or t == turns[-1]]
+    name = lambda leader: leader.replace("LEADER_", "").title()
+    md = ["", "## Score (every AI civ, from DevHooks - ignores fog of war)", "",
+          "| Turn | " + " | ".join(name(l) for l in leaders) + " |",
+          "| --- |" + " --- |" * len(leaders)]
+    for t in shown:
+        md.append("| %d | " % t + " | ".join(str(all_scores[l].get(t, "")) for l in leaders) + " |")
+    final = sorted(((all_scores[l][turns[-1]], l) for l in leaders if turns[-1] in all_scores[l]), reverse=True)
+    if len(final) >= 2:
+        (s1, l1), (s2, l2) = final[0], final[1]
+        md += ["", "**Turn %d:** %s leads %s by %d (%d vs %d)" % (turns[-1], name(l1), name(l2), s1 - s2, s1, s2)]
+    return md
 
 
 def write_report(args, result, summary, notes, run_dir, elapsed):
@@ -327,9 +369,7 @@ def write_report(args, result, summary, notes, run_dir, elapsed):
     if calls:
         md += ["", "## Tech choices", ""]
         md += ["- turn %s: %s (%.1fs)" % (c.get("gameTurn"), c.get("rawAnswer"), c.get("wallClockSeconds", 0)) for c in calls]
-    if summary["scores"]:
-        md += ["", "## Score (the AI opponent's own)", "",
-               " ".join("%d:%d" % (t, s) for t, s in sorted(summary["scores"].items()))]
+    md += score_table(summary["all_scores"])
     if log["roster"]:
         md += ["", "## Roster", "", "```"] + log["roster"] + ["```"]
     if log["deaths"]:
@@ -342,7 +382,7 @@ def write_report(args, result, summary, notes, run_dir, elapsed):
     with open(os.path.join(run_dir, "report.md"), "w", encoding="utf-8") as f:
         f.write(text)
     report = dict(result, fixture=args.fixture, turns=args.turns, elapsed=elapsed, notes=notes,
-                  scores=summary["scores"], log=log, tech_calls=len(calls), tech_valid=len(valid))
+                  scores=summary["all_scores"], log=log, tech_calls=len(calls), tech_valid=len(valid))
     with open(os.path.join(run_dir, "report.json"), "w", encoding="utf-8") as f:
         json.dump(report, f, indent=2)
     return text

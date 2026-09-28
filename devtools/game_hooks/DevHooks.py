@@ -15,8 +15,14 @@
 ##   AUTOPLAY_TURNS = N               start N turns of AI autoplay
 ##   KILL_LEADERS = ['LEADER_X', ...] remove these civs first (e.g. the fourth
 ##                                    civ of a mirrored-map setup)
+##   SCORES_FILE = r'...\scores.csv'   append every AI civ's score at the end
+##                                    of each round (onEndGameTurn)
+##
+## Dev-only, so the scores deliberately ignore fog of war: they are for judging
+## a run, never for feeding a decision.
 
 import os
+import sys
 from CvPythonExtensions import *
 import CvUtil
 
@@ -72,12 +78,48 @@ def _killLeaders(gc, leaderKeys):
 			CvUtil.pyPrint('civ4-advisor devtools: removed player %d (%s)' % (i, _leaderKey(gc, p)))
 
 
+# Per-process run state. This file is re-read on every call, so it can't hold
+# state itself; an attribute on sys lives exactly as long as the game process,
+# so a crashed or killed run can never leave it behind for a later game.
+_RUN_STATE = '_civ4AdvisorDevRun'
+
+
+def _writeScores(gc, path, turn):
+	'''One row per living AI civ. The human slot is skipped: it is never a
+	trial subject, and after autoplay ends it is only the placeholder Lion.
+	So is a civ with nothing left: one removed by KILL_LEADERS still reads
+	isAlive() until the engine's end-of-turn check.'''
+	f = open(path, 'a')
+	try:
+		for i in range(gc.getMAX_CIV_PLAYERS()):
+			p = gc.getPlayer(i)
+			if p.isAlive() and not p.isHuman() and (p.getNumUnits() or p.getNumCities()):
+				f.write('%d,%d,%s,%d\n' % (turn, i, _leaderKey(gc, p), gc.getGame().getPlayerScore(i)))
+	finally:
+		f.close()
+
+
+def onEndGameTurn(iGameTurn):
+	state = getattr(sys, _RUN_STATE, None)
+	if not state or not state.get('scores'):
+		return
+	# +1: labelled like the turn files - the round that just ended produces
+	# the state of the turn about to be played.
+	_writeScores(CyGlobalContext(), state['scores'], iGameTurn + 1)
+
+
 def onLoadGame():
 	path = _controlPath()
 	if not os.path.isfile(path):
 		return
 	settings = _consume(path)
 	gc = CyGlobalContext()
+	scores = settings.get('SCORES_FILE')
+	setattr(sys, _RUN_STATE, {'scores': scores})
+	if scores:
+		f = open(scores, 'w')
+		f.write('turn,player,leader,score\n')
+		f.close()
 	_logRoster(gc, 'at load')
 	killLeaders = settings.get('KILL_LEADERS', [])
 	if killLeaders:
@@ -91,3 +133,5 @@ def onLoadGame():
 		game.setAIAutoPlay(turns)
 		CvUtil.pyPrint('civ4-advisor devtools: setAIAutoPlay(%d) -> %d' % (turns, game.getAIAutoPlay()))
 	_logRoster(gc, 'after setup')
+	if scores:
+		_writeScores(gc, scores, gc.getGame().getGameTurn())

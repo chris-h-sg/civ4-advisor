@@ -29,6 +29,13 @@ def _execfile(path, globalsDict):
 class FakeGame(object):
     def __init__(self):
         self.autoPlay = 0
+        self.turn = 0
+
+    def getGameTurn(self):
+        return self.turn
+
+    def getPlayerScore(self, i):
+        return 100 + i
 
     def setAIAutoPlay(self, turns):
         self.autoPlay = turns
@@ -57,6 +64,11 @@ class FakePlayer(object):
 
     def getNumCities(self):
         return 0
+
+    def getNumUnits(self):
+        # Like the engine: removal empties the civ, but it stays isAlive()
+        # until the end-of-turn check.
+        return 0 if "units" in self.killed else 2
 
     def firstUnit(self, bReverse):
         return (None, 0)
@@ -100,6 +112,9 @@ class DevHooksTests(unittest.TestCase):
         os.makedirs(self.hooksDir)
         os.makedirs(self.runsDir)
         self.control = os.path.join(self.runsDir, "control.py")
+        # The hook keeps per-run state on sys for the life of the game
+        # process; each test is a fresh "process".
+        self.addCleanup(lambda: sys.__dict__.pop("_civ4AdvisorDevRun", None))
 
         self.game = FakeGame()
         self.players = [FakePlayer(0, 0, human=True), FakePlayer(1, 1), FakePlayer(2, 2), FakePlayer(3, 3)]
@@ -163,6 +178,26 @@ class DevHooksTests(unittest.TestCase):
         self.assertEqual(self.players[3].killed, ["cities", "units"])
         self.assertEqual([p.killed for p in self.players[:3]], [[], [], []])
         self.assertEqual(self.game.autoPlay, 3)
+
+    def test_scores_are_written_at_load_and_each_round_end(self):
+        scores = os.path.join(self.runsDir, "scores.csv")
+        self.writeControl("KILL_LEADERS = ['LEADER_PERICLES']\nAUTOPLAY_TURNS = 3\nSCORES_FILE = %r\n" % scores)
+
+        self.loadHooks()["onLoadGame"]()
+        self.loadHooks()["onEndGameTurn"](0)   # a fresh load of the file, as the mod does
+
+        with open(scores) as f:
+            rows = f.read().splitlines()
+        # Header, then Alexander and Boudica at turn 0 and turn 1. Not the human,
+        # and not Pericles, who was removed but still reads isAlive().
+        self.assertEqual(rows, ["turn,player,leader,score",
+                                "0,1,LEADER_ALEXANDER,101", "0,2,LEADER_BOUDICA,102",
+                                "1,1,LEADER_ALEXANDER,101", "1,2,LEADER_BOUDICA,102"])
+
+    def test_round_end_writes_nothing_without_a_trial(self):
+        self.loadHooks()["onEndGameTurn"](0)
+
+        self.assertEqual(os.listdir(self.runsDir), [])
 
     def test_zero_turns_consumes_without_starting_autoplay(self):
         self.writeControl("AUTOPLAY_TURNS = 0\n")

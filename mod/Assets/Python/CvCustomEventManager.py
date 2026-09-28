@@ -76,8 +76,8 @@ def _refreshStateWriter():
 	return 'execfile %s' % path
 
 
-def _runDevHook(hookName):
-	'''Call hookName() in the file LocalConfig.DEV_HOOKS names, if any.
+def _runDevHook(hookName, *args):
+	'''Call hookName(*args) in the file LocalConfig.DEV_HOOKS names, if any.
 
 	The mod's one extension point for development tooling (devtools/ in the
 	repo: unattended trial runs, debugging), so that tooling never has to live
@@ -99,7 +99,7 @@ def _runDevHook(hookName):
 		execfile(path, ns)
 		hook = ns.get(hookName)
 		if hook is not None:
-			hook()
+			hook(*args)
 	except:
 		try:
 			CvUtil.pyPrint('civ4-advisor: dev hook %s FAILED\n%s' % (hookName, traceback.format_exc()))
@@ -221,6 +221,7 @@ class CvCustomEventManager(CvEventManager.CvEventManager):
 		if CvAdvisorGameUtils.advisorModeActive():
 			CvUtil.pyPrint('civ4-advisor: exporting state at onEndGameTurn (turn %d finished)' % iGameTurn)
 			self._exportState(iGameTurn + 1, gc.getGame().getActivePlayer(), 'onEndGameTurn')
+		_runDevHook('onEndGameTurn', iGameTurn)
 
 	def _exportState(self, gameTurn, playerId, trigger):
 		'''State export must never crash or hang the game - any failure here is swallowed
